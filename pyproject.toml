@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "invisible-canvas"
+version = "0.1.0"
+description = "Vision-based spatial interaction platform: turns a projected surface into an interactive workspace."
+readme = "README.md"
+# 3.12 only for now: keeps MediaPipe (P1) installable. See brain.md D1.
+requires-python = ">=3.12,<3.13"
+# Phase 1 (P0 Foundation) runtime dependencies. See brain.md section 9.4.
+dependencies = [
+    "numpy>=2.0,<3",
+    "opencv-python>=4.10,<5",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
