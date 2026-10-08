@@ -14,6 +14,22 @@ py -3.12 -m venv .venv
 pip install -e .[dev]
 ```
 
+## Commands (Phase 1A)
+
+```
+python -m invisible_canvas devices        # hardware diagnostics: displays, projector, cameras
+python -m invisible_canvas projector      # alignment pattern on the projector
+python -m invisible_canvas camera         # live feed, fps, saturation; --seconds 60 for a report
+python -m invisible_canvas latency        # display -> camera latency
+python -m invisible_canvas calibrate      # manual four-point calibration
+python -m invisible_canvas repeatability  # corner variation over recent calibrations
+python -m invisible_canvas validate       # held-out accuracy test
+python -m invisible_canvas mapdemo        # hover in the camera view -> crosshair on the surface
+python -m pytest                          # unit tests
+```
+
+The order of the hardware acceptance session is in brain.md §9.8.
+
 ## Layout
 
 ```

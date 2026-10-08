@@ -8,8 +8,8 @@
 | | |
 |---|---|
 | Last updated | 2026-10-08 |
-| Current phase | **Phase 1A** (first half of P0 Foundation): approved, in progress |
-| Next action | Rerun `devices` with the Brio 100 + projector connected (A1); build steps 1A.2–1A.8 |
+| Current phase | **Phase 1A** (first half of P0 Foundation). **Software complete and tested without the projector/Brio; hardware acceptance run (A1–A8) NOT done yet.** Phase 1A is not complete until it is. |
+| Next action | Connect the Brio 100 + WZATCO projector, then follow the runbook in §9.8 and record the numbers in §13.2 |
 
 ---
 
@@ -370,7 +370,10 @@ Paths are relative to `src/invisible_canvas/` unless stated otherwise.
 | `tools/calibrate.py` | `calibrate`: manual four-point calibration. Collect points → compute and validate H → overlay and live hover check → save. |
 | `tools/validate.py` | `validate`: manual held-out grid accuracy test with report and error map. `repeatability`: corner variation across the last N calibrations. |
 | `tools/map_demo.py` | `mapdemo`: hovering in the camera view projects a crosshair at the mapped point; clicking pins it |
-| `tests/test_*.py` | homography, targets, metrics, mapper, store, config, monitor selection/EDID decoding, camera helpers |
+| `tools/common.py` | Shared session: identify and open projector + camera + operator window, always cleaned up; JSON reports |
+| `tests/test_*.py` | homography, targets/metrics, mapper/store, config, monitor selection/EDID/struct sizes, camera helpers, display (operator coordinate conversion, loupe sub-pixel clicks, target symmetry, pattern purity) |
+
+All files above exist as of 2026-10-08 (Phase 1A software complete).
 
 **Phase 1B (planned, not started):** `calibration/detect.py` (projected-dot detection) and `--auto` modes for `calibrate` and `validate`.
 
@@ -459,6 +462,34 @@ If zero or several displays match, the command stops and lists them; it never gu
 
 **Camera.** `camera.match` (case-insensitive substring of the DirectShow name, default `"brio"`) is resolved to an index at startup. If nothing or several devices match, the command stops and lists them.
 
+### 9.8 Hardware session runbook (Phase 1A acceptance)
+
+Prerequisites:
+- Brio 100 on USB.
+- Projector on HDMI; Windows display mode **Extend**.
+- Projector display set to **1280×720 at 100 %** (Settings → Display).
+- Projector auto keystone OFF and aligned physically (§2.3).
+
+Activate the environment with `.venv\Scripts\activate`, then run:
+
+| # | Command | Acceptance | What to do / record |
+|---|---|---|---|
+| 1 | `python -m invisible_canvas devices` | A1 | Projector identified by EDID name? Put that name into `[projector] match` in `config/default.toml`. Record the Brio's measured modes and fps. |
+| 2 | `python -m invisible_canvas projector` | A2 | `window geometry: OK`? Is the 1-px border visible on all 4 sides of the wall? Do the stripe squares look sharp? SPACE shows white/black/dark screens. |
+| 3 | `python -m invisible_canvas camera` | A3/A4 | Aim the camera so the whole projection is visible with margin. `s` opens the driver dialog: try locking exposure, white balance and focus, and record what the Brio allows. Project white (step 2) and check that saturation is about 0 %. |
+| 4 | `python -m invisible_canvas camera --seconds 60` | A3 | Record mean fps, slowest 1-s window, longest gap. |
+| 5 | Measure the projected image width in mm | — | Set `[surface] width_mm`; record the geometry in §13.3. |
+| 6 | `python -m invisible_canvas calibrate` | A5 | Click the 4 targets (use the loupe), check that the review outline hugs the projection, save. Record the coverage printout. |
+| 7 | `calibrate` two more times, touching nothing; then `python -m invisible_canvas repeatability` | A6 | Record mean/max corner variation. |
+| 8 | `python -m invisible_canvas validate` | A7 | 20 held-out clicks. Record mean/median/p95/max, edge vs interior, PASS/FAIL. Keep the error-map PNG. |
+| 9 | `python -m invisible_canvas mapdemo` | A8 | Hover at the centre, 4 corners and 3 stickers; measure the offsets with a ruler. |
+| 10 | `python -m invisible_canvas latency` | A3 | Record median/p10/p90 display→camera latency. |
+| 11 | `python -m pytest` | A9 | All tests pass |
+
+Reports land in `data/reports/` (JSON, plus a PNG for validation). Copy the numbers into §13.2. **Never adjust thresholds to make a run pass.**
+
+Restart check for A5: close everything and run `mapdemo` again. It must load the saved calibration. Changing `[camera] width/height` must make it refuse.
+
 ---
 
 ## 10. Decisions log
@@ -484,6 +515,10 @@ If zero or several displays match, the command stops and lists them; it never gu
 | D17 | 2026-10-08 | **Approved targets.** Required: mean ≤ 5 px, max ≤ 12 px. Stretch: mean ≤ 3 px, max ≤ 8 px. Repeatability: mean corner variation ≤ 2 camera px. A 1-px repeatability rule is **not** a hard criterion. Never tune just to meet a target. | User decision | After 1A/1B measurements |
 | D18 | 2026-10-08 | **Approved:** hardware diagnostics (all displays, resolutions, refresh rates; all cameras, resolutions/FPS; explicit projector identification) come before calibration | User decision; measure before building | — |
 | D19 | 2026-10-08 | Phase 1A validation uses manual clicks on held-out targets. Automatic validation comes with 1B. | Keeps 1A free of detection code while still measuring accuracy | — |
+| D20 | 2026-10-08 | The process requests 1 ms Windows timer resolution (`timeBeginPeriod(1)`) at startup | `cv2.waitKey(1)` otherwise sleeps a full ~15.6 ms tick; measured: waitKey dropped to ~2 ms | — |
+| D21 | 2026-10-08 | Per-frame image work in GUI loops uses OpenCV ops, not numpy axis reductions | Measured: `np.max(img, axis=2)` on 1080p took 30 ms (slower than one frame) vs 5 ms with `cv2.split`/`cv2.max`; GUI frame age fell from 16.8 ms to 0.5 ms | Revisit with the P1 latency budget |
+| D22 | 2026-10-08 | Definitions. **Sustained fps** = the slowest full 1-second window over the run. **Display→camera latency** = time from submitting a white frame to the first camera frame whose projected area is brighter than halfway between the black and white levels. | Makes A3 measurable and repeatable | — |
+| D23 | 2026-10-08 | Calibration targets are exactly symmetric about their pixel; the ring is mirrored because `cv2.circle` is rasterized 0.065 px off-centre | No systematic bias in clicked or (1B) detected centres | — |
 
 ---
 
@@ -508,6 +543,8 @@ If zero or several displays match, the command stops and lists them; it never gu
 | R15 | Manual click error inflates the 1A accuracy numbers | Loupe + arrow-key nudging; 1B automatic validation separates mapping error from click error | Open |
 | R16 | Four virtual Meta Quest DirectShow cameras shift device indices | Name-based camera selection (§9.7); virtual cameras are not probed by default | Mitigated |
 | R17 | DirectShow quirks: each open takes about 2 s; the driver-reported FOURCC is not reliable (the built-in camera reports YUY2 at 1080p30 even when MJPG is requested, whatever the set order) | Trust only measured frame size and fps; open the camera once per session | Open |
+| R18 | GUI loop work eats the latency budget (one slow per-frame op, 30 ms, doubled frame age) | D21; profile stage by stage before optimizing; P1 must budget the main loop | Watch |
+| R19 | Fullscreen geometry verified only on the laptop panel so far, not on the projector | Step 2 of the §9.8 runbook | Open |
 
 ---
 
@@ -534,8 +571,44 @@ Resolved on 2026-10-08: Python install (D12), surface orientation (D13), camera 
 
   - Step 1A.0 done: Python 3.12.10, `.venv`, deps installed and locked.
   - Step 1A.1 tooling done: `devices` command (`display/monitors.py`, `camera/directshow.py`, `camera/probe.py`), `config.py`, CLI, unit tests.
+  - Steps 1A.2–1A.8 software done:
+    - geometry, targets, metrics, mapper and store
+    - Camera Manager
+    - projector and operator windows, patterns
+    - interactive point collection
+    - commands `projector`, `camera`, `latency`, `calibrate`, `validate`, `repeatability`, `mapdemo`
+  - Tested without the projector and Brio (see the test log). **The hardware acceptance run is pending.**
 
 ### 13.2 Test log
+
+**Phase 1A acceptance scoreboard** (update after the hardware session)
+
+| # | Test | Status | Result |
+|---|---|---|---|
+| A1 | Diagnostics | Partial | Tool verified on the laptop display and built-in camera; **rerun with the Brio + projector** |
+| A2 | Projector output | Pending | Fullscreen geometry verification works on the laptop panel (window = display rectangle exactly); not yet on the projector |
+| A3 | Camera feed + latency | Pending | Built-in camera: 30.1 fps, slowest second 30 frames. Brio not measured yet. |
+| A4 | Coverage | Pending | — |
+| A5 | Manual calibration | Pending | Flow verified end to end with synthetic clicks (below) |
+| A6 | Repeatability (≤ 2 camera px) | Pending | Computation verified (0.94 px for synthetic ±1 px clicks = 2√2/3, exact) |
+| A7 | Accuracy (required 5/12 px, stretch 3/8 px) | Pending | Pipeline verified: perfect clicks give 0.41 px mean (pure pixel rounding) |
+| A8 | Live mapping (ruler) | Pending | — |
+| A9 | Unit tests | **PASS** | 83 passed |
+
+**2026-10-08: Phase 1A software verification (no projector, no Brio)**
+- Unit tests: **83 passed**. They cover homography (incl. OpenCV cross-check and degenerate cases), targets, metrics, mapper, store integrity, config, projector selection, Win32 struct sizes, operator coordinate conversion and loupe sub-pixel clicks, target symmetry and pattern purity.
+- CLI error paths: missing projector, missing Brio and missing calibration each give a clear message with exit code 2.
+- `projector --display DISPLAY1` (laptop panel used as a stand-in): fullscreen window rect (0,0,2560,1600) = display rect, image area 2560×1600 = canvas, so geometry is **verified**. The 1280×720 expectation warning fired correctly.
+- `camera --camera acer --seconds 6`: 30.1 fps, slowest 1-s window 30 frames, 0 failed reads.
+  - GUI frame age measured **16.8 ms → 0.48 ms** after D20/D21 (the 30 ms numpy saturation op was the cause).
+  - Headless consumer wake-up: 0.3 ms.
+- End-to-end GUI run: a scratch harness posted real Win32 mouse and key messages to the operator window (windowed projector, built-in camera, temporary data dir).
+  - `calibrate` ×3 saved correctly; review and save worked.
+  - `repeatability` reported 0.94 px mean and 1.41 px max for clicks at 0/+1/−1 px, exactly as expected.
+  - `validate` with clicks at the positions predicted by the saved calibration: mean 0.41 px, max 0.72 px. That is integer-click rounding only, so **no systematic error in the target → click → H → mapping chain**.
+  - `mapdemo`: pins and report OK.
+  - Every exit code was 0.
+- **Not done (needs hardware):** everything marked Pending above.
 
 **2026-10-08: diagnostics dry run (Brio 100 and projector NOT connected yet)**
 - Command: `python -m invisible_canvas devices` (50 s; report `data/reports/devices-20261008-195215.json`)

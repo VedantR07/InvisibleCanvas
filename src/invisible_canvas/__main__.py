@@ -3,15 +3,22 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import logging
 import sys
 from pathlib import Path
 
+from .calibration.store import CalibrationError
+from .camera.manager import CameraError
 from .config import ConfigError, load_config, with_overrides
 from .display import monitors
-from .tools import devices
+from .tools import calibrate, camera_check, devices, latency, map_demo, projector_check, validate
 
-TOOLS = (devices,)
+# Order = the order of the Phase 1A runbook (brain.md section 9.5).
+TOOLS = (devices, projector_check, camera_check, latency, calibrate, validate, map_demo)
+
+# Expected, user-fixable failures: print the message, no traceback.
+USER_ERRORS = (CameraError, CalibrationError, monitors.ProjectorNotFound)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -33,6 +40,9 @@ def main(argv: list[str] | None = None) -> int:
     # Must happen before any window is created or any display is queried:
     # the laptop runs at 150 % scaling.
     monitors.enable_dpi_awareness()
+    # 1 ms timer resolution: otherwise every cv2.waitKey(1) sleeps a full ~15.6 ms
+    # Windows tick, which adds that much latency to the GUI loop.
+    ctypes.WinDLL("winmm").timeBeginPeriod(1)
 
     try:
         config = load_config(args.config)
@@ -42,7 +52,11 @@ def main(argv: list[str] | None = None) -> int:
     except ConfigError as e:
         print(f"config error: {e}", file=sys.stderr)
         return 2
-    return args.func(config, args)
+    try:
+        return args.func(config, args)
+    except USER_ERRORS as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

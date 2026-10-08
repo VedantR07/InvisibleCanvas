@@ -140,7 +140,8 @@ def select_projector(displays: list[Display], match: str = "") -> tuple[Display,
     ) or "  (no displays)"
     problem = "no display" if not hits else f"{len(hits)} displays"
     raise ProjectorNotFound(
-        f"{problem} {rule}. Set [projector] match in the config or pass --display.\n"
+        f"projector not identified: {problem} matched (rule: {rule}). "
+        f"Connect the projector, or set [projector] match in the config / pass --display.\n"
         f"Displays:\n{listing}"
     )
 
