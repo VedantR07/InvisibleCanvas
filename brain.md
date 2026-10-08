@@ -9,7 +9,7 @@
 |---|---|
 | Last updated | 2026-10-08 |
 | Current phase | **Phase 1A** (first half of P0 Foundation): approved, in progress |
-| Next action | Python 3.12 install → hardware diagnostics (§9.5 step 1A.1) |
+| Next action | Rerun `devices` with the Brio 100 + projector connected (A1); build steps 1A.2–1A.8 |
 
 ---
 
@@ -74,7 +74,9 @@ The laptop performs: computer vision · hand/fingertip tracking · marker fallba
 | Virtual display driver | "Meta Virtual Monitor" is installed and may appear as an extra display |
 | Cameras | Built-in "ACER FHD User Facing" (USB VID 322E, PID 2515). The Brio 100 was not connected at inspection time. |
 | Projector | Not connected at inspection time |
-| Python | Not installed at first inspection (only Microsoft Store stubs). Python 3.12 is being installed per-user via winget (D12). |
+| Python | Not installed at first inspection (only Microsoft Store stubs). **Installed 2026-10-08:** Python 3.12.10 per-user via winget (`%LOCALAPPDATA%\Programs\Python\Python312`) with project `.venv`. Locked: numpy 2.5.3, opencv-python 4.14.0.94, pytest 9.1.1 (`requirements.lock`). The OpenCV build has Win32 UI, DirectShow, MSMF, `cv2.aruco` and `pollKey`. |
+| DirectShow cameras | Index 0 "ACER FHD User Facing"; **indices 1–4 are virtual "Meta Quest 3/3S/2/Pro" cameras** (Meta software). The Brio's index will depend on enumeration order, so cameras are selected by name. |
+| Laptop panel modes | Runs at 60 Hz; the panel offers up to 2560×1600 @ 180 Hz |
 | Other tools | git 2.55 (identity VedantR07), winget, no Node.js |
 
 What this means:
@@ -489,7 +491,7 @@ If zero or several displays match, the command stops and lists them; it never gu
 
 | ID | Risk | Mitigation | Status |
 |---|---|---|---|
-| R1 | Python not installed | Step 1A.0 (winget per-user) | In progress |
+| R1 | Python not installed | Step 1A.0 (winget per-user) | Resolved 2026-10-08 |
 | R2 | Camera choice | Brio 100 chosen (D14); measure it | Resolved |
 | R3 | Projector auto keystone or auto focus re-triggers and invalidates the calibration | Align physically, keystone off (D13); recalibrate after any change; drift detection (P3) | Open |
 | R4 | Input lag and image processing in the Android projector | Game mode on, enhancements off; `latency` measures it | Open |
@@ -504,6 +506,8 @@ If zero or several displays match, the command stops and lists them; it never gu
 | R13 | Hybrid graphics: the HDMI port may be wired to the NVIDIA GPU | Usually transparent; check first if the projector display misbehaves | Watch |
 | R14 | Unknown Brio 100 limits (modes, 60 fps support, focus type, exposure-lock support) | Diagnostics (1A.1) and `camera` (1A.4) measure them | Open |
 | R15 | Manual click error inflates the 1A accuracy numbers | Loupe + arrow-key nudging; 1B automatic validation separates mapping error from click error | Open |
+| R16 | Four virtual Meta Quest DirectShow cameras shift device indices | Name-based camera selection (§9.7); virtual cameras are not probed by default | Mitigated |
+| R17 | DirectShow quirks: each open takes about 2 s; the driver-reported FOURCC is not reliable (the built-in camera reports YUY2 at 1080p30 even when MJPG is requested, whatever the set order) | Trust only measured frame size and fps; open the camera once per session | Open |
 
 ---
 
@@ -528,8 +532,24 @@ Resolved on 2026-10-08: Python install (D12), surface orientation (D13), camera 
   - Git initialized.
   - Phase 1A started.
 
+  - Step 1A.0 done: Python 3.12.10, `.venv`, deps installed and locked.
+  - Step 1A.1 tooling done: `devices` command (`display/monitors.py`, `camera/directshow.py`, `camera/probe.py`), `config.py`, CLI, unit tests.
+
 ### 13.2 Test log
-_No tests run yet._
+
+**2026-10-08: diagnostics dry run (Brio 100 and projector NOT connected yet)**
+- Command: `python -m invisible_canvas devices` (50 s; report `data/reports/devices-20261008-195215.json`)
+- Displays: one, `\\.\DISPLAY1` TL160ADMP37 [TMA2076], internal, primary, 2560×1600 @ 60.002 Hz, 32 bpp, 150 %, 156 modes. DPI awareness: per-monitor.
+  - Win32 struct sizes match the SDK.
+  - The EDID id decodes to TMA2076, which matches WMI.
+- Projector: correctly **not identified**; the only display is the internal primary.
+- Cameras (DirectShow): [0] ACER FHD User Facing (usb 322e:2515); [1]–[4] Meta Quest virtual cameras. Selection `"brio"` → correctly not found.
+- Built-in camera, measured:
+  - **Every mode delivers about 30 fps.** 60 fps requests fall back to 30. 1920×1080, 1280×720 and 640×480 are all available. The driver default is 640×480.
+  - Each DirectShow open takes 1.7–2.4 s.
+  - Readable properties: EXPOSURE=−6 (≈1/64 s), AUTO_WB=1, WB_TEMPERATURE=4500. FOCUS, AUTOFOCUS and AUTO_EXPOSURE are not readable (−1).
+- Unit tests: 28 passed.
+- **Still needed for A1:** rerun with the Brio 100 and the projector connected.
 
 ### 13.3 Measured setup geometry
 _Not measured yet (step 1A.5)._

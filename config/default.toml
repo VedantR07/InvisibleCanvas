@@ -1,0 +1,45 @@
+# Invisible Canvas configuration (Phase 1A).
+# Every key is required and unknown keys are rejected, so typos fail loudly.
+# See brain.md section 9 for what each setting is for.
+
+[camera]
+# Case-insensitive substring of the DirectShow device name.
+# "python -m invisible_canvas devices" lists the names. Empty = use `index`.
+match = "brio"
+index = 0
+backend = "dshow"        # dshow | msmf | any
+width = 1920
+height = 1080
+fps = 30
+fourcc = "MJPG"
+
+[projector]
+# Substring of the display's EDID name or EDID id, or its GDI name (e.g. "DISPLAY2").
+# Empty = automatic: the single non-primary display on a physical external
+# connector (brain.md section 9.7). Never chosen by index.
+match = ""
+expected_width = 1280
+expected_height = 720
+
+[calibration]
+# Corner targets are inset from the canvas edges by this fraction of width/height.
+target_inset = 0.06
+
+[validation]
+grid_cols = 5
+grid_rows = 4
+grid_inset = 0.04
+required_mean_px = 5.0
+required_max_px = 12.0
+stretch_mean_px = 3.0
+stretch_max_px = 8.0
+repeatability_mean_px = 2.0
+repeatability_runs = 3
+
+[surface]
+# Measured width of the projected image on the surface. 0 = unknown (errors in px only).
+width_mm = 0.0
+
+[paths]
+calibration = "data/calibration"
+reports = "data/reports"
