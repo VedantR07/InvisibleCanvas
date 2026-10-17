@@ -26,6 +26,14 @@ def grid_targets(width: int, height: int, cols: int, rows: int, inset: float) ->
     return np.array([[x, y] for y in ys for x in xs], dtype=np.float64)
 
 
+def check_target(width: int, height: int) -> np.ndarray:
+    """One integer-pixel target that verifies an automatic calibration (D30). It is not used
+    to fit H and is held out from the corners and the validation grid. It sits off every
+    symmetry axis of the canvas, so a cyclically relabelled set of corners (which maps the
+    canvas onto itself) moves it by hundreds of pixels."""
+    return np.array([round(0.25 * (width - 1)), round(0.30 * (height - 1))], dtype=np.float64)
+
+
 def min_distance(points_a: np.ndarray, points_b: np.ndarray) -> float:
     """Smallest distance between any point of A and any point of B."""
     diff = points_a[:, None, :] - points_b[None, :, :]

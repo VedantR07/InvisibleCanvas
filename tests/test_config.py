@@ -68,6 +68,32 @@ def test_invalid_backend_is_rejected(data):
         config_from_dict(data)
 
 
+def test_default_exposure_is_manual_minus_5():
+    camera = load_config().camera
+    assert (camera.backend, camera.fourcc, camera.width, camera.height, camera.fps) == ("dshow", "MJPG", 1920, 1080, 30)
+    assert (camera.exposure_mode, camera.exposure_value) == ("manual", -5)
+
+
+def test_invalid_exposure_mode_is_rejected(data):
+    data["camera"]["exposure_mode"] = "off"
+    with pytest.raises(ConfigError, match="exposure_mode must be manual, auto or unchanged"):
+        config_from_dict(data)
+
+
+@pytest.mark.parametrize("mode", ["manual", "auto"])
+def test_exposure_control_needs_dshow(data, mode):
+    data["camera"]["backend"] = "msmf"
+    data["camera"]["exposure_mode"] = mode
+    with pytest.raises(ConfigError, match='needs backend = "dshow"'):
+        config_from_dict(data)
+
+
+def test_unchanged_exposure_works_with_any_backend(data):
+    data["camera"]["backend"] = "msmf"
+    data["camera"]["exposure_mode"] = "unchanged"
+    assert config_from_dict(data).camera.exposure_mode == "unchanged"
+
+
 def test_paths_resolve_against_root(data, tmp_path):
     config = config_from_dict(data, root=tmp_path)
     assert config.calibration_dir == tmp_path / "data" / "calibration"
@@ -80,3 +106,22 @@ def test_overrides_replace_only_given_values():
     assert changed.projector.match == "WZATCO"
     assert changed.camera.match == config.camera.match
     assert with_overrides(config, camera="acer").camera.match == "acer"
+
+
+def test_auto_setup_limit_is_never_looser_than_the_manual_limit(data):
+    data["validation"]["auto_setup_limit_px"] = data["validation"]["repeatability_mean_px"] + 0.5
+    with pytest.raises(ConfigError, match="auto_setup_limit_px"):
+        config_from_dict(data)
+    data["validation"]["auto_setup_limit_px"] = 0.0
+    with pytest.raises(ConfigError, match="auto_setup_limit_px"):
+        config_from_dict(data)
+
+
+def test_setup_limit_depends_on_how_the_calibration_was_made():
+    from types import SimpleNamespace
+
+    from invisible_canvas.tools.validate import setup_limit
+    config = load_config()
+    v = config.validation
+    assert setup_limit(config, SimpleNamespace(method="auto")) == v.auto_setup_limit_px
+    assert setup_limit(config, SimpleNamespace(method="manual")) == v.repeatability_mean_px == 2.0

@@ -128,15 +128,28 @@ def _write_atomic(path: Path, text: str) -> None:
     os.replace(tmp, path)
 
 
+def _history_path(calibration: Calibration, directory: Path) -> Path:
+    stamp = datetime.fromisoformat(calibration.created_at).strftime("%Y%m%d-%H%M%S-%f")[:-3]
+    return Path(directory) / HISTORY_DIR / f"{stamp}.json"
+
+
 def save_calibration(calibration: Calibration, directory: Path) -> Path:
     """Write current.json and a history copy. Returns the current.json path."""
     directory = Path(directory)
     text = json.dumps(calibration.to_dict(), indent=2)
-    stamp = datetime.fromisoformat(calibration.created_at).strftime("%Y%m%d-%H%M%S-%f")[:-3]
-    _write_atomic(directory / HISTORY_DIR / f"{stamp}.json", text)
+    _write_atomic(_history_path(calibration, directory), text)
     current = directory / CURRENT_FILE
     _write_atomic(current, text)
     return current
+
+
+def archive_calibration(calibration: Calibration, directory: Path) -> Path:
+    """Make sure `calibration` is in the history (D39: before it is replaced). An existing history
+    entry is never rewritten. Returns the history path."""
+    path = _history_path(calibration, directory)
+    if not path.exists():
+        _write_atomic(path, json.dumps(calibration.to_dict(), indent=2))
+    return path
 
 
 def _load_file(path: Path) -> Calibration:

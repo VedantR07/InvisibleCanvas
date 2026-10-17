@@ -14,6 +14,7 @@ import cv2
 import numpy as np
 
 from ..camera.directshow import list_capture_devices
+from ..camera.exposure import read_exposure
 from ..camera.probe import DEFAULT_MODES, probe_mode
 from ..config import Config
 from ..display import monitors
@@ -110,6 +111,14 @@ def _camera_section(config: Config, args, report: dict) -> bool:
         if entry["properties"]:
             props = ", ".join(f"{k}={v:g}" for k, v in entry["properties"].items())
             print(f"  properties (read-only): {props}")
+        if config.camera.backend == "dshow":
+            # Read only. Each probe opens a new stream, and the camera stack resets exposure
+            # to its stored value at stream start, so these modes ran with the exposure read
+            # here. The tools apply and keep [camera] exposure_mode (CameraManager).
+            exposure = read_exposure(d.index)
+            entry["exposure"] = dataclasses.asdict(exposure)
+            print(f"  exposure during probing (read-only; `camera` measures the configured exposure): "
+                  f"{exposure.effective()}")
     return selected_ok
 
 
@@ -137,3 +146,14 @@ def run(config: Config, args) -> int:
           f"camera identified: {'yes' if camera_ok else 'NO'}")
     print(f"report: {path}")
     return 0 if projector_ok and camera_ok else 1
+
+
+if __name__ == "__main__":
+    # `python -m invisible_canvas.tools.devices [options]` is the same as
+    # `python -m invisible_canvas devices [options]`: go through the package CLI so
+    # DPI awareness, timer resolution and config loading happen exactly as there.
+    import sys
+
+    from ..__main__ import main
+
+    sys.exit(main(["devices", *sys.argv[1:]]))

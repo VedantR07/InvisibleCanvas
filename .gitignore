@@ -1,4 +1,4 @@
-# Python
+V# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
@@ -7,8 +7,20 @@ __pycache__/
 build/
 dist/
 
-# Runtime output: calibration results and reports are specific to this machine/setup
+# Runtime output
 data/
+
+# Downloaded models
+models/
+*.pt
+*.pth
+*.onnx
+*.tflite
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
 
 # OS
 Thumbs.db

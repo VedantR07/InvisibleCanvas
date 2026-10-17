@@ -58,3 +58,35 @@ def corner_repeatability(corner_sets) -> RepeatabilityStats:
         max_variation=float(deviation.max()),
         per_corner_mean=tuple(float(v) for v in deviation.mean(axis=0)),
     )
+
+
+@dataclass(frozen=True)
+class SetupCheck:
+    shifts: tuple[tuple[float, float], ...]   # fresh - calibration, per corner (camera px)
+    mean_shift: tuple[float, float]
+    variation: float                          # corner_repeatability of the two sets
+    limit: float
+
+    @property
+    def consistent(self) -> bool:
+        return self.variation <= self.limit
+
+
+def setup_check(calibration_points, fresh_points, limit: float) -> SetupCheck:
+    """Does the setup still match the calibration? (brain.md D28)
+
+    The calibration corners are clicked again and compared with the saved clicks using the
+    repeatability metric (A6), so "same setup" means the same as for repeated calibrations.
+    A moved camera or projector shows up here, before it shows up as a mapping error.
+    """
+    calibration = np.asarray(calibration_points, dtype=np.float64)
+    fresh = np.asarray(fresh_points, dtype=np.float64)
+    if calibration.shape != fresh.shape:
+        raise ValueError(f"point sets differ in shape: {calibration.shape} vs {fresh.shape}")
+    shifts = fresh - calibration
+    return SetupCheck(
+        shifts=tuple((float(dx), float(dy)) for dx, dy in shifts),
+        mean_shift=(float(shifts[:, 0].mean()), float(shifts[:, 1].mean())),
+        variation=corner_repeatability([calibration, fresh]).mean_variation,
+        limit=float(limit),
+    )

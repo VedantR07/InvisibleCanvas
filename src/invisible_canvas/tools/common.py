@@ -4,14 +4,18 @@ from __future__ import annotations
 
 import contextlib
 import json
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
 import cv2
+import numpy as np
 
+from ..calibration.auto import TargetMeasurement, measurement_from_frames
 from ..camera.manager import CameraInfo, CameraManager
 from ..config import Config
+from ..display import patterns
 from ..display.monitors import Display, list_displays, select_projector
 from ..display.operator import OperatorWindow
 from ..display.projector import ProjectorWindow
@@ -58,6 +62,87 @@ def resolve_projector(config: Config, windowed: bool) -> tuple[Display | None, t
     return display, (display.width, display.height), description
 
 
+def exposure_text(info: CameraInfo) -> str:
+    """Effective exposure as read back from the camera when it was opened."""
+    if info.exposure is None:
+        return f"not read (backend {info.backend}; exposure control needs dshow)"
+    return info.exposure.describe()
+
+
+SETTLE_SECONDS = 0.8      # after changing the projected image: > 2x the 275 ms display->camera latency (A3)
+BACKGROUND_FRAMES = 6
+SINGLE_FRAMES = 10
+
+
+def current_seq(s, timeout: float = 5.0) -> int:
+    """Sequence number of the newest camera frame, waiting for the first one. Raises a clear error when
+    the camera delivers nothing (2026-10-10: another process, the `camera` preview, held the Brio and
+    `cursor` crashed on a missing frame)."""
+    frame = s.camera.latest() or s.camera.wait_frame(0, timeout)
+    if frame is None:
+        raise RuntimeError(f"no frames from the camera within {timeout:g} s; is another program "
+                           "(e.g. a `camera` preview) using it?")
+    return frame.seq
+
+
+def capture_frames(s, n: int, settle: float = SETTLE_SECONDS) -> tuple[np.ndarray, list[np.ndarray]]:
+    """Wait for the projector to settle, then n consecutive new frames: (average, singles), grey."""
+    end = time.perf_counter() + settle
+    while time.perf_counter() < end:
+        cv2.waitKey(5)
+    seq, singles = current_seq(s), []
+    while len(singles) < n:
+        frame = s.camera.wait_frame(seq, 2.0)
+        if frame is None:
+            raise RuntimeError("camera stopped delivering frames")
+        seq = frame.seq
+        singles.append(cv2.cvtColor(frame.image, cv2.COLOR_BGR2GRAY))
+        cv2.pollKey()
+    return np.mean(np.stack(singles), axis=0).astype(np.float32), singles
+
+
+class CameraMeasure:
+    """`measure(screen)` for calibration/auto.py on the real camera: project black and capture a
+    background, project `screen` and capture single frames, detect (D29 detector, whole frame).
+    `shift` moves every projected image by whole projector pixels: a controlled perturbation of
+    the scene for testing the setup check (`validate --auto --simulate-shift`)."""
+
+    def __init__(self, s, *, title: str, frames: int = SINGLE_FRAMES, shift: tuple[int, int] = (0, 0)):
+        self.s, self.title, self.frames, self.shift = s, title, frames, shift
+        self.count = 0
+
+    def __call__(self, screen: np.ndarray) -> TargetMeasurement:
+        s = self.s
+        s.projector.show(np.zeros_like(screen))
+        background, _ = capture_frames(s, BACKGROUND_FRAMES)
+        s.projector.show(shifted(screen, *self.shift))
+        _, singles = capture_frames(s, self.frames)
+        m = measurement_from_frames(background, singles)
+        self.count += 1
+        view = cv2.cvtColor(singles[-1], cv2.COLOR_GRAY2BGR)
+        if m.detection.ok:
+            draw_marker(view, m.detection.center)
+        s.operator.show(view, lines=[self.title, f"target {self.count}",
+                                     "detected" if m.ok else "!" + m.problem[:120]])
+        cv2.pollKey()
+        return m
+
+
+def shifted(image: np.ndarray, dx: int, dy: int) -> np.ndarray:
+    """`image` moved by whole pixels (dx right, dy down); uncovered pixels are black."""
+    if (dx, dy) == (0, 0):
+        return image
+    h, w = image.shape[:2]
+    out = np.zeros_like(image)
+    out[max(dy, 0):h + min(dy, 0), max(dx, 0):w + min(dx, 0)] = \
+        image[max(-dy, 0):h - max(dy, 0), max(-dx, 0):w - max(dx, 0)]
+    return out
+
+
+def draw_marker(view: np.ndarray, center) -> None:
+    patterns.draw_crosshair(view, center, patterns.GREEN, gap=6, arm=30, thickness=1)
+
+
 def primary_display() -> Display | None:
     return next((d for d in list_displays(with_modes=False) if d.primary), None)
 
@@ -86,6 +171,7 @@ def open_session(config: Config, args, *, allow_mode_mismatch: bool = False):
         info = camera.open()
         print(f"camera:    [{info.index}] {info.name} {info.width}x{info.height} "
               f"(requested {info.requested}; open {info.open_seconds:.1f} s)")
+        print(f"exposure:  {exposure_text(info)}")
         projector = ProjectorWindow(display, canvas_size, windowed=windowed)
         projector.open()
         print(f"projector window: {'OK' if projector.geometry_ok else 'NOT VERIFIED'}: {projector.geometry_report}")

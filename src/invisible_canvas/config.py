@@ -26,6 +26,8 @@ class CameraConfig:
     height: int
     fps: int
     fourcc: str
+    exposure_mode: str       # manual | auto | unchanged (camera/exposure.py)
+    exposure_value: int      # manual only; 2**value seconds
 
 
 @dataclass(frozen=True)
@@ -51,6 +53,7 @@ class ValidationConfig:
     stretch_max_px: float
     repeatability_mean_px: float
     repeatability_runs: int
+    auto_setup_limit_px: float      # setup check for automatic calibrations (D32)
 
 
 @dataclass(frozen=True)
@@ -134,6 +137,15 @@ def _check(config: Config) -> None:
         raise ConfigError(f"[camera] backend must be dshow, msmf or any, got {config.camera.backend!r}")
     if len(config.camera.fourcc) != 4:
         raise ConfigError(f"[camera] fourcc must be 4 characters, got {config.camera.fourcc!r}")
+    if config.camera.exposure_mode not in ("manual", "auto", "unchanged"):
+        raise ConfigError(
+            f"[camera] exposure_mode must be manual, auto or unchanged, got {config.camera.exposure_mode!r}"
+        )
+    if config.camera.exposure_mode != "unchanged" and config.camera.backend != "dshow":
+        raise ConfigError(
+            f'[camera] exposure_mode {config.camera.exposure_mode!r} needs backend = "dshow" '
+            f'(exposure is set through DirectShow); use exposure_mode = "unchanged"'
+        )
     if not 0.0 <= config.calibration.target_inset < 0.5:
         raise ConfigError("[calibration] target_inset must be in [0, 0.5)")
     if not 0.0 <= config.validation.grid_inset < 0.5:
@@ -142,6 +154,8 @@ def _check(config: Config) -> None:
         raise ConfigError("[validation] grid_cols and grid_rows must be >= 2")
     if config.validation.repeatability_runs < 2:
         raise ConfigError("[validation] repeatability_runs must be >= 2")
+    if not 0.0 < config.validation.auto_setup_limit_px <= config.validation.repeatability_mean_px:
+        raise ConfigError("[validation] auto_setup_limit_px must be > 0 and not looser than repeatability_mean_px")
 
 
 def load_config(path: Path | None = None) -> Config:

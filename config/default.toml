@@ -12,6 +12,15 @@ width = 1920
 height = 1080
 fps = 30
 fourcc = "MJPG"
+# Exposure, applied and read back every time the camera opens (DirectShow only):
+#   "manual"     lock it at exposure_value: 2^value seconds (-5 = 31 ms). Brio 100,
+#                measured: -5 or shorter holds 30 fps; auto exposure drops to ~15 fps
+#                in dim light (brain.md D24, section 13.2).
+#   "auto"       hand exposure back to the camera.
+#   "unchanged"  leave whatever the camera has (cameras without exposure control).
+# If the camera does not confirm the setting, the tools stop (`camera` only warns).
+exposure_mode = "manual"
+exposure_value = -5
 
 [projector]
 # Substring of the display's EDID name or EDID id, or its GDI name (e.g. "DISPLAY2").
@@ -35,6 +44,12 @@ stretch_mean_px = 3.0
 stretch_max_px = 8.0
 repeatability_mean_px = 2.0
 repeatability_runs = 3
+# Setup check limit (repeatability metric, camera px) for AUTOMATIC calibrations, whose corners are
+# detections (~0.05 px repeatability) rather than clicks. Must not exceed repeatability_mean_px, which
+# stays the limit for manual calibrations. 1.0 was evaluated and NOT adopted (brain.md D32): it separates
+# 1-px from 2-px moves well, but the scene drifted past it within ~4.5 min untouched. Re-evaluate with
+# `setupcheck --repeat 12 --interval 45` once the mounts are stable.
+auto_setup_limit_px = 2.0
 
 [surface]
 # Measured width of the projected image on the surface. 0 = unknown (errors in px only).

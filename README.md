@@ -14,17 +14,31 @@ py -3.12 -m venv .venv
 pip install -e .[dev]
 ```
 
-## Commands (Phase 1A)
+Exact versions are in `requirements.lock` (`pip install -r requirements.lock`). The only OpenCV wheel is
+`opencv-contrib-python` (MediaPipe needs it); never install `opencv-python` next to it.
+
+The fingertip cursor (Phase 1D) also needs the MediaPipe hand model, downloaded once into `models/`
+(not committed; its SHA-256 is checked when it is loaded, see brain.md D33):
+
+```
+mkdir models
+curl.exe -L -o models\hand_landmarker.task https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task
+```
+
+## Commands
 
 ```
 python -m invisible_canvas devices        # hardware diagnostics: displays, projector, cameras
 python -m invisible_canvas projector      # alignment pattern on the projector
-python -m invisible_canvas camera         # live feed, fps, saturation; --seconds 60 for a report
+python -m invisible_canvas camera         # live feed, fps, saturation; --preview: large view; --seconds 60: report
 python -m invisible_canvas latency        # display -> camera latency
-python -m invisible_canvas calibrate      # manual four-point calibration
-python -m invisible_canvas repeatability  # corner variation over recent calibrations
-python -m invisible_canvas validate       # held-out accuracy test
+python -m invisible_canvas calibrate      # automatic four-point calibration (--manual: click the corners)
+python -m invisible_canvas validate       # held-out accuracy test, automatic (--manual: click the targets)
+python -m invisible_canvas repeatability  # corner variation over recent calibrations of one method
 python -m invisible_canvas mapdemo        # hover in the camera view -> crosshair on the surface
+python -m invisible_canvas cursor         # index-fingertip cursor on the projection (--accuracy: 9-target test)
+python -m invisible_canvas detect         # cross-detector diagnostic (read-only)
+python -m invisible_canvas setupcheck     # repeated automatic setup checks (read-only)
 python -m pytest                          # unit tests
 ```
 

@@ -12,7 +12,11 @@ requires-python = ">=3.12,<3.13"
 # Phase 1 (P0 Foundation) runtime dependencies. See brain.md section 9.4.
 dependencies = [
     "numpy>=2.0,<3",
-    "opencv-python>=4.10,<5",
+    # Exactly one OpenCV wheel (brain.md 9.4): contrib, because MediaPipe requires it (D33).
+    # <5: MediaPipe does not pin OpenCV and OpenCV 5 is out.
+    "opencv-contrib-python>=4.10,<5",
+    # Phase 1D hand tracking (D33). The model file is downloaded separately into models/.
+    "mediapipe>=1.1,<2",
 ]
 
 [project.optional-dependencies]

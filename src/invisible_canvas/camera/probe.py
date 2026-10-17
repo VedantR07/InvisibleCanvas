@@ -63,11 +63,13 @@ class ModeResult:
 
 
 def configure(cap: cv2.VideoCapture, fourcc: str, width: int, height: int, fps: int) -> None:
-    """Request a mode. Order matters for some DirectShow drivers: FOURCC first."""
-    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc))
+    """Request a mode. FOURCC must be set last: with CAP_DSHOW, setting the size or fps
+    renegotiates the format without it, and the driver silently falls back to YUY2
+    (measured on the Brio 100: 1920x1080 YUY2 at 5 fps instead of MJPG)."""
     cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
     cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
     cap.set(cv2.CAP_PROP_FPS, fps)
+    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*fourcc))
 
 
 def measure(cap: cv2.VideoCapture, seconds: float, warmup: float) -> tuple[int, float, tuple[int, int]]:
