@@ -64,6 +64,10 @@ _CLSID_VideoInputDeviceCategory = "{860BB310-5D01-11D0-BD3B-00A0C911CE86}"
 _IID_IPropertyBag = "{55272A00-42CB-11CE-8135-00AA004BB851}"
 _IID_IBaseFilter = "{56A86895-0AD4-11CE-B03A-0020AF0BA770}"
 _IID_IAMCameraControl = "{C6E13370-30AC-11D0-A18C-00A0C9118956}"
+_IID_IAMVideoProcAmp = "{C6E13360-30AC-11D0-A18C-00A0C9118956}"
+# Both interfaces have the same methods in the same vtable order (GetRange, Set, Get).
+_INTERFACES = {"camera": ("IAMCameraControl", _IID_IAMCameraControl),
+               "procamp": ("IAMVideoProcAmp", _IID_IAMVideoProcAmp)}
 _CLSCTX_INPROC_SERVER = 0x1
 _COINIT_APARTMENTTHREADED = 0x2
 _RPC_E_CHANGED_MODE = -2147417850  # 0x80010106: COM already initialised in another mode
@@ -203,6 +207,7 @@ def list_capture_devices() -> list[CaptureDevice]:
 # IAMCameraControl properties (KSPROPERTY_CAMERACONTROL_*) and flags (CameraControl_Flags_*).
 EXPOSURE = 4                 # DirectShow units: exposure time = 2**value seconds
 FOCUS = 6                    # camera units (Kreo Owl 4K Pro: 0..1023)
+GAIN = 9                     # IAMVideoProcAmp property (open CameraControl with interface="procamp")
 AUTO_EXPOSURE_PRIORITY = 19  # 1 = in auto exposure the camera may lower the frame rate
 FLAG_AUTO = 0x1
 FLAG_MANUAL = 0x2
@@ -218,14 +223,18 @@ class ControlRange:
 
 
 class CameraControl:
-    """IAMCameraControl of the DirectShow device at `index` (CAP_DSHOW order).
+    """IAMCameraControl (`interface="camera"`) or IAMVideoProcAmp (`interface="procamp"`) of the
+    DirectShow device at `index` (CAP_DSHOW order).
 
     Use as a context manager, on one thread. Values are set on the device itself, so
     they outlive this object, any VideoCapture, and the process.
     """
 
-    def __init__(self, index: int):
+    def __init__(self, index: int, interface: str = "camera"):
+        if interface not in _INTERFACES:
+            raise ValueError(f"interface must be one of {sorted(_INTERFACES)}, got {interface!r}")
         self.index = index
+        self.interface = interface
         self.name = ""
         self._ctl = ctypes.c_void_p()
         self._stack = contextlib.ExitStack()
@@ -249,8 +258,9 @@ class CameraControl:
                     else:
                         raise OSError(f"no DirectShow video device with index {self.index}")
                 query_interface = _method(device, 0, ctypes.POINTER(GUID), ctypes.POINTER(ctypes.c_void_p))
-                _check(query_interface(ctypes.byref(_guid(_IID_IAMCameraControl)), ctypes.byref(self._ctl)),
-                       "QueryInterface(IAMCameraControl)")
+                interface_name, iid = _INTERFACES[self.interface]
+                _check(query_interface(ctypes.byref(_guid(iid)), ctypes.byref(self._ctl)),
+                       f"QueryInterface({interface_name})")
             finally:
                 _release(device)
             self._stack = stack.pop_all()

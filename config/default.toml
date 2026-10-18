@@ -27,6 +27,10 @@ exposure_value = -6
 # camera-wall distance changes.
 focus_mode = "manual"
 focus_value = 410
+# Gain (IAMVideoProcAmp), same modes. Kreo: 0..15, manual only; manual exposure leaves it at 0,
+# too dark at 60 fps. 15: white 145.6, grey-128 canvas 54.4, 60 fps, noise sd 0.86 (D43).
+gain_mode = "manual"
+gain_value = 15
 
 [projector]
 # Substring of the display's EDID name or EDID id, or its GDI name (e.g. "DISPLAY2").

@@ -75,20 +75,24 @@ def test_default_camera_is_the_measured_kreo_mode():
     assert (camera.backend, camera.fourcc, camera.width, camera.height, camera.fps) == ("dshow", "MJPG", 1920, 1080, 60)
     assert (camera.exposure_mode, camera.exposure_value) == ("manual", -6)
     assert (camera.focus_mode, camera.focus_value) == ("manual", 410)
+    assert (camera.gain_mode, camera.gain_value) == ("manual", 15)   # D43: too dark at 60 fps without gain
     assert 1000 * 2.0 ** camera.exposure_value <= 1000 / camera.fps   # exposure fits the frame time
 
 
-def test_invalid_focus_mode_is_rejected(data):
-    data["camera"]["focus_mode"] = "fixed"
-    with pytest.raises(ConfigError, match="focus_mode must be manual, auto or unchanged"):
+@pytest.mark.parametrize("name", ["focus", "gain"])
+def test_invalid_lock_mode_is_rejected(data, name):
+    data["camera"][f"{name}_mode"] = "fixed"
+    with pytest.raises(ConfigError, match=f"{name}_mode must be manual, auto or unchanged"):
         config_from_dict(data)
 
 
-def test_focus_control_needs_dshow(data):
+@pytest.mark.parametrize("name", ["focus", "gain"])
+def test_lock_control_needs_dshow(data, name):
     data["camera"]["backend"] = "msmf"
-    data["camera"]["exposure_mode"] = "unchanged"
-    data["camera"]["focus_mode"] = "manual"
-    with pytest.raises(ConfigError, match='focus_mode .* needs backend = "dshow"'):
+    for key in ("exposure", "focus", "gain"):
+        data["camera"][f"{key}_mode"] = "unchanged"
+    data["camera"][f"{name}_mode"] = "manual"
+    with pytest.raises(ConfigError, match=f'{name}_mode .* needs backend = "dshow"'):
         config_from_dict(data)
 
 
@@ -110,6 +114,7 @@ def test_unchanged_exposure_works_with_any_backend(data):
     data["camera"]["backend"] = "msmf"
     data["camera"]["exposure_mode"] = "unchanged"
     data["camera"]["focus_mode"] = "unchanged"
+    data["camera"]["gain_mode"] = "unchanged"
     assert config_from_dict(data).camera.exposure_mode == "unchanged"
 
 

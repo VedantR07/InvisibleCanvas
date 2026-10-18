@@ -28,8 +28,10 @@ class CameraConfig:
     fourcc: str
     exposure_mode: str       # manual | auto | unchanged (camera/exposure.py)
     exposure_value: int      # manual only; 2**value seconds
-    focus_mode: str          # manual | auto | unchanged (camera/focus.py)
+    focus_mode: str          # manual | auto | unchanged (camera/locks.py)
     focus_value: int         # manual only; camera units
+    gain_mode: str           # manual | auto | unchanged (camera/locks.py)
+    gain_value: int          # manual only; camera units
 
 
 @dataclass(frozen=True)
@@ -148,15 +150,15 @@ def _check(config: Config) -> None:
             f'[camera] exposure_mode {config.camera.exposure_mode!r} needs backend = "dshow" '
             f'(exposure is set through DirectShow); use exposure_mode = "unchanged"'
         )
-    if config.camera.focus_mode not in ("manual", "auto", "unchanged"):
-        raise ConfigError(
-            f"[camera] focus_mode must be manual, auto or unchanged, got {config.camera.focus_mode!r}"
-        )
-    if config.camera.focus_mode != "unchanged" and config.camera.backend != "dshow":
-        raise ConfigError(
-            f'[camera] focus_mode {config.camera.focus_mode!r} needs backend = "dshow" '
-            f'(focus is set through DirectShow); use focus_mode = "unchanged"'
-        )
+    for name in ("focus", "gain"):
+        mode = getattr(config.camera, f"{name}_mode")
+        if mode not in ("manual", "auto", "unchanged"):
+            raise ConfigError(f"[camera] {name}_mode must be manual, auto or unchanged, got {mode!r}")
+        if mode != "unchanged" and config.camera.backend != "dshow":
+            raise ConfigError(
+                f'[camera] {name}_mode {mode!r} needs backend = "dshow" '
+                f'({name} is set through DirectShow); use {name}_mode = "unchanged"'
+            )
     if not 0.0 <= config.calibration.target_inset < 0.5:
         raise ConfigError("[calibration] target_inset must be in [0, 0.5)")
     if not 0.0 <= config.validation.grid_inset < 0.5:

@@ -15,7 +15,7 @@ import numpy as np
 
 from ..camera.directshow import list_capture_devices
 from ..camera.exposure import read_exposure
-from ..camera.focus import read_focus
+from ..camera.locks import FOCUS_SETTING, GAIN_SETTING, read_setting
 from ..camera.probe import DEFAULT_MODES, probe_mode
 from ..config import Config
 from ..display import monitors
@@ -120,9 +120,11 @@ def _camera_section(config: Config, args, report: dict) -> bool:
             entry["exposure"] = dataclasses.asdict(exposure)
             print(f"  exposure during probing (read-only; `camera` measures the configured exposure): "
                   f"{exposure.effective()}")
-            focus = read_focus(d.index)
-            entry["focus"] = dataclasses.asdict(focus)
-            print(f"  focus during probing (read-only; `camera` measures the configured focus): {focus.effective()}")
+            for setting in (FOCUS_SETTING, GAIN_SETTING):
+                state = read_setting(setting, d.index)
+                entry[setting.name] = dataclasses.asdict(state)
+                print(f"  {setting.name} during probing (read-only; `camera` measures the configured "
+                      f"{setting.name}): {state.effective()}")
     return selected_ok
 
 

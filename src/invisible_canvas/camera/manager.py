@@ -4,8 +4,8 @@
 - Every VideoCapture call, including open and release, runs on the capture thread.
   Other threads use `call()`, which queues work to that thread.
 - The negotiated mode is verified from real frames, not from driver-reported values.
-- The configured exposure (D24) and focus (D42) are applied on every open, verified by
-  read-back and kept applied while streaming.
+- The configured exposure (D24), focus (D42) and gain (D43) are applied on every open,
+  verified by read-back and kept applied while streaming.
 """
 
 from __future__ import annotations
@@ -24,13 +24,13 @@ import numpy as np
 from ..config import CameraConfig
 from .directshow import list_capture_devices
 from .exposure import ExposureKeeper, ExposureState
-from .focus import FocusKeeper, FocusState
+from .locks import FOCUS_SETTING, GAIN_SETTING, LockKeeper, LockState
 from .probe import BACKENDS, configure, decode_fourcc, read_properties
 
 log = logging.getLogger(__name__)
 
-# How often the capture thread checks that the camera still holds the configured exposure
-# and focus.
+# How often the capture thread checks that the camera still holds the configured exposure,
+# focus and gain.
 # The Brio's exposure is reset ~1 s and ~3 s after each stream start (brain.md D24).
 EXPOSURE_CHECK_SECONDS = 0.25
 
@@ -58,7 +58,8 @@ class CameraInfo:
     requested: str
     open_seconds: float
     exposure: ExposureState | None = None   # at open; None: not read (backend is not dshow)
-    focus: FocusState | None = None         # at open; None: not read (backend is not dshow)
+    focus: LockState | None = None          # at open; None: not read (backend is not dshow)
+    gain: LockState | None = None           # at open; None: not read (backend is not dshow)
 
     @property
     def size(self) -> tuple[int, int]:
@@ -75,6 +76,7 @@ class CaptureStats:
     read_failures: int
     exposure_reapplied: int = 0  # times the camera lost the configured exposure and it was re-applied
     focus_reapplied: int = 0     # the same for focus
+    gain_reapplied: int = 0      # the same for gain
 
 
 def resolve_camera(config: CameraConfig) -> tuple[int, str]:
@@ -95,7 +97,7 @@ def resolve_camera(config: CameraConfig) -> tuple[int, str]:
 
 class CameraManager:
     """`allow_mode_mismatch`: warn instead of failing when the camera does not deliver the
-    requested size or does not confirm the requested exposure or focus (diagnostic tools)."""
+    requested size or does not confirm the requested exposure, focus or gain (diagnostic tools)."""
 
     def __init__(self, config: CameraConfig, *, allow_mode_mismatch: bool = False):
         self.config = config
@@ -112,7 +114,7 @@ class CameraManager:
         self._max_interval = 0.0
         self._failures = 0
         self._exposure: ExposureKeeper | None = None   # capture thread only
-        self._focus: FocusKeeper | None = None         # capture thread only
+        self._locks: dict[str, LockKeeper] = {}         # focus, gain; capture thread only
         self.error: str | None = None
 
     # -- lifecycle ----------------------------------------------------------
@@ -160,7 +162,8 @@ class CameraManager:
             raise CameraError(f"camera [{index}] {name!r} opened but delivered no frames")
         height, width = frame.shape[:2]
         requested = f"{c.fourcc} {c.width}x{c.height}@{c.fps}"
-        exposure = focus = None
+        exposure = None
+        locks: dict[str, LockState] = {}
         if c.backend == "dshow":
             # Applied while streaming, through DirectShow (the CAP_DSHOW index is the same
             # device), then kept applied by the capture loop.
@@ -168,15 +171,19 @@ class CameraManager:
             exposure = self._exposure.open()
             if not exposure.ok:
                 self._exposure.close()   # nothing to keep
-            self._focus = FocusKeeper(index, c.focus_mode, c.focus_value)
-            focus = self._focus.open()
-            if not focus.ok:
-                self._focus.close()
+            for setting, mode, value in ((FOCUS_SETTING, c.focus_mode, c.focus_value),
+                                         (GAIN_SETTING, c.gain_mode, c.gain_value)):
+                keeper = LockKeeper(setting, index, mode, value)
+                locks[setting.name] = keeper.open()
+                if not locks[setting.name].ok:
+                    keeper.close()       # nothing to keep
+                self._locks[setting.name] = keeper
         self.info = CameraInfo(
             index=index, name=name, backend=c.backend, width=width, height=height,
             reported_fourcc=decode_fourcc(cap.get(cv2.CAP_PROP_FOURCC)),
             reported_fps=float(cap.get(cv2.CAP_PROP_FPS)),
-            requested=requested, open_seconds=time.perf_counter() - t0, exposure=exposure, focus=focus,
+            requested=requested, open_seconds=time.perf_counter() - t0, exposure=exposure,
+            focus=locks.get("focus"), gain=locks.get("gain"),
         )
         problems = []
         if (width, height) != (c.width, c.height):
@@ -185,9 +192,10 @@ class CameraManager:
         if exposure is not None and not exposure.ok:
             problems.append((f"exposure {exposure.describe()}",
                              'Fix [camera] exposure_mode/exposure_value, or use exposure_mode = "unchanged".'))
-        if focus is not None and not focus.ok:
-            problems.append((f"focus {focus.describe()}",
-                             'Fix [camera] focus_mode/focus_value, or use focus_mode = "unchanged".'))
+        for name, state in locks.items():
+            if not state.ok:
+                problems.append((f"{name} {state.describe()}",
+                                 f'Fix [camera] {name}_mode/{name}_value, or use {name}_mode = "unchanged".'))
         for message, advice in problems:
             if not self.allow_mode_mismatch:
                 cap.release()
@@ -207,19 +215,20 @@ class CameraManager:
             log.error(self.error)
             self._exposure.close()   # stop retrying; the error stays visible
 
-    def _keep_focus(self) -> None:
-        state = self._focus.check()
-        if state is None:
-            return
-        if state.ok:
-            log.info("camera reset its focus; re-applied %s (%d so far)", state.requested, self._focus.reapplied)
-        else:
-            self.error = f"focus {state.describe()}"
-            log.error(self.error)
-            self._focus.close()
+    def _keep_locks(self) -> None:
+        for name, keeper in self._locks.items():
+            state = keeper.check()
+            if state is None:
+                continue
+            if state.ok:
+                log.info("camera reset its %s; re-applied %s (%d so far)", name, state.requested, keeper.reapplied)
+            else:
+                self.error = f"{name} {state.describe()}"
+                log.error(self.error)
+                keeper.close()   # stop retrying; the error stays visible
 
     def _close_controls(self) -> None:
-        for keeper in (self._exposure, self._focus):
+        for keeper in (self._exposure, *self._locks.values()):
             if keeper is not None:
                 keeper.close()
 
@@ -258,8 +267,7 @@ class CameraManager:
                     next_exposure_check = now + EXPOSURE_CHECK_SECONDS
                     if self._exposure is not None:
                         self._keep_exposure()
-                    if self._focus is not None:
-                        self._keep_focus()
+                    self._keep_locks()
         finally:
             self._run_commands(cap)
             cap.release()
@@ -310,9 +318,16 @@ class CameraManager:
         """Exposure as the camera reports it now (None: not dshow, or not kept)."""
         return self.call(lambda cap: self._exposure.read() if self._exposure is not None else None)
 
-    def read_focus(self) -> FocusState | None:
+    def read_focus(self) -> LockState | None:
         """Focus as the camera reports it now (None: not dshow, or not kept)."""
-        return self.call(lambda cap: self._focus.read() if self._focus is not None else None)
+        return self._read_lock("focus")
+
+    def read_gain(self) -> LockState | None:
+        """Gain as the camera reports it now (None: not dshow, or not kept)."""
+        return self._read_lock("gain")
+
+    def _read_lock(self, name: str) -> LockState | None:
+        return self.call(lambda cap: self._locks[name].read() if name in self._locks else None)
 
     def reset_stats(self) -> None:
         with self._cond:
@@ -338,7 +353,8 @@ class CameraManager:
             max_interval=self._max_interval,
             read_failures=self._failures,
             exposure_reapplied=self._exposure.reapplied if self._exposure is not None else 0,
-            focus_reapplied=self._focus.reapplied if self._focus is not None else 0,
+            focus_reapplied=self._locks["focus"].reapplied if "focus" in self._locks else 0,
+            gain_reapplied=self._locks["gain"].reapplied if "gain" in self._locks else 0,
         )
 
 

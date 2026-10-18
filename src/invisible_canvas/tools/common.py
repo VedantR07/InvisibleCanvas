@@ -69,11 +69,12 @@ def exposure_text(info: CameraInfo) -> str:
     return info.exposure.describe()
 
 
-def focus_text(info: CameraInfo) -> str:
-    """Effective focus as read back from the camera when it was opened."""
-    if info.focus is None:
-        return f"not read (backend {info.backend}; focus control needs dshow)"
-    return info.focus.describe()
+def lock_text(info: CameraInfo, name: str) -> str:
+    """Effective focus or gain (`name`) as read back from the camera when it was opened."""
+    state = getattr(info, name)
+    if state is None:
+        return f"not read (backend {info.backend}; {name} control needs dshow)"
+    return state.describe()
 
 
 SETTLE_SECONDS = 0.8      # after changing the projected image: > 2x the 275 ms display->camera latency (A3)
@@ -179,7 +180,8 @@ def open_session(config: Config, args, *, allow_mode_mismatch: bool = False):
         print(f"camera:    [{info.index}] {info.name} {info.width}x{info.height} "
               f"(requested {info.requested}; open {info.open_seconds:.1f} s)")
         print(f"exposure:  {exposure_text(info)}")
-        print(f"focus:     {focus_text(info)}")
+        print(f"focus:     {lock_text(info, 'focus')}")
+        print(f"gain:      {lock_text(info, 'gain')}")
         projector = ProjectorWindow(display, canvas_size, windowed=windowed)
         projector.open()
         print(f"projector window: {'OK' if projector.geometry_ok else 'NOT VERIFIED'}: {projector.geometry_report}")

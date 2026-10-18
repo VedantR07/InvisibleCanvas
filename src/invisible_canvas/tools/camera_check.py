@@ -21,7 +21,7 @@ from ..camera.manager import CameraManager, per_second_fps
 from ..config import Config
 from ..display import patterns
 from ..display.operator import OperatorWindow
-from .common import exposure_text, focus_text, now_iso, primary_display, save_report
+from .common import exposure_text, lock_text, now_iso, primary_display, save_report
 
 SATURATION_LEVEL = 250
 
@@ -112,7 +112,8 @@ def run(config: Config, args) -> int:
     print(f"  requested {info.requested} -> delivered {info.width}x{info.height} "
           f"(driver reports {info.reported_fourcc} {info.reported_fps:g} fps; open {info.open_seconds:.2f} s)")
     print(f"  exposure: {exposure_text(info)}")
-    print(f"  focus: {focus_text(info)}")
+    print(f"  focus: {lock_text(info, 'focus')}")
+    print(f"  gain: {lock_text(info, 'gain')}")
     operator = None
     preview = None
     if not args.headless:
@@ -148,7 +149,8 @@ def run(config: Config, args) -> int:
                     f"{info.width}x{info.height} (requested {info.requested})",
                     f"driver reports {info.reported_fourcc} {info.reported_fps:g} fps",
                     f"exposure at open: {exposure_text(info)}",
-                    f"focus at open: {focus_text(info)}",
+                    f"focus at open: {lock_text(info, 'focus')}",
+                    f"gain at open: {lock_text(info, 'gain')}",
                     f"measured {s.recent_fps:.1f} fps (mean {s.mean_fps:.1f})",
                     f"frame age {np.median(ages[-30:]) * 1000:.1f} ms",
                     f"longest gap {s.max_interval * 1000:.0f} ms, failed reads {s.read_failures}",
@@ -185,6 +187,7 @@ def run(config: Config, args) -> int:
         properties = camera.read_properties()
         exposure_end = camera.read_exposure()
         focus_end = camera.read_focus()
+        gain_end = camera.read_gain()
     finally:
         camera.close()
         if preview is not None:
@@ -203,6 +206,8 @@ def run(config: Config, args) -> int:
               f"after the camera reset it")
     if focus_end is not None:
         print(f"focus at end: {focus_end.describe()}; re-applied {stats.focus_reapplied}x after the camera reset it")
+    if gain_end is not None:
+        print(f"gain at end: {gain_end.describe()}; re-applied {stats.gain_reapplied}x after the camera reset it")
     if args.seconds:
         report = {
             "created_at": now_iso(),
@@ -219,6 +224,8 @@ def run(config: Config, args) -> int:
             "exposure_reapplied": stats.exposure_reapplied,
             "focus_at_end": dataclasses.asdict(focus_end) if focus_end is not None else None,
             "focus_reapplied": stats.focus_reapplied,
+            "gain_at_end": dataclasses.asdict(gain_end) if gain_end is not None else None,
+            "gain_reapplied": stats.gain_reapplied,
             "properties": properties,
         }
         print(f"report: {save_report(config, 'camera', report)}")
