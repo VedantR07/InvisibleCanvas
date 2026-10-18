@@ -5,22 +5,28 @@
 [camera]
 # Case-insensitive substring of the DirectShow device name.
 # "python -m invisible_canvas devices" lists the names. Empty = use `index`.
-match = "brio"
+match = "owl 4k"         # Kreo Owl 4K Pro: DirectShow name "Owl 4K PRO Camera" (D41)
 index = 0
 backend = "dshow"        # dshow | msmf | any
 width = 1920
 height = 1080
-fps = 30
+fps = 60                 # Kreo: MJPG 1920x1080 measured 60.1-60.5 fps (D42); the Brio had 30
 fourcc = "MJPG"
 # Exposure, applied and read back every time the camera opens (DirectShow only):
-#   "manual"     lock it at exposure_value: 2^value seconds (-5 = 31 ms). Brio 100,
-#                measured: -5 or shorter holds 30 fps; auto exposure drops to ~15 fps
-#                in dim light (brain.md D24, section 13.2).
+#   "manual"     lock it at exposure_value: 2^value seconds (-5 = 31 ms, -6 = 15.6 ms).
+#                At 60 fps a frame lasts 16.7 ms, so -6 or shorter (D42). Brio 100: -5
+#                held 30 fps; auto exposure dropped to ~15 fps in dim light (D24).
 #   "auto"       hand exposure back to the camera.
 #   "unchanged"  leave whatever the camera has (cameras without exposure control).
 # If the camera does not confirm the setting, the tools stop (`camera` only warns).
 exposure_mode = "manual"
-exposure_value = -5
+exposure_value = -6
+# Focus, applied and read back every time the camera opens (DirectShow only), same modes.
+# Kreo Owl 4K Pro: 0..1023, autofocus on by default, hunting (719 -> 64 -> 499) and settling
+# on a blurred value. Sharpest on the projected checkerboard at 410 (D42); re-measure if the
+# camera-wall distance changes.
+focus_mode = "manual"
+focus_value = 410
 
 [projector]
 # Substring of the display's EDID name or EDID id, or its GDI name (e.g. "DISPLAY2").

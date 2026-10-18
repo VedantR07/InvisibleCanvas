@@ -20,7 +20,7 @@ def data():
 
 def test_default_config_loads():
     config = load_config()
-    assert config.camera.match == "brio"
+    assert config.camera.match == "owl 4k"
     assert (config.projector.expected_width, config.projector.expected_height) == (1280, 720)
     assert config.validation.required_mean_px == 5.0
     assert config.validation.required_max_px == 12.0
@@ -68,10 +68,28 @@ def test_invalid_backend_is_rejected(data):
         config_from_dict(data)
 
 
-def test_default_exposure_is_manual_minus_5():
+def test_default_camera_is_the_measured_kreo_mode():
+    # D42: Kreo Owl 4K Pro, MJPG 1920x1080 @ 60 measured; -6 is the longest exposure that fits a
+    # 60 fps frame; focus locked at the sharpest measured value.
     camera = load_config().camera
-    assert (camera.backend, camera.fourcc, camera.width, camera.height, camera.fps) == ("dshow", "MJPG", 1920, 1080, 30)
-    assert (camera.exposure_mode, camera.exposure_value) == ("manual", -5)
+    assert (camera.backend, camera.fourcc, camera.width, camera.height, camera.fps) == ("dshow", "MJPG", 1920, 1080, 60)
+    assert (camera.exposure_mode, camera.exposure_value) == ("manual", -6)
+    assert (camera.focus_mode, camera.focus_value) == ("manual", 410)
+    assert 1000 * 2.0 ** camera.exposure_value <= 1000 / camera.fps   # exposure fits the frame time
+
+
+def test_invalid_focus_mode_is_rejected(data):
+    data["camera"]["focus_mode"] = "fixed"
+    with pytest.raises(ConfigError, match="focus_mode must be manual, auto or unchanged"):
+        config_from_dict(data)
+
+
+def test_focus_control_needs_dshow(data):
+    data["camera"]["backend"] = "msmf"
+    data["camera"]["exposure_mode"] = "unchanged"
+    data["camera"]["focus_mode"] = "manual"
+    with pytest.raises(ConfigError, match='focus_mode .* needs backend = "dshow"'):
+        config_from_dict(data)
 
 
 def test_invalid_exposure_mode_is_rejected(data):
@@ -91,6 +109,7 @@ def test_exposure_control_needs_dshow(data, mode):
 def test_unchanged_exposure_works_with_any_backend(data):
     data["camera"]["backend"] = "msmf"
     data["camera"]["exposure_mode"] = "unchanged"
+    data["camera"]["focus_mode"] = "unchanged"
     assert config_from_dict(data).camera.exposure_mode == "unchanged"
 
 

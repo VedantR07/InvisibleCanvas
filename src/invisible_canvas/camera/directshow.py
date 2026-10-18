@@ -202,6 +202,7 @@ def list_capture_devices() -> list[CaptureDevice]:
 
 # IAMCameraControl properties (KSPROPERTY_CAMERACONTROL_*) and flags (CameraControl_Flags_*).
 EXPOSURE = 4                 # DirectShow units: exposure time = 2**value seconds
+FOCUS = 6                    # camera units (Kreo Owl 4K Pro: 0..1023)
 AUTO_EXPOSURE_PRIORITY = 19  # 1 = in auto exposure the camera may lower the frame rate
 FLAG_AUTO = 0x1
 FLAG_MANUAL = 0x2

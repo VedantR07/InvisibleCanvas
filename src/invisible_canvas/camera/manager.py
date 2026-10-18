@@ -4,7 +4,8 @@
 - Every VideoCapture call, including open and release, runs on the capture thread.
   Other threads use `call()`, which queues work to that thread.
 - The negotiated mode is verified from real frames, not from driver-reported values.
-- The configured exposure is applied on every open and verified by read-back (D24).
+- The configured exposure (D24) and focus (D42) are applied on every open, verified by
+  read-back and kept applied while streaming.
 """
 
 from __future__ import annotations
@@ -23,11 +24,13 @@ import numpy as np
 from ..config import CameraConfig
 from .directshow import list_capture_devices
 from .exposure import ExposureKeeper, ExposureState
+from .focus import FocusKeeper, FocusState
 from .probe import BACKENDS, configure, decode_fourcc, read_properties
 
 log = logging.getLogger(__name__)
 
-# How often the capture thread checks that the camera still holds the configured exposure.
+# How often the capture thread checks that the camera still holds the configured exposure
+# and focus.
 # The Brio's exposure is reset ~1 s and ~3 s after each stream start (brain.md D24).
 EXPOSURE_CHECK_SECONDS = 0.25
 
@@ -55,6 +58,7 @@ class CameraInfo:
     requested: str
     open_seconds: float
     exposure: ExposureState | None = None   # at open; None: not read (backend is not dshow)
+    focus: FocusState | None = None         # at open; None: not read (backend is not dshow)
 
     @property
     def size(self) -> tuple[int, int]:
@@ -70,6 +74,7 @@ class CaptureStats:
     max_interval: float        # longest gap between consecutive frames, seconds
     read_failures: int
     exposure_reapplied: int = 0  # times the camera lost the configured exposure and it was re-applied
+    focus_reapplied: int = 0     # the same for focus
 
 
 def resolve_camera(config: CameraConfig) -> tuple[int, str]:
@@ -90,7 +95,7 @@ def resolve_camera(config: CameraConfig) -> tuple[int, str]:
 
 class CameraManager:
     """`allow_mode_mismatch`: warn instead of failing when the camera does not deliver the
-    requested size or does not confirm the requested exposure (diagnostic tools)."""
+    requested size or does not confirm the requested exposure or focus (diagnostic tools)."""
 
     def __init__(self, config: CameraConfig, *, allow_mode_mismatch: bool = False):
         self.config = config
@@ -107,6 +112,7 @@ class CameraManager:
         self._max_interval = 0.0
         self._failures = 0
         self._exposure: ExposureKeeper | None = None   # capture thread only
+        self._focus: FocusKeeper | None = None         # capture thread only
         self.error: str | None = None
 
     # -- lifecycle ----------------------------------------------------------
@@ -154,7 +160,7 @@ class CameraManager:
             raise CameraError(f"camera [{index}] {name!r} opened but delivered no frames")
         height, width = frame.shape[:2]
         requested = f"{c.fourcc} {c.width}x{c.height}@{c.fps}"
-        exposure = None
+        exposure = focus = None
         if c.backend == "dshow":
             # Applied while streaming, through DirectShow (the CAP_DSHOW index is the same
             # device), then kept applied by the capture loop.
@@ -162,11 +168,15 @@ class CameraManager:
             exposure = self._exposure.open()
             if not exposure.ok:
                 self._exposure.close()   # nothing to keep
+            self._focus = FocusKeeper(index, c.focus_mode, c.focus_value)
+            focus = self._focus.open()
+            if not focus.ok:
+                self._focus.close()
         self.info = CameraInfo(
             index=index, name=name, backend=c.backend, width=width, height=height,
             reported_fourcc=decode_fourcc(cap.get(cv2.CAP_PROP_FOURCC)),
             reported_fps=float(cap.get(cv2.CAP_PROP_FPS)),
-            requested=requested, open_seconds=time.perf_counter() - t0, exposure=exposure,
+            requested=requested, open_seconds=time.perf_counter() - t0, exposure=exposure, focus=focus,
         )
         problems = []
         if (width, height) != (c.width, c.height):
@@ -175,6 +185,9 @@ class CameraManager:
         if exposure is not None and not exposure.ok:
             problems.append((f"exposure {exposure.describe()}",
                              'Fix [camera] exposure_mode/exposure_value, or use exposure_mode = "unchanged".'))
+        if focus is not None and not focus.ok:
+            problems.append((f"focus {focus.describe()}",
+                             'Fix [camera] focus_mode/focus_value, or use focus_mode = "unchanged".'))
         for message, advice in problems:
             if not self.allow_mode_mismatch:
                 cap.release()
@@ -194,12 +207,27 @@ class CameraManager:
             log.error(self.error)
             self._exposure.close()   # stop retrying; the error stays visible
 
+    def _keep_focus(self) -> None:
+        state = self._focus.check()
+        if state is None:
+            return
+        if state.ok:
+            log.info("camera reset its focus; re-applied %s (%d so far)", state.requested, self._focus.reapplied)
+        else:
+            self.error = f"focus {state.describe()}"
+            log.error(self.error)
+            self._focus.close()
+
+    def _close_controls(self) -> None:
+        for keeper in (self._exposure, self._focus):
+            if keeper is not None:
+                keeper.close()
+
     def _run(self, index: int, name: str) -> None:
         try:
             cap = self._open_capture(index, name)
         except BaseException as e:  # reported to open()
-            if self._exposure is not None:
-                self._exposure.close()
+            self._close_controls()
             self._open_error = e
             self._ready.set()
             return
@@ -226,14 +254,16 @@ class CameraManager:
                     self._stamps.append(now)
                     self._cond.notify_all()
                 # After publishing the frame, so the check never delays one.
-                if self._exposure is not None and now >= next_exposure_check:
+                if now >= next_exposure_check:
                     next_exposure_check = now + EXPOSURE_CHECK_SECONDS
-                    self._keep_exposure()
+                    if self._exposure is not None:
+                        self._keep_exposure()
+                    if self._focus is not None:
+                        self._keep_focus()
         finally:
             self._run_commands(cap)
             cap.release()
-            if self._exposure is not None:
-                self._exposure.close()
+            self._close_controls()
 
     def _run_commands(self, cap: cv2.VideoCapture) -> None:
         while True:
@@ -280,6 +310,10 @@ class CameraManager:
         """Exposure as the camera reports it now (None: not dshow, or not kept)."""
         return self.call(lambda cap: self._exposure.read() if self._exposure is not None else None)
 
+    def read_focus(self) -> FocusState | None:
+        """Focus as the camera reports it now (None: not dshow, or not kept)."""
+        return self.call(lambda cap: self._focus.read() if self._focus is not None else None)
+
     def reset_stats(self) -> None:
         with self._cond:
             self._stamps.clear()
@@ -304,6 +338,7 @@ class CameraManager:
             max_interval=self._max_interval,
             read_failures=self._failures,
             exposure_reapplied=self._exposure.reapplied if self._exposure is not None else 0,
+            focus_reapplied=self._focus.reapplied if self._focus is not None else 0,
         )
 
 
