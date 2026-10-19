@@ -23,10 +23,11 @@ exposure_mode = "manual"
 exposure_value = -6
 # Focus, applied and read back every time the camera opens (DirectShow only), same modes.
 # Kreo Owl 4K Pro: 0..1023, autofocus on by default, hunting (719 -> 64 -> 499) and settling
-# on a blurred value. Sharpest on the projected checkerboard at 410 (D42); re-measure if the
+# on a blurred value. Sharpest on projected checkerboards: 410 (night, 400 = 99 %) and 400 (2026-10-19
+# 12:25, 410 = 95 %), so 400 (D42); re-measure if the
 # camera-wall distance changes.
 focus_mode = "manual"
-focus_value = 410
+focus_value = 400
 # Gain (IAMVideoProcAmp), same modes. Kreo: 0..15, manual only; manual exposure leaves it at 0,
 # too dark at 60 fps. 15: white 145.6, grey-128 canvas 54.4, 60 fps, noise sd 0.86 (D43).
 gain_mode = "manual"

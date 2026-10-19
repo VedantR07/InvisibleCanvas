@@ -74,7 +74,7 @@ def test_default_camera_is_the_measured_kreo_mode():
     camera = load_config().camera
     assert (camera.backend, camera.fourcc, camera.width, camera.height, camera.fps) == ("dshow", "MJPG", 1920, 1080, 60)
     assert (camera.exposure_mode, camera.exposure_value) == ("manual", -6)
-    assert (camera.focus_mode, camera.focus_value) == ("manual", 410)
+    assert (camera.focus_mode, camera.focus_value) == ("manual", 400)
     assert (camera.gain_mode, camera.gain_value) == ("manual", 15)   # D43: too dark at 60 fps without gain
     assert 1000 * 2.0 ** camera.exposure_value <= 1000 / camera.fps   # exposure fits the frame time
 
