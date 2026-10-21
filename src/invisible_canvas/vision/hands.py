@@ -173,6 +173,7 @@ class HandObservation:
     view: tuple[int, int, int] | None = None     # (x0, y0, side) of the crop MediaPipe saw; None = whole frame
     tip_norm: tuple[float, float] | None = None  # the fingertip as MediaPipe returned it (normalized to its input)
     tip_in_view: bool = True       # False: the fingertip lies outside the image MediaPipe saw (extrapolated)
+    world: np.ndarray | None = None  # (21, 3) MediaPipe world landmarks: metres, hand-centred (D44); None if absent
 
     @property
     def length_px(self) -> float:
@@ -282,6 +283,9 @@ class HandTracker:
         x0, y0, x1, y1 = ((-0.5, -0.5, frame_size[0] - 0.5, frame_size[1] - 0.5) if view is None else
                           (view[0] - 0.5, view[1] - 0.5, view[0] + view[2] - 0.5, view[1] + view[2] - 0.5))
         raw = result.hand_landmarks[0][INDEX_TIP]
+        world_landmarks = getattr(result, "hand_world_landmarks", None)
+        world = (np.array([(p.x, p.y, p.z) for p in world_landmarks[0]], dtype=np.float64)
+                 if world_landmarks and len(world_landmarks[0]) == len(points) else None)
         return HandObservation(
             tip=tip,
             landmarks=points,
@@ -291,6 +295,7 @@ class HandTracker:
             view=None if view is None else tuple(int(v) for v in view),
             tip_norm=(float(raw.x), float(raw.y)),
             tip_in_view=bool(np.all(np.isfinite(tip)) and x0 <= tip[0] <= x1 and y0 <= tip[1] <= y1),
+            world=world,
         )
 
     def process(self, frame_bgr: np.ndarray, timestamp_s: float) -> HandObservation | None:
