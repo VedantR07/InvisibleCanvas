@@ -7,9 +7,9 @@
 
 | | |
 |---|---|
-| Last updated | 2026-10-21 |
+| Last updated | 2026-10-22 |
 | Current phase | **2026-10-21: Kreo re-validation (§9.9) done except B2 re-run and A8. Foundation on the Kreo: A1, A3 (60 fps; latency 262 ms), A5, A6 (0.04 px), A7 (1.05 / 2.54 px on 10-19; 1.19 / 2.09 px after the 10-21 recalibration) PASS; B1, B3, B4 PASS. Live fingertip cursor works on the Kreo: 97 % of saved frames with a hand tracked, 0 false positives, 54 fps processing, 13.8 ms pipeline; the cursor trails a moving finger by the ~0.28 s end-to-end latency (R4).** Phase 1D accuracy criterion still undecided (open question 12). **Camera changed (D41, 2026-10-17): Kreo Owl 4K Pro replaces the Brio 100. Every hardware result below was measured with the Brio and must be re-measured with the Kreo (§9.9) before it counts again.** **Phase 1D: index-fingertip cursor, in progress, NOT passed.** D39 (2026-10-12, evening): automatic calibration recovery after a moved setup (`recalibrate`; `cursor` recovers on its own when its setup check refuses): a replacement is built from the corners just detected and saved only after the held-out check target, the 20-target held-out validation (A7 required limits) and a confirming setup check; verified offline (410 tests); first hardware use 2026-10-12 20:13: `cursor` recovered a 63.25-px move automatically (check target 0.83 px, validation mean 0.62 / max 1.28 px, confirmation 0.10 px); the other D39 hardware reports not yet reviewed. D38 (2026-10-12): Phase A landmark-glitch diagnostics (observational only: trace `diag`, report `landmark_diagnostics`; the cursor is unchanged). A review found a Phase A regression (`cursor --trace` with targets crashed at the first capture: a variable-name collision); fixed and covered by a regression test, verified offline only (380 tests pass); no hardware run since. D37 (2026-10-11, tracking audit): the dropouts of the day's runs come from `--acquisition full` (reacquisition only by the palm detector on the whole frame: 55 % vs 95 % for tiles on 854 saved hand frames); tiled acquisition now returns a find only when the region tracker confirms it in the same frame (720-px region), an extrapolated fingertip is never drawn, One Euro beta 0.05, full-mode statistics, `--trace` and a motion summary; ~290 ms latency (hardware) and hover parallax remain; hardware verification in progress. D36 (2026-10-10 15:00–15:40): camera moved from ~30 cm to 18 cm beside the projector lens (closest possible: the projector top is not usable); tiled hand acquisition added (faster, 0 false positives); 60-s free-movement test with loss/recovery done (hand found ~97 % while in view). **Accuracy still fails and the shadow-centre test run was INVALID** (shadow centre established at 1/9 targets; where it was, the cursor was 39 px from it): hover parallax at the natural hover distance is not removable with this camera position. Phase 1C complete; 1B B1–B5 PASS; 1A A1, A3, A6, A7 PASS. |
-| Next action | **(1) Projector picture settings vs latency (open question 5; `latency` after each change). (2) Decide the pen-down signal for drawing (§6) and the Phase 1D accuracy reference (open question 12). (3) Then Phase 2 (P1): drawing, erasing, undo/redo. Pending checks: B2 re-run without the projector pointer (R28), `mapdemo` + ruler (A8), visual line-pair check (A2).** Done 2026-10-19: Kreo connected and measured; `[camera]` set for it (D42). The items below were planned with the Brio and continue after §9.9. **Accuracy (2026-10-12 20:44 run, §13.2): no code defect found; the shadow reference cannot work at this geometry and the dark room weakens edge detection.** Choose the accuracy reference (open question 12) before the next accuracy run; repeat it with room light to separate lighting from D40. **D40: repeat the 30-s `cursor` run** (as `cursor-20261012-201357`) and compare no-hand pipeline time, queue age, fps while searching and reacquisition times (offline only so far). D39: review the hardware reports of 2026-10-12 20:03–20:16 (only the 20:13 recovery has been read, §13.2). Then Phase B of D38 (treating a flagged frame like an invalid fingertip) only with user approval and only after recordings with deliberate finger bends, fast flicks and pointing towards the camera. Before any further accuracy run: `validate --auto` (the camera mount drifts, R10). Open user decisions: the accuracy reference (open question 12: fingertip end or pad) and, from D36:  the parallax at natural hover (~25–35 cm implied) needs either a depth measurement (shadow-based with a dedicated shadow detector, a second camera, or a depth sensor) or a hover band (e.g. ≤ 3 cm) in the accuracy criterion; a webcam beside this projector cannot get close enough (≤ ~3 cm baseline needed). Also: the shadow-centre protocol is not executable at the bottom row (the shadow falls behind the hand) and is pale in room light — choose another reference or a dark room. Mount the camera rigidly (it still drifts ~0.04 px/min on the bottle). No drawing or erasing yet. |
+| Next action | **Phase 2 (drawing with hand gestures, D44) approved 2026-10-22 and in progress (§9.10).** Then its hardware session: guided gesture recording (G1), then G2–G6. Still pending from Phase 1: B2 re-run without the projector pointer (R28), `mapdemo` + ruler (A8), visual line-pair check (A2), projector picture settings vs latency (open question 5). Done 2026-10-19: Kreo connected and measured; `[camera]` set for it (D42). The items below were planned with the Brio and continue after §9.9. **Accuracy (2026-10-12 20:44 run, §13.2): no code defect found; the shadow reference cannot work at this geometry and the dark room weakens edge detection.** Choose the accuracy reference (open question 12) before the next accuracy run; repeat it with room light to separate lighting from D40. **D40: repeat the 30-s `cursor` run** (as `cursor-20261012-201357`) and compare no-hand pipeline time, queue age, fps while searching and reacquisition times (offline only so far). D39: review the hardware reports of 2026-10-12 20:03–20:16 (only the 20:13 recovery has been read, §13.2). Then Phase B of D38 (treating a flagged frame like an invalid fingertip) only with user approval and only after recordings with deliberate finger bends, fast flicks and pointing towards the camera. Before any further accuracy run: `validate --auto` (the camera mount drifts, R10). Open user decisions: the accuracy reference (open question 12: fingertip end or pad) and, from D36:  the parallax at natural hover (~25–35 cm implied) needs either a depth measurement (shadow-based with a dedicated shadow detector, a second camera, or a depth sensor) or a hover band (e.g. ≤ 3 cm) in the accuracy criterion; a webcam beside this projector cannot get close enough (≤ ~3 cm baseline needed). Also: the shadow-centre protocol is not executable at the bottom row (the shadow falls behind the hand) and is pale in room light — choose another reference or a dark room. Mount the camera rigidly (it still drifts ~0.04 px/min on the bottle). No drawing or erasing yet. |
 
 ---
 
@@ -300,7 +300,7 @@ RELIABILITY → LOW LATENCY → ACCURACY → NATURAL INTERACTION → INTEGRATION
 |---|---|---|
 | **Phase 1A** | **P0 Foundation** | hardware diagnostics · camera capture · projector output · camera feed · surface setup · **manual** four-point calibration · homography · coordinate mapping · manual validation · unit tests |
 | **Phase 1B** | **P0 Foundation** | **automatic** calibration: projected-dot detection, automatic four-point and N-point calibration, automatic validation; lens undistortion if 1A measurements need it. Manual assisted calibration stays as the fallback. |
-| Phase 2 | P1 | tracking · interaction · cursor · drawing · erasing · undo/redo |
+| **Phase 2** | **P1** | tracking · interaction · cursor · drawing · erasing · undo/redo. **Plan approved 2026-10-22 (D44, §9.10):** gesture modes (index only = draw, open hand = erase, pinch = select/press, other = hover), partial eraser, bottom toolbar, and pinch-to-move strokes pulled forward from Phase 3 |
 | Phase 3 | P2 | selection · structured canvas objects · OCR · AI |
 | Phase 4 | P3 | 3D · presentation · advanced gestures · environmental robustness · performance optimization |
 | Phase 5 | P4 | final integration · testing · benchmarking · demo optimization |
@@ -551,6 +551,60 @@ The Brio results do not transfer to another camera. Run in this order and stop a
 
 **Progress (2026-10-19, §13.2):** steps 1–2 done: exposure −6, focus 410 and gain 15 locked and confirmed (D42, D43); `camera --headless --seconds 10`: 60.24 fps. Step 5 must come before step 6: the projection is cut off at the top of the camera frame.
 
+### 9.10 Phase 2 plan (P1): drawing with hand gestures (approved 2026-10-22, D44)
+
+**Gestures (user design).** The cursor always follows the hand; its look shows the mode.
+
+| Hand shape | Mode | Cursor point | Effect |
+|---|---|---|---|
+| Index finger only (middle, ring, little finger curled) | DRAW | index fingertip | ink while the shape is held |
+| All five fingers open | ERASE | palm centre, circle scaled to the hand | removes only the ink under the circle (strokes are split) |
+| Pinch (thumb tip on index tip) | SELECT | between the thumb and index tips | on a toolbar button: press it; on a stroke: pick it up, move, release to drop |
+| Any other shape (fist, relaxed hand, two fingers) | HOVER | index fingertip | cursor only |
+| No hand | IDLE | hidden | — |
+
+**Reliability rules (§6).**
+- A mode is entered only after its shape is seen in `enter_frames` consecutive frames (default 4, ≈ 70 ms at 54 fps).
+- A mode is left only after `exit_frames` frames of another shape (default 3).
+- Pinch uses separate enter/exit distances.
+- Points recorded while the shape is changing are dropped, so strokes have no hooks.
+- Hand lost: the stroke pauses for ≤ 150 ms, then ends cleanly. The cursor never jumps.
+- Clear needs the pinch held on its button for 1 s.
+- The laptop keyboard can also undo (z), redo (y) and save (s).
+
+**Shape recognition.** From the 21 landmarks: per-finger straightness (fingertip-to-knuckle distance ÷ joint-chain length) and the thumb–index tip distance ÷ palm size. It uses MediaPipe's 3-D world landmarks (metres, hand-centred) when present, because the camera sees the back of the hand and 2-D bends depend on the view; otherwise it uses the 2-D camera landmarks. No new dependency.
+
+**Canvas.** White background (the Kreo needs it to see the hand: grey 128 → canvas region 52, 255 → 129–157). Content is structured strokes (projector px = logical canvas for now). Undo/redo covers draw, erase (one step per erase gesture), move and clear. Bottom-edge toolbar: 4 ink colours, 3 widths, undo, redo, clear. Saved as JSON + PNG to `data/canvas/` on exit.
+
+**Files** (paths under `src/invisible_canvas/`; pure modules unit-tested without hardware):
+
+| File | Responsibility |
+|---|---|
+| `vision/hands.py` | `HandObservation.world`: MediaPipe world landmarks (21 × 3 m), optional |
+| `vision/gestures.py` | `classify()`: POINT / OPEN / PINCH / OTHER with measurements, pinch hysteresis |
+| `interaction/engine.py` | Mode state machine (debounce, hysteresis, trimming, loss) → canvas events |
+| `canvas/model.py` | `Stroke`, `Canvas`: add, partial erase (split), hit-test, move, JSON |
+| `canvas/history.py` | Undo/redo commands |
+| `canvas/toolbar.py` | Bottom toolbar layout, hit-testing, hold-to-clear |
+| `canvas/render.py` | Canvas, active stroke, selection, toolbar, mode cursor |
+| `interaction/drawing.py` | `DrawingController`: applies engine events to canvas, history and toolbar |
+| `tools/gestures.py` | `gestures`: guided recording of each shape (G1), landmarks saved for offline analysis |
+| `tools/draw.py` | `draw`: the drawing app (setup check + recovery, tracking, gestures, canvas, report) |
+
+**Acceptance tests (fixed 2026-10-22 before any hardware run; never loosened to pass).** Phase 2 passes when all of these pass on the Kreo setup:
+
+| # | Test | Pass condition |
+|---|---|---|
+| G1 | Shape recognition (`gestures`, guided: each of POINT, OPEN, PINCH and two OTHER shapes held twice) | per shape ≥ 95 % of hand-present scored frames classified as prompted, and DRAW never entered (after debounce) during a non-POINT prompt |
+| G2 | No accidental ink | 60 s of free movement in HOVER shapes and between shapes without the index-only shape → 0 strokes |
+| G3 | Drawing | 10 deliberate strokes (lines, a circle, letters) → 10 strokes, no extra stroke, no gap inside a stroke |
+| G4 | Partial erase | erasing across 3 strokes removes ink only within the eraser path; the rest stays (checked on the saved canvas) |
+| G5 | Pinch | 20 toolbar presses → ≥ 19 correct, 0 wrong buttons; 5 stroke moves → 5/5 moved by the hand's displacement |
+| G6 | Responsiveness | ≥ 30 fps processing while drawing (60-s run), pipeline p95 ≤ 33 ms |
+| G7 | Undo/redo | every action type undone and redone exactly (unit tests + 5 live round trips) |
+
+**Steps.** (1) world landmarks + `gestures.py` + guided recording tool; (2) canvas, history, toolbar, renderer, engine, controller, `draw`; (3) hardware: G1 recording, offline check, then G2–G7. Gesture thresholds may be set from the G1 recording (the evidence) before G2–G7 run; the criteria above stay fixed.
+
 ---
 
 ## 10. Decisions log
@@ -600,6 +654,7 @@ The Brio results do not transfer to another camera. Run in this order and stop a
 | D41 | 2026-10-17 | **Camera changed to the Kreo Owl 4K Pro (user decision), replacing the Brio 100 for now.** D14's rule stays: capabilities are measured, not assumed. Until §9.9 is done, every camera-dependent setting is only a starting value from the Brio: `[camera] match = "brio"` (will not find the Kreo, so the tools stop and list the cameras, by design), MJPG 1920×1080 @ 30 (D25), manual exposure −5 (D24), the exposure re-application behaviour (R21), the 0.8 s settle time (based on the Brio's 275 ms latency), the detector's arm-width margins (D29) and the parallax geometry (§13.3). The phase status is unchanged, but A1, A3–A7, B1–B5, the Phase 1C results and the Phase 1D measurements are Brio results and are re-run per §9.9. No config change before the Kreo is measured. | User decision | After the §9.9 measurements |
 | D42 | 2026-10-19 | **Kreo Owl 4K Pro settings (user decisions: 1080p @ 60 fps; lock focus).** `[camera]`: match `"owl 4k"` (DirectShow "Owl 4K PRO Camera"), MJPG 1920×1080 @ **60**, manual exposure **−6** (15.6 ms, the longest that fits a 16.7-ms frame), and new keys `focus_mode`/`focus_value` = manual **410** (`camera/focus.py`). Measured: 1080p @ 60 delivers 60.1–60.5 fps (720p @ 60 only 30, 1440p/4K 30); through `CameraManager` −6 and −7 give 60.1–60.2 fps (slowest second 60), −5 only 31.6; exposure confirmed by read-back and never reset by the camera stack (re-applied 0×, unlike the Brio, R21). Autofocus hunted 719 → 399 → 64 → 499 and settled at 499; checkerboard sharpness (Laplacian variance) peaks at 400–420 (531 at 410) and is 122 at 499, so focus is locked at 410 (**changed to 400 at 12:27**: a second sweep after the setup was rebuilt peaked at 400 = 966, 410 = 95 %; the night sweep had 400 = 99 % of its best); the keeper visibly re-applied the configured focus when it was changed during streaming. **Gain is not locked yet:** at −6 and gain 0 the image is dark (grey-128 canvas 5.7, white 69.8, dark room); gain (`IAMVideoProcAmp`, 0..15, manual only) 8 / 12 / 15 → grey-128 26.5 / 43.3 / 54.4, white 105.7 / 129.8 / 145.6, temporal noise sd 0.46 → 0.86, 60 fps kept, no saturation. Auto exposure reaches grey-128 137 at 60 fps but follows the projected content (white read darker than grey 200), so it stays unusable (D24). No threshold changed. | Measured on hardware (§13.2, 2026-10-19) | Gain lock (open question 16); canvas grey level for hand detection (`handcheck`); re-sweep focus if the camera–wall distance changes |
 | D43 | 2026-10-19 | **Gain lock (user decision): `[camera] gain_mode = "manual"`, `gain_value = 15`.** The focus lock is generalised into `camera/locks.py` (one `Setting` per locked property: focus on `IAMCameraControl`, gain on `IAMVideoProcAmp`; exposure keeps its own module). 15 is the Kreo's maximum: at exposure −6 it gives white 145.6 (the Brio's white was 114–143) and grey-128 54.4, 60 fps kept, temporal noise sd 0.86, no saturation (D42 sweep). Hardware check: `camera --headless --seconds 10` → exposure manual −6, focus manual 410, gain manual 15, all confirmed at open and end, re-applied 0×; 60.24 fps, slowest second 59, 0 failed reads. The grey-128 canvas (54) is still darker than with the Brio (142): the hand-tracking canvas level is to be chosen with `handcheck` (D34). | User decision; D42 measurements | If the room light changes, or `handcheck` shows the canvas too dark for hand detection |
+| D44 | 2026-10-22 | **Phase 2 design approved (user): gesture-driven drawing.** Index finger only = draw, all five fingers open = erase (only the ink touched, strokes split), pinch = select (toolbar press; pick up / move / drop strokes, pulled forward from Phase 3; lasso/AI selection stays in Phase 3), any other shape = hover; the cursor always follows the hand. Bottom-edge toolbar. Debounced modes (§9.10), shape recognition from MediaPipe 3-D world landmarks, white canvas. Acceptance G1–G7 fixed before any run. | User decision; §6 interaction model; Kreo brightness (D43) | After the G1 recording (thresholds) and G2–G7 |
 
 ---
 
