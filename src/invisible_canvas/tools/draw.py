@@ -1,8 +1,8 @@
-"""`draw`: drawing on the projection with hand gestures (Phase 2, brain.md §9.10, D44).
+"""`draw`: drawing on the projection with one hand gesture and toolbar tools (Phase 2, brain.md §9.10, D46).
 
-    index finger only  -> draw          all five fingers open -> erase (only the ink touched)
-    pinch              -> press a toolbar button, or pick up / move / drop a stroke
-    any other shape    -> hover (cursor only)
+    index finger only            -> use the current tool: PEN draws, ERASER erases, MOVE drags a drawing
+    anything else (open hand, fist) -> cursor only
+    cursor held on a toolbar button 1 s (CLEAR 2 s) -> press it
 
 Keyboard (laptop): z undo, y redo, s save, c twice clear, ESC quit. Before tracking, the setup check runs
 (a moved setup is recalibrated automatically and validated first, D39). On exit the canvas is saved to
@@ -32,11 +32,11 @@ from .common import add_device_args, current_seq, now_iso, open_session, save_re
 from .tracking_session import HandPoints, brightness_check, checked_mapper, draw_skeleton
 
 TITLE = "SETUP CHECK before drawing"
-HELP = "index finger = draw | open hand = erase | pinch = select / press | other = hover"
+HELP = "index finger = use the tool | open hand or fist = cursor only | hold the cursor on a button 1 s to press it"
 
 
 def add_parser(subparsers) -> None:
-    p = subparsers.add_parser("draw", help="draw with hand gestures (Phase 2)")
+    p = subparsers.add_parser("draw", help="draw with the index finger and toolbar tools (Phase 2)")
     add_device_args(p)
     p.add_argument("--seconds", type=float, default=0.0, help="stop after N seconds (default: until ESC)")
     p.add_argument("--load", type=Path, help="continue a saved canvas (data/canvas/*.json)")
@@ -103,8 +103,8 @@ def run(config: Config, args) -> int:
             shape, hand = points(frame.timestamp, obs)
             step = engine.update(frame.timestamp, hand)
             controller.handle(step.events)
-            img = renderer.render(canvas, controller, toolbar, mode=step.mode, cursor=step.cursor,
-                                  eraser_radius=hand.eraser_radius if hand else 40.0)
+            controller.update_pointer(frame.timestamp, step.cursor)
+            img = renderer.render(canvas, controller, toolbar, mode=step.mode, cursor=step.cursor)
             s.projector.show(img)
             cv2.pollKey()
             t2 = time.perf_counter()
@@ -131,7 +131,8 @@ def run(config: Config, args) -> int:
                     "DRAW (Phase 2)", f"mode: {step.mode.upper()}   shape: {shape.shape if shape else '-'}",
                     f"processing {fps:.1f} fps, capture -> projector "
                     f"{np.median([r['pipeline_ms'] for r in recent]):.0f} ms (+ display path)",
-                    f"strokes {len(canvas.strokes)} | colour {controller.colour} | width {controller.width}",
+                    f"tool {controller.tool.upper()} | colour {controller.colour} | width {controller.width} | "
+                    f"strokes {len(canvas.strokes)}",
                     "", HELP, "keys: z undo  y redo  s save  c c clear  ESC quit"])
             key = cv2.waitKey(1)
             now = time.perf_counter()
@@ -177,6 +178,7 @@ def run(config: Config, args) -> int:
         "mode_entries": dict(engine.entries),
         "shape_frames": {str(k): v for k, v in shapes.items()},
         "actions": dict(controller.log),
+        "tool_at_end": controller.tool,
         "strokes_on_canvas": len(canvas.strokes),
         "canvas": {"json": str(json_path), "png": str(png_path), "saved_during_run": saved_paths},
         "trace": str(save_dir / "trace.jsonl") if args.trace else None,

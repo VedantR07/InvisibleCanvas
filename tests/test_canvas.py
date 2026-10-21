@@ -6,15 +6,10 @@ import pytest
 from invisible_canvas.canvas.history import AddStroke, History, MoveStrokes, ReplaceStrokes
 from invisible_canvas.canvas.model import MAX_STEP, Canvas, Stroke
 from invisible_canvas.canvas.render import CanvasRenderer
-from invisible_canvas.canvas.toolbar import CLEAR_HOLD_S, COLOURS, WIDTHS, Toolbar
-from invisible_canvas.interaction.drawing import DrawingController
+from invisible_canvas.canvas.toolbar import CLEAR_DWELL_S, COLOURS, DWELL_S, TOOLS, WIDTHS, Toolbar
+from invisible_canvas.interaction.drawing import ERASER_RADIUS, DrawingController
 from invisible_canvas.interaction.engine import (
     DRAW,
-    ERASE_AT,
-    ERASE_END,
-    PINCH_DOWN,
-    PINCH_MOVE,
-    PINCH_UP,
     STROKE_END,
     STROKE_POINT,
     STROKE_START,
@@ -22,7 +17,7 @@ from invisible_canvas.interaction.engine import (
     HandInput,
     InteractionEngine,
 )
-from invisible_canvas.vision.gestures import OPEN, OTHER, PINCH, POINT
+from invisible_canvas.vision.gestures import OTHER, POINT
 
 SIZE = (1280, 720)
 
@@ -141,7 +136,7 @@ def test_a_new_action_clears_redo():
 
 def test_toolbar_layout_fits_the_bottom_band():
     tb = Toolbar(SIZE)
-    assert len(tb.buttons) == len(COLOURS) + len(WIDTHS) + 3
+    assert len(tb.buttons) == len(TOOLS) + len(COLOURS) + len(WIDTHS) + 3
     for b in tb.buttons:
         x0, y0, x1, y1 = b.rect
         assert 0 <= x0 < x1 <= SIZE[0] and tb.top <= y0 < y1 <= SIZE[1]
@@ -162,9 +157,18 @@ def ev(kind, t=0.0, point=None, radius=0.0):
     return Event(kind, t, point, radius)
 
 
-def test_drawing_a_stroke_uses_the_current_colour_and_width():
+def stroke(ctl, points, t=0.0):
+    ctl.handle([ev(STROKE_START, t, points[0])] + [ev(STROKE_POINT, t, p) for p in points[1:]] + [ev(STROKE_END, t)])
+
+
+def hold(ctl, point, t0, seconds, fps=50):
+    for k in range(int(seconds * fps) + 1):
+        ctl.update_pointer(t0 + k / fps, point)
+
+
+def test_pen_draws_with_the_current_colour_and_width():
     c, tb, ctl = controller()
-    ctl.handle([ev(STROKE_START, 0, (100, 100)), ev(STROKE_POINT, 0.02, (150, 120)), ev(STROKE_END, 0.04)])
+    stroke(ctl, [(100, 100), (150, 120)])
     (s,) = c.strokes.values()
     assert s.color == COLOURS["black"] and s.width == WIDTHS["medium"] and ctl.log["strokes"] == 1
     assert ctl.active is None and ctl.history.can_undo
@@ -172,74 +176,103 @@ def test_drawing_a_stroke_uses_the_current_colour_and_width():
 
 def test_no_stroke_starts_on_the_toolbar():
     c, tb, ctl = controller()
-    y = tb.top + 10
-    ctl.handle([ev(STROKE_START, 0, (100, y)), ev(STROKE_POINT, 0.02, (150, 300)), ev(STROKE_END, 0.04)])
+    stroke(ctl, [(100, tb.top + 10), (150, 300)])
     assert c.strokes == {} and ctl.log["strokes_refused_on_toolbar"] == 1
 
 
-def test_pinch_presses_colour_width_undo_redo_once():
+def test_holding_the_cursor_on_a_button_presses_it_once():
     c, tb, ctl = controller()
-    ctl.handle([ev(STROKE_START, 0, (100, 100)), ev(STROKE_POINT, 0, (200, 100)), ev(STROKE_END, 0)])
-    for name in ("red", "thick"):
-        b = tb.button(name).centre
-        ctl.handle([ev(PINCH_DOWN, 1, b), ev(PINCH_MOVE, 1.1, b), ev(PINCH_UP, 1.2, b)])
-    assert (ctl.colour, ctl.width) == ("red", "thick")
-    u = tb.button("undo").centre
-    ctl.handle([ev(PINCH_DOWN, 2, u)] + [ev(PINCH_MOVE, 2 + k / 50, u) for k in range(100)] + [ev(PINCH_UP, 4, u)])
-    assert c.strokes == {} and ctl.log["undo"] == 1                 # held for 2 s: still one undo
-    r = tb.button("redo").centre
-    ctl.handle([ev(PINCH_DOWN, 5, r), ev(PINCH_UP, 5.1, r)])
-    assert len(c.strokes) == 1 and ctl.log["press:redo"] == 1
+    red = tb.button("red").centre
+    hold(ctl, red, 0.0, DWELL_S * 0.9)
+    assert ctl.colour == "black" and ctl.dwell_progress[0] == "red" and 0.8 < ctl.dwell_progress[1] < 1.0
+    hold(ctl, red, DWELL_S * 0.9, 2.0)                      # keeps resting there: still one press
+    assert ctl.colour == "red" and ctl.log["press:red"] == 1 and ctl.dwell_progress is None
+    ctl.update_pointer(5.0, (640, 300))                     # leave and come back: a second press
+    hold(ctl, red, 5.1, DWELL_S + 0.05)
+    assert ctl.log["press:red"] == 2
 
 
-def test_clear_needs_the_pinch_held_on_it():
+def test_choosing_a_colour_selects_the_pen():
     c, tb, ctl = controller()
-    ctl.handle([ev(STROKE_START, 0, (100, 100)), ev(STROKE_POINT, 0, (200, 100)), ev(STROKE_END, 0)])
-    b = tb.button("clear").centre
-    ctl.handle([ev(PINCH_DOWN, 1, b), ev(PINCH_MOVE, 1.5, b)])
-    assert len(c.strokes) == 1 and ctl.clear_progress == pytest.approx(0.5)
-    ctl.handle([ev(PINCH_UP, 1.6, b)])                                  # released early: nothing cleared
-    assert len(c.strokes) == 1 and ctl.clear_progress is None
-    ctl.handle([ev(PINCH_DOWN, 2, b), ev(PINCH_MOVE, 2.5, b), ev(PINCH_MOVE, 2.5, (b[0], 300))])   # slid off
-    ctl.handle([ev(PINCH_MOVE, 3.5, b), ev(PINCH_UP, 3.6, b)])
-    assert len(c.strokes) == 1
-    ctl.handle([ev(PINCH_DOWN, 4, b), ev(PINCH_MOVE, 4 + CLEAR_HOLD_S, b), ev(PINCH_UP, 5.2, b)])
+    hold(ctl, tb.button("eraser").centre, 0.0, DWELL_S + 0.05)
+    assert ctl.tool == "eraser"
+    ctl.update_pointer(2.0, None)
+    hold(ctl, tb.button("blue").centre, 2.1, DWELL_S + 0.05)
+    assert (ctl.tool, ctl.colour) == ("pen", "blue")
+
+
+def test_moving_between_buttons_or_losing_the_hand_restarts_the_dwell():
+    c, tb, ctl = controller()
+    hold(ctl, tb.button("red").centre, 0.0, 0.6)
+    hold(ctl, tb.button("green").centre, 0.62, 0.6)         # 0.6 s each: neither fires
+    ctl.update_pointer(1.3, None)
+    hold(ctl, tb.button("green").centre, 1.32, 0.6)
+    assert ctl.colour == "black" and not any(k.startswith("press:") for k in ctl.log)
+
+
+def test_clear_needs_two_seconds():
+    c, tb, ctl = controller()
+    stroke(ctl, [(100, 100), (200, 100)])
+    clear = tb.button("clear").centre
+    hold(ctl, clear, 0.0, 1.5)
+    assert len(c.strokes) == 1 and ctl.dwell_progress[0] == "clear"
+    hold(ctl, clear, 1.52, CLEAR_DWELL_S - 1.5)
     assert c.strokes == {} and ctl.log["clear"] == 1
     ctl.undo()
     assert len(c.strokes) == 1
 
 
-def test_pinch_moves_a_stroke_as_one_undo_step():
+def test_undo_and_redo_buttons():
     c, tb, ctl = controller()
-    ctl.handle([ev(STROKE_START, 0, (100, 100)), ev(STROKE_POINT, 0, (200, 100)), ev(STROKE_END, 0)])
+    stroke(ctl, [(100, 100), (200, 100)])
+    hold(ctl, tb.button("undo").centre, 0.0, DWELL_S + 0.05)
+    assert c.strokes == {} and ctl.log["undo"] == 1
+    ctl.update_pointer(2.0, None)
+    hold(ctl, tb.button("redo").centre, 2.1, DWELL_S + 0.05)
+    assert len(c.strokes) == 1 and ctl.log["redo"] == 1
+
+
+def test_eraser_tool_erases_along_the_path_as_one_undo_step():
+    c, tb, ctl = controller()
+    for y in (100, 200, 300):
+        stroke(ctl, [(100, y), (500, y)])
+    before = sorted(snapshot(c))
+    ctl.tool = "eraser"
+    stroke(ctl, [(300, 60 + 10 * k) for k in range(30)])     # a vertical swipe across the three lines
+    assert len(c.strokes) == 6 and ctl.log["erase_strokes"] == 1
+    r = ERASER_RADIUS["medium"] + WIDTHS["medium"] / 2
+    for s in c.strokes.values():
+        assert all(abs(x - 300) > r for x, _ in s.points)
+    ctl.undo()
+    assert sorted(snapshot(c)) == before
+    ctl.redo()
+    assert len(c.strokes) == 6
+
+
+def test_move_tool_drags_the_drawing_under_the_fingertip():
+    c, tb, ctl = controller()
+    stroke(ctl, [(100, 100), (200, 100)])
     (sid,) = c.strokes
-    ctl.handle([ev(PINCH_DOWN, 1, (150, 102)), ev(PINCH_MOVE, 1.1, (170, 122))])
+    ctl.tool = "move"
+    ctl.handle([ev(STROKE_START, 1, (150, 102)), ev(STROKE_POINT, 1.1, (170, 122))])
     assert ctl.selected == sid
-    ctl.handle([ev(PINCH_MOVE, 1.2, (190, 142)), ev(PINCH_UP, 1.3, (190, 142))])
+    ctl.handle([ev(STROKE_POINT, 1.2, (190, 142)), ev(STROKE_END, 1.3)])
     assert c.strokes[sid].points[0] == (140.0, 140.0) and ctl.log["moves"] == 1 and ctl.selected is None
     ctl.undo()
     assert c.strokes[sid].points[0] == (100.0, 100.0)
 
 
-def test_pinch_on_empty_canvas_does_nothing():
+def test_move_on_empty_canvas_does_nothing():
     c, tb, ctl = controller()
-    ctl.handle([ev(PINCH_DOWN, 1, (600, 300)), ev(PINCH_MOVE, 1.1, (650, 300)), ev(PINCH_UP, 1.2, (650, 300))])
+    ctl.tool = "move"
+    stroke(ctl, [(600, 300), (650, 300)])
     assert c.strokes == {} and not ctl.history.can_undo
 
 
-def test_one_erase_gesture_is_one_undo_step():
+def test_unknown_events_are_refused():
     c, tb, ctl = controller()
-    for y in (100, 200, 300):
-        ctl.handle([ev(STROKE_START, 0, (100, y)), ev(STROKE_POINT, 0, (500, y)), ev(STROKE_END, 0)])
-    before = sorted(snapshot(c))
-    ctl.handle([ev(ERASE_AT, 1 + k / 50, (300, 80 + 10 * k), 25) for k in range(25)] + [ev(ERASE_END, 2)])
-    assert len(c.strokes) == 6 and ctl.log["erase_gestures"] == 1     # each line cut in two
-    for s in c.strokes.values():
-        assert all(abs(x - 300) > 25 for x, _ in s.points)
-    ctl.undo()
-    assert sorted(snapshot(c)) == before
-    ctl.redo()
-    assert len(c.strokes) == 6
+    with pytest.raises(ValueError):
+        ctl.handle([ev("pinch_down", 0, (1, 1))])
 
 
 # -- engine + controller together -------------------------------------------------------------------------
@@ -247,7 +280,9 @@ def test_one_erase_gesture_is_one_undo_step():
 def feed(engine, ctl, shapes, path):
     for i, (shape, p) in enumerate(zip(shapes, path)):
         hand = None if shape is None else HandInput(shape, p, p, p, 30.0)
-        ctl.handle(engine.update(i / 54, hand).events)
+        step = engine.update(i / 54, hand)
+        ctl.handle(step.events)
+        ctl.update_pointer(i / 54, step.cursor)
 
 
 def test_a_drawn_letter_then_a_glitch_free_hover():

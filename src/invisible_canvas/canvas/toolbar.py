@@ -1,7 +1,8 @@
-"""The projected toolbar along the bottom edge (brain.md §9.10, D44): pressed with a pinch. Pure layout.
+"""The projected toolbar along the bottom edge (brain.md §9.10, D44, D46). Pure layout.
 
-Buttons are ~100 x 56 projector px (about 10 x 6 cm on the 2026-10 wall, 9.9 px/cm). Clear acts only after the
-pinch has been held on it for `CLEAR_HOLD_S`, so it cannot be hit by accident.
+A button is pressed by holding the cursor on it for `DWELL_S` (CLEAR: `CLEAR_DWELL_S`, so it cannot be hit
+by accident); D46 replaced the pinch, which the camera cannot see from behind the user. Buttons are 80 x 56
+projector px (about 8 x 6 cm on the 2026-10 wall).
 """
 
 from __future__ import annotations
@@ -15,14 +16,16 @@ COLOURS = {          # BGR, dark ink on the white canvas
     "green": (40, 150, 40),
 }
 WIDTHS = {"thin": 4.0, "medium": 8.0, "thick": 14.0}
+TOOLS = ("pen", "eraser", "move")
 ACTIONS = ("undo", "redo", "clear")
-CLEAR_HOLD_S = 1.0
+DWELL_S = 1.0
+CLEAR_DWELL_S = 2.0
 
 
 @dataclass(frozen=True)
 class Button:
     name: str                     # "black", "thin", "undo", ...
-    kind: str                     # "colour", "width" or "action"
+    kind: str                     # "tool", "colour", "width" or "action"
     rect: tuple[int, int, int, int]   # x0, y0, x1, y1 (inclusive-exclusive)
 
     def contains(self, point) -> bool:
@@ -37,13 +40,14 @@ class Button:
 
 
 class Toolbar:
-    def __init__(self, size: tuple[int, int], *, height: int = 72, button: int = 100, gap: int = 10,
-                 group_gap: int = 36):
+    def __init__(self, size: tuple[int, int], *, height: int = 72, button: int = 80, gap: int = 8,
+                 group_gap: int = 28):
         w, h = int(size[0]), int(size[1])
         self.size, self.height = (w, h), height
         self.top = h - height
-        names = [(n, "colour") for n in COLOURS] + [(n, "width") for n in WIDTHS] + [(n, "action") for n in ACTIONS]
-        groups = [len(COLOURS), len(WIDTHS), len(ACTIONS)]
+        names = ([(n, "tool") for n in TOOLS] + [(n, "colour") for n in COLOURS] + [(n, "width") for n in WIDTHS]
+                 + [(n, "action") for n in ACTIONS])
+        groups = [len(TOOLS), len(COLOURS), len(WIDTHS), len(ACTIONS)]
         total = len(names) * button + (len(names) - len(groups)) * gap + (len(groups) - 1) * group_gap
         x = max((w - total) // 2, 0)
         y0, y1 = self.top + (height - 56) // 2, self.top + (height - 56) // 2 + 56
@@ -73,3 +77,7 @@ class Toolbar:
 
     def button(self, name: str) -> Button:
         return next(b for b in self.buttons if b.name == name)
+
+    @staticmethod
+    def dwell_s(button: Button) -> float:
+        return CLEAR_DWELL_S if button.name == "clear" else DWELL_S

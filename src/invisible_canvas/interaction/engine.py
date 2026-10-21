@@ -1,9 +1,11 @@
-"""Interaction engine (Phase 2, brain.md §6, §9.10, D44). Pure: no I/O.
+"""Interaction engine (Phase 2, brain.md §6, §9.10, D44, D46). Pure: no I/O.
 
 Per camera frame: the classified hand shape (or no hand) and the hand's points in projector px -> the mode
 and this frame's canvas events.
 
-Modes: IDLE (no hand), HOVER (cursor only), DRAW, ERASE, SELECT.
+Modes: IDLE (no hand), HOVER (cursor only), DRAW, ERASE, SELECT. Which hand shape leads to which mode is the
+`mode_of` mapping: the default (D46) is index finger only -> DRAW (the current tool), everything else -> HOVER;
+GESTURE_MODES is the original D44 mapping (open hand -> ERASE, pinch -> SELECT).
 - An active mode (DRAW, ERASE, SELECT) starts only after its shape was seen in `enter_frames` consecutive
   frames; a mode ends only after another shape was seen in `exit_frames` consecutive frames. A single misread
   frame therefore never starts or ends a stroke.
@@ -23,7 +25,8 @@ from ..vision.gestures import OPEN, OTHER, PINCH, POINT
 
 IDLE, HOVER, DRAW, ERASE, SELECT = "idle", "hover", "draw", "erase", "select"
 ACTIVE = (DRAW, ERASE, SELECT)
-MODE_OF = {POINT: DRAW, OPEN: ERASE, PINCH: SELECT, OTHER: HOVER}
+GESTURE_MODES = {POINT: DRAW, OPEN: ERASE, PINCH: SELECT, OTHER: HOVER}   # D44 (pinch not observable, D46)
+TOOL_MODES = {POINT: DRAW, OPEN: HOVER, PINCH: HOVER, OTHER: HOVER}       # D46: one gesture + toolbar tools
 
 STROKE_START, STROKE_POINT, STROKE_END = "stroke_start", "stroke_point", "stroke_end"
 ERASE_AT, ERASE_END = "erase", "erase_end"
@@ -50,7 +53,9 @@ class Event:
 
 @dataclass(frozen=True)
 class EngineParams:
-    enter_frames: int = 4            # ~70 ms at 54 fps
+    # D46: G1 run 1 had non-pointing shapes misread as POINT for up to 6 consecutive frames (pinch-like); open
+    # hand and fist at most 3. 7 frames (~130 ms at 54 fps) blocks those; the stroke start is buffered, not lost.
+    enter_frames: int = 7
     exit_frames: int = 3
     hold_s: float = 0.15             # the cursor's dropout hold (D33)
 
@@ -65,10 +70,11 @@ class Step:
 
 
 class InteractionEngine:
-    def __init__(self, params: EngineParams = EngineParams()):
+    def __init__(self, params: EngineParams = EngineParams(), mode_of: dict | None = None):
         if params.enter_frames < 1 or params.exit_frames < 1:
             raise ValueError("enter_frames and exit_frames must be at least 1")
         self.params = params
+        self.mode_of = dict(TOOL_MODES if mode_of is None else mode_of)
         self.mode = IDLE
         self._candidate: str | None = None
         self._buffer: list[tuple[float, HandInput]] = []    # frames of the candidate mode, in order
@@ -86,7 +92,7 @@ class InteractionEngine:
         self._last_seen, self._last = t, hand
         if self.mode == IDLE:                       # a hand appears: the cursor shows at once
             self._switch(HOVER)
-        target = MODE_OF[hand.shape]
+        target = self.mode_of[hand.shape]
         if target != self._candidate:
             self._candidate, self._buffer = target, []
         self._buffer.append((t, hand))

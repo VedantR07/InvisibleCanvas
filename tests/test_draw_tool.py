@@ -128,62 +128,79 @@ def test_draw_draws_one_stroke_and_saves_the_canvas(tmp_path, monkeypatch):
     assert shown and shown[-1].shape == (720, 1280, 3)
 
 
-def test_draw_erases_and_presses_undo(tmp_path, monkeypatch):
+def test_draw_erases_with_the_eraser_tool_and_undoes_by_dwell(tmp_path, monkeypatch):
     from invisible_canvas.canvas.toolbar import Toolbar
-    undo = Toolbar((1280, 720)).button("undo").centre
+    tb = Toolbar((1280, 720))
+    eraser, undo = tb.button("eraser").centre, tb.button("undo").centre
 
     def schedule(s, mapper):
         if s < 0.5:
-            return POINT, (300.0 + 600 * s, 200.0)                  # draw
+            return POINT, (300.0 + 600 * s, 200.0)                  # pen: a line from x 300 to 600
         if s < 0.6:
-            return OTHER, (600.0, 300.0)
-        if s < 0.9:
-            return OPEN, (450.0, 160.0)                             # palm over the middle of the line: erase
-        if s < 1.0:
-            return OTHER, (600.0, 500.0)
-        if s < 1.2:
-            return PINCH, undo                                      # undo the erase
-        return OTHER, (600.0, 400.0)
+            return OTHER, (640.0, 400.0)
+        if s < 1.9:
+            return OTHER, eraser                                     # rest on ERASER for 1.3 s: press
+        if s < 2.0:
+            return OTHER, (450.0, 120.0)
+        if s < 2.4:
+            return POINT, (450.0, 120.0 + 400 * (s - 2.0))          # swipe down across the line at x 450
+        if s < 2.5:
+            return OTHER, (640.0, 400.0)
+        if s < 3.8:
+            return OTHER, undo                                       # rest on UNDO: the erase is undone
+        return OTHER, (640.0, 400.0)
+
+    code, config, _ = run_tool(draw_tool, tmp_path, monkeypatch, ["draw", "--seconds", "4.2"], schedule)
+    report = json.loads(sorted(config.reports_dir.glob("draw-*.json"))[-1].read_text())
+    actions = report["actions"]
+    assert actions.get("strokes") == 1 and actions.get("press:eraser") == 1
+    assert actions.get("erase_strokes") == 1 and actions.get("press:undo") == 1 and actions.get("undo") == 1
+    assert report["strokes_on_canvas"] == 1 and report["tool_at_end"] == "eraser"
+
+
+def test_open_hand_and_fist_never_draw(tmp_path, monkeypatch):
+    def schedule(s, mapper):
+        return (OPEN if int(s * 4) % 2 else OTHER), (300.0 + 200 * s, 300.0)
 
     code, config, _ = run_tool(draw_tool, tmp_path, monkeypatch, ["draw", "--seconds", "1.5"], schedule)
     report = json.loads(sorted(config.reports_dir.glob("draw-*.json"))[-1].read_text())
-    actions = report["actions"]
-    assert actions.get("strokes") == 1 and actions.get("erase_gestures") == 1
-    assert actions.get("press:undo") == 1 and actions.get("undo") == 1
-    assert report["strokes_on_canvas"] == 1                          # the erase was undone: one whole line again
+    assert report["strokes_on_canvas"] == 0 and "draw" not in report["mode_entries"]
 
 
-def test_g1_evaluation_pass_and_failures():
+def test_g1_prime_evaluation_pass_and_failures():
+    shape_for = {"point": POINT, "open": OPEN, "fist": OTHER}
+
     def records(rate_ok=True, draw_glitch=False, hand=True):
         out, t = [], 0.0
-        for name, expected in gestures_tool.EXPECTED.items():
-            for phase, n in (("prepare", 10), ("hold", 60)):
+        for name in gestures_tool.EXPECTED:
+            for phase, n in (("wait", 5), ("prepare", 10), ("hold", 60)):
                 for k in range(n):
-                    shape = expected
-                    if phase == "hold" and not rate_ok and name == "open" and k % 10 == 0:
-                        shape = OTHER                                # 90 % correct
-                    if draw_glitch and name == "fist" and phase == "hold" and 20 <= k < 26:
-                        shape = POINT                                # 6 frames: long enough to enter DRAW
+                    shape = shape_for[name]
+                    if phase == "hold" and not rate_ok and name == "point" and k % 10 == 0:
+                        shape = OTHER                                # 90 % POINT
+                    if draw_glitch and name == "fist" and phase == "hold" and 20 <= k < 28:
+                        shape = POINT                                # 8 frames: long enough to enter DRAW
                     out.append({"t": t, "prompt": name, "phase": phase, "shape": shape if hand else None})
                     t += 1 / 54
         return out
 
     ok = gestures_tool.evaluate(records())
     assert ok["pass"] and all(p["rate"] == 1.0 for p in ok["prompts"].values())
+    assert gestures_tool.evaluate(records())["prompts"]["fist"]["expected"] == gestures_tool.NOT_POINT
     low = gestures_tool.evaluate(records(rate_ok=False))
-    assert not low["pass"] and low["prompts"]["open"]["rate"] == pytest.approx(0.9) and low["evaluable"]
+    assert not low["pass"] and low["prompts"]["point"]["rate"] == pytest.approx(0.9) and low["evaluable"]
     glitch = gestures_tool.evaluate(records(draw_glitch=True))
     assert glitch["draw_frames_in_non_point_holds"] > 0 and not glitch["pass"]
-    assert glitch["prompts"]["fist"]["rate"] == pytest.approx(54 / 60)
+    assert glitch["prompts"]["fist"]["rate"] == pytest.approx(52 / 60)
     none = gestures_tool.evaluate(records(hand=False))
     assert not none["evaluable"] and not none["pass"]
 
 
 def test_gestures_tool_records_frames_and_reports(tmp_path, monkeypatch):
-    plan = list(gestures_tool.EXPECTED.values())
+    plan = [POINT, OPEN, OTHER]
 
-    def schedule(s, mapper):                     # show each prompt's shape (prompts last 0.5 s each)
-        return plan[min(int(s / 0.5), len(plan) - 1)], (640.0, 360.0)
+    def schedule(s, mapper):                     # roughly each prompt's shape (prompts last ~0.55 s each)
+        return plan[min(int(s / 0.55), len(plan) - 1)], (640.0, 360.0)
 
     code, config, _ = run_tool(gestures_tool, tmp_path, monkeypatch,
                                ["gestures", "--rounds", "1", "--prepare", "0.15", "--hold", "0.35"], schedule)

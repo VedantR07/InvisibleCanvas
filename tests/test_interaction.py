@@ -14,6 +14,7 @@ from invisible_canvas.interaction.engine import (
     STROKE_END,
     STROKE_POINT,
     STROKE_START,
+    GESTURE_MODES,
     EngineParams,
     HandInput,
     InteractionEngine,
@@ -21,6 +22,11 @@ from invisible_canvas.interaction.engine import (
 from invisible_canvas.vision.gestures import OPEN, OTHER, PINCH, POINT
 
 DT = 1 / 54
+
+
+def make():
+    """The engine mechanics with the D44 gesture modes and 4 enter frames (D46 defaults are tested below)."""
+    return InteractionEngine(EngineParams(enter_frames=4), mode_of=GESTURE_MODES)
 
 
 def hand(shape, x=100.0, y=200.0):
@@ -41,13 +47,13 @@ def kinds(steps):
 
 
 def test_a_hand_appearing_hovers_at_once_and_shows_the_cursor():
-    e = InteractionEngine()
+    e = make()
     s = e.update(0.0, hand(OTHER))
     assert s.mode == HOVER and s.cursor == (100.0, 200.0) and s.events == ()
 
 
 def test_drawing_starts_after_the_enter_frames_and_keeps_the_first_point():
-    e = InteractionEngine()
+    e = make()
     steps = run(e, [OTHER, POINT, POINT, POINT, POINT, POINT])
     assert [s.mode for s in steps] == [HOVER, HOVER, HOVER, HOVER, DRAW, DRAW]
     events = [ev for s in steps for ev in s.events]
@@ -58,14 +64,14 @@ def test_drawing_starts_after_the_enter_frames_and_keeps_the_first_point():
 
 @pytest.mark.parametrize("glitch", [[POINT], [POINT, POINT], [POINT, POINT, POINT]])
 def test_short_point_glitches_never_draw(glitch):
-    e = InteractionEngine()
+    e = make()
     steps = run(e, [OTHER] + glitch + [OTHER] * 5)
     assert DRAW not in [s.mode for s in steps]
     assert kinds(steps) == []
 
 
 def test_a_misread_frame_inside_a_stroke_neither_ends_it_nor_adds_its_point():
-    e = InteractionEngine()
+    e = make()
     steps = run(e, [POINT] * 5 + [OPEN] + [POINT] * 3)
     assert all(s.mode == DRAW for s in steps[3:])
     assert kinds(steps).count(STROKE_START) == 1 and STROKE_END not in kinds(steps)
@@ -74,7 +80,7 @@ def test_a_misread_frame_inside_a_stroke_neither_ends_it_nor_adds_its_point():
 
 
 def test_stroke_end_drops_the_changing_frames():
-    e = InteractionEngine()
+    e = make()
     steps = run(e, [POINT] * 6 + [OTHER] * 3 + [OTHER])
     k = kinds(steps)
     assert k.count(STROKE_END) == 1
@@ -86,7 +92,7 @@ def test_stroke_end_drops_the_changing_frames():
 
 
 def test_switching_from_draw_to_erase_ends_the_stroke_first():
-    e = InteractionEngine()
+    e = make()
     steps = run(e, [POINT] * 5 + [OPEN] * 5)
     k = kinds(steps)
     assert k.index(STROKE_END) < k.index(ERASE_AT)
@@ -97,7 +103,7 @@ def test_switching_from_draw_to_erase_ends_the_stroke_first():
 
 
 def test_erase_and_pinch_have_end_events():
-    e = InteractionEngine()
+    e = make()
     k = kinds(run(e, [OPEN] * 5 + [OTHER] * 3 + [PINCH] * 5 + [OTHER] * 3))
     assert k.count(ERASE_END) == 1 and k.count(PINCH_DOWN) == 1 and k.count(PINCH_UP) == 1
     assert k.index(ERASE_END) < k.index(PINCH_DOWN) < k.index(PINCH_UP)
@@ -105,14 +111,14 @@ def test_erase_and_pinch_have_end_events():
 
 
 def test_pinch_release_is_where_the_pinch_was():
-    e = InteractionEngine()
+    e = make()
     steps = run(e, [PINCH] * 6 + [OTHER] * 3)
     up = [ev for s in steps for ev in s.events if ev.kind == PINCH_UP][0]
     assert up.point == (155.0, 205.0)              # the last PINCH frame (index 5), not an opening frame
 
 
 def test_a_short_dropout_keeps_the_stroke():
-    e = InteractionEngine()
+    e = make()
     steps = run(e, [POINT] * 6 + [None] * 5 + [POINT] * 3)       # 5 frames = 93 ms < 150 ms
     assert STROKE_END not in kinds(steps)
     assert all(s.mode == DRAW for s in steps[4:])
@@ -120,29 +126,29 @@ def test_a_short_dropout_keeps_the_stroke():
 
 
 def test_a_long_dropout_ends_the_stroke_and_hides_the_cursor():
-    e = InteractionEngine()
+    e = make()
     steps = run(e, [POINT] * 6 + [None] * 12)                    # 222 ms > 150 ms
     assert kinds(steps).count(STROKE_END) == 1
     assert steps[-1].mode == IDLE and steps[-1].cursor is None
 
 
 def test_returning_after_a_long_dropout_needs_the_enter_frames_again():
-    e = InteractionEngine()
+    e = make()
     steps = run(e, [POINT] * 6 + [None] * 12 + [POINT] * 2)
     assert steps[-1].mode == HOVER and kinds(steps).count(STROKE_START) == 1
 
 
 def test_cursor_point_per_mode():
-    e = InteractionEngine()
+    e = make()
     assert run(e, [POINT] * 5)[-1].cursor == (140.0, 200.0)               # fingertip
-    e = InteractionEngine()
+    e = make()
     assert run(e, [OPEN] * 5)[-1].cursor == (180.0, 230.0)                # palm
-    e = InteractionEngine()
+    e = make()
     assert run(e, [PINCH] * 5)[-1].cursor == (145.0, 205.0)               # pinch point
 
 
 def test_statistics_and_pending():
-    e = InteractionEngine()
+    e = make()
     steps = run(e, [POINT] * 5 + [OTHER])
     assert steps[-1].pending == HOVER and steps[-1].mode == DRAW
     assert e.entries[DRAW] == 1 and e.mode_frames[HOVER] == 3 and e.mode_frames[DRAW] == 3   # draw from frame 3
@@ -151,3 +157,22 @@ def test_statistics_and_pending():
 def test_parameters_are_validated():
     with pytest.raises(ValueError):
         InteractionEngine(EngineParams(enter_frames=0))
+
+
+def test_default_is_one_gesture_with_seven_enter_frames():
+    e = InteractionEngine()
+    assert e.params.enter_frames == 7
+    for shape in (OPEN, PINCH, OTHER):                      # D46: only pointing does something
+        steps = run(InteractionEngine(), [shape] * 20)
+        assert {s.mode for s in steps} == {HOVER} and kinds(steps) == []
+    steps = run(e, [OTHER] + [POINT] * 10)
+    assert [s.mode for s in steps].index(DRAW) == 7         # the 7th POINT frame
+    first = next(ev for s in steps for ev in s.events)
+    assert first.kind == STROKE_START and first.point == (110.0, 200.0)   # still the first POINT frame
+
+
+@pytest.mark.parametrize("run_length", [1, 3, 6])
+def test_observed_misread_runs_never_draw(run_length):
+    # G1 run 1: non-pointing shapes read as POINT for at most 6 frames (pinch-like), open/fist at most 3.
+    steps = run(InteractionEngine(), [OPEN] * 5 + [POINT] * run_length + [OPEN] * 10)
+    assert DRAW not in [s.mode for s in steps]
