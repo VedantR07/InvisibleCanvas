@@ -785,6 +785,16 @@ Resolved on 2026-10-08: Python install (D12), surface orientation (D13), camera 
 
 ### 13.2 Test log
 
+**2026-10-22 (00:34): G1 run 1 — FAIL** (`gestures-20261022-003634.json`, frames `data/diagnostics/gestures-20261022-003449/`)
+
+- Results (hold phases, hand-present frames): point 8.6 % of 35 (of 367 hold frames); open 79.7 % of 335; pinch 2.8 % of 353 (301 read as other); fist 26.6 % of 402 (258 read as **pinch**); two 78.7 % of 328; DRAW during non-POINT holds 61 frames. **G1 FAIL.** Recorded as is; no threshold changed for this result.
+- Analysis (saved frames + world landmarks):
+  - Round 1 POINT: no hand in the picture (the prompt started before the user was in place: a protocol flaw of the tool). Round 2 POINT: the arm entered from the left and the hand pointed up and away; MediaPipe found it in 15/175 frames. Round 2 had low hand presence for every prompt (66–132 of ~195).
+  - **Pinch vs fist is not observable from this camera position:** the camera sees the back of the hand, the touching fingertips are hidden, and MediaPipe guesses them. Measured thumb–index ratio: the user's pinch median 0.66 [p10 0.40], the user's fist 0.25 [0.17]: inverted. Index fold: pinch 81°, fist 82° (the 110° fist guard never applies).
+  - Open hand: finger folds median 22–32°, p90 up to 49° (limit 45°).
+  - Design evidence only (same recording, NOT a G1 result): a classifier without pinch and with two fingers as a shape gives open 80–92 %, two 71–72 %, fist→other 87–91 %, for extended limits 45–55°. No variant reaches 95 % per frame.
+- Conclusion: from behind the user, per-frame landmark shapes are reliable only for a clearly visible index-only point seen side-on (2026-10-21: 97 % tracked; ~80 % POINT including other shapes). Pinch cannot be used on this setup. A re-test must be a fresh recording (the adjusted classifier must not be judged on the recording it was adjusted on).
+
 **2026-10-22: Phase 2 implementation (D44, D45)**
 
 - Offline evidence (66 saved frames of the 2026-10-21 cursor run, real MediaPipe pass, world landmarks present: wrist→middle knuckle 0.099 m): straightness classifier POINT 10/66 (world) / 8/66 (image); fold-angle classifier POINT 53/66 (world) / 52/66 (image). Skeleton overlays: in the pointing frames MediaPipe fits the hand (index along the finger, others folded into the palm); the non-POINT frames are open hands (9.8, 10.8, 20.8 s), two fingers (18.8 s), transitions (72–74, 83–84 s) and one misfit with all fingers drawn on the index (12.8 s). Pinch ratio on pointing frames ≥ 0.43 (enter 0.25).
