@@ -39,6 +39,9 @@ python -m invisible_canvas mapdemo        # hover in the camera view -> crosshai
 python -m invisible_canvas cursor         # index-fingertip cursor on the projection (--accuracy: 9-target test)
 python -m invisible_canvas detect         # cross-detector diagnostic (read-only)
 python -m invisible_canvas setupcheck     # repeated automatic setup checks (read-only)
+python -m invisible_canvas gestures       # Phase 2: guided recording of the hand shapes (G1)
+python -m invisible_canvas draw           # Phase 2: draw with gestures (index = draw, open hand = erase,
+                                          #          pinch = select/press, other = hover)
 python -m pytest                          # unit tests
 ```
 

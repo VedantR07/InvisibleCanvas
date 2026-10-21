@@ -13,13 +13,13 @@ from .camera.manager import CameraError
 from .config import ConfigError, load_config, with_overrides
 from .display import monitors
 from .tools import (
-    calibrate, camera_check, cursor, detect_check, devices, hand_check, latency, map_demo, projector_check, recalibrate,
+    calibrate, camera_check, cursor, detect_check, devices, draw, gestures, hand_check, latency, map_demo, projector_check, recalibrate,
     setup_check, validate,
 )
 
-# Order = the order of the Phase 1A runbook (brain.md section 9.5), then Phase 1B-1D tools.
+# Order = the order of the Phase 1A runbook (brain.md section 9.5), then Phase 1B-1D tools, then Phase 2.
 TOOLS = (devices, projector_check, camera_check, latency, calibrate, validate, map_demo, detect_check, setup_check,
-         cursor, hand_check, recalibrate)
+         cursor, hand_check, recalibrate, gestures, draw)
 
 # Expected, user-fixable failures: print the message, no traceback.
 USER_ERRORS = (CameraError, CalibrationError, monitors.ProjectorNotFound)
