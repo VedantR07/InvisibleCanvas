@@ -17,6 +17,10 @@ GESTURE_MODES is the original D44 mapping (open hand -> ERASE, pinch -> SELECT).
 - Keep drawing (D47): once in DRAW, a frame whose hand is still within the looser keep-drawing band
   (`HandInput.keeps_draw`, from vision.gestures) continues the stroke whatever its strict shape. Starting a
   stroke still needs `enter_frames` strict POINT frames.
+- Pen-lift delay (D49): DRAW ends only once no frame has continued the stroke for `lift_s` (other shapes and
+  no hand alike), and after at least `exit_frames` frames of the new shape. A shorter interruption (a finger
+  turned towards the wall, a misread, a lost hand) is bridged: drawing goes on from the next continuing frame
+  with a straight join, and the interrupted frames are never drawn.
 """
 
 from __future__ import annotations
@@ -62,6 +66,9 @@ class EngineParams:
     enter_frames: int = 7
     exit_frames: int = 3
     hold_s: float = 0.15             # the cursor's dropout hold (D33)
+    # D49: G3 runs 1-2 broke strokes on 0.2-1.1 s interruptions while the user kept pointing; deliberate lifts took
+    # >= 1.1 s. On their traces a 0.6-s delay left no break shorter than 1 s (run 2: 20 -> 16 strokes; G2: 0).
+    lift_s: float = 0.6
 
 
 @dataclass(frozen=True)
@@ -77,6 +84,8 @@ class InteractionEngine:
     def __init__(self, params: EngineParams = EngineParams(), mode_of: dict | None = None):
         if params.enter_frames < 1 or params.exit_frames < 1:
             raise ValueError("enter_frames and exit_frames must be at least 1")
+        if params.lift_s < 0:
+            raise ValueError("lift_s must not be negative")
         self.params = params
         self.mode_of = dict(TOOL_MODES if mode_of is None else mode_of)
         self.mode = IDLE
@@ -85,6 +94,7 @@ class InteractionEngine:
         self._last_seen: float | None = None
         self._last: HandInput | None = None
         self._pinch_at: tuple[float, float] | None = None     # last pinch point while in SELECT
+        self._kept_at: float | None = None                    # last frame that continued DRAW (D49)
         self.mode_frames: Counter = Counter()                 # frames spent in each mode
         self.entries: Counter = Counter()                     # times each mode was entered
 
@@ -106,21 +116,29 @@ class InteractionEngine:
         if target == self.mode:
             self._buffer = self._buffer[-1:]
             events += self._continue(t, hand)
+            if self.mode == DRAW:
+                self._kept_at = t
         else:
             needed = self.params.exit_frames
             if target in ACTIVE:
                 needed = max(self.params.enter_frames, self.params.exit_frames if self.mode in ACTIVE else 0)
-            if len(self._buffer) >= needed:
+            lifting = self.mode == DRAW and t - self._kept_at < self.params.lift_s
+            if len(self._buffer) >= needed and not lifting:
                 events += self._leave(t)
                 self._switch(target)
                 buffered, self._buffer = self._buffer, self._buffer[-1:]
                 events += self._enter(buffered)
+                if self.mode == DRAW:
+                    self._kept_at = t
         self.mode_frames[self.mode] += 1
         pending = self._candidate if self._candidate != self.mode else None
         return Step(self.mode, self._cursor(hand), tuple(events), hand.shape, pending)
 
     def _no_hand(self, t: float) -> Step:
-        if self.mode != IDLE and self._last_seen is not None and t - self._last_seen <= self.params.hold_s:
+        holding = self.mode != IDLE and self._last_seen is not None and t - self._last_seen <= self.params.hold_s
+        if self.mode == DRAW:                       # D49: the pen-lift delay, at least the dropout hold
+            holding = holding or t - self._kept_at < self.params.lift_s
+        if holding:
             self.mode_frames[self.mode] += 1
             return Step(self.mode, self._cursor(self._last), (), None)
         events = self._leave(t) if self.mode != IDLE else []

@@ -18,6 +18,7 @@ from test_auto import auto_calibration
 
 from invisible_canvas.calibration.store import save_calibration
 from invisible_canvas.config import DEFAULT_CONFIG_PATH, config_from_dict
+from invisible_canvas.interaction.engine import EngineParams
 from invisible_canvas.mapping.mapper import CoordinateMapper
 from invisible_canvas.tools import draw as draw_tool
 from invisible_canvas.tools import gestures as gestures_tool
@@ -173,7 +174,7 @@ def test_g1_prime_evaluation_pass_and_failures():
     def records(rate_ok=True, draw_glitch=False, hand=True):
         out, t = [], 0.0
         for name in gestures_tool.EXPECTED:
-            for phase, n in (("wait", 5), ("prepare", 10), ("hold", 60)):
+            for phase, n in (("wait", 5), ("prepare", 40), ("hold", 60)):    # prepare 0.74 s > lift_s
                 for k in range(n):
                     shape = shape_for[name]
                     if phase == "hold" and not rate_ok and name == "point" and k % 10 == 0:
@@ -217,12 +218,13 @@ def test_gestures_tool_records_frames_and_reports(tmp_path, monkeypatch):
 def test_g1_prime_evaluation_runs_the_engine_with_the_keep_drawing_flag():
     # A hand still inside the keep-drawing band when the OPEN hold starts keeps the engine in DRAW (D47).
     out, t = [], 0.0
-    for name, phase, n, shape, keeps in (("point", "hold", 30, POINT, True), ("open", "prepare", 10, OTHER, True),
-                                         ("open", "hold", 30, OPEN, False)):
+    for name, phase, n, shape, keeps in (("point", "hold", 30, POINT, True), ("open", "prepare", 40, OTHER, True),
+                                         ("open", "hold", 60, OPEN, False)):
         for _ in range(n):
             out.append({"t": t, "prompt": name, "phase": phase, "shape": shape, "keeps": keeps})
             t += 1 / 54
-    assert gestures_tool.evaluate(out)["draw_frames_in_non_point_holds"] == 2   # 3 exit frames, the last HOVER
+    kept = gestures_tool.evaluate(out)["draw_frames_in_non_point_holds"]
+    assert kept == pytest.approx(EngineParams().lift_s * 54, abs=2)          # D49: the pen lifts 0.6 s later
     for r in out:
         r.pop("keeps")
     assert gestures_tool.evaluate(out)["draw_frames_in_non_point_holds"] == 0
@@ -232,7 +234,7 @@ def angle_records(found=1.0, rate_ok=True):
     """Synthetic G1'' records: every pointing angle POINT, open/fist not; `found` of the hold frames with a hand."""
     out, t = [], 0.0
     for name, expected in gestures_tool.ANGLE_EXPECTED.items():
-        for phase, n in (("prepare", 10), ("hold", 60)):
+        for phase, n in (("prepare", 40), ("hold", 60)):
             for k in range(n):
                 shape = POINT if expected == POINT else (OPEN if name == "open" else OTHER)
                 if phase == "hold" and k >= round(60 * found) and expected == POINT:

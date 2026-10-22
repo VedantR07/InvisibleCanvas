@@ -287,8 +287,8 @@ def feed(engine, ctl, shapes, path):
 
 def test_a_drawn_letter_then_a_glitch_free_hover():
     eng, (c, tb, ctl) = InteractionEngine(), controller()
-    path = [(100 + 5 * i, 200 + 3 * i) for i in range(40)]
-    shapes = [OTHER] * 5 + [POINT] * 20 + [OTHER] * 10 + [POINT] * 2 + [OTHER] * 3
+    path = [(100 + 5 * i, 200 + 3 * i) for i in range(80)]
+    shapes = [OTHER] * 5 + [POINT] * 20 + [OTHER] * 40 + [POINT] * 2 + [OTHER] * 3   # 40 frames > the lift delay
     feed(eng, ctl, shapes, path)
     assert len(c.strokes) == 1                                     # the 2-frame POINT glitch drew nothing
     (s,) = c.strokes.values()

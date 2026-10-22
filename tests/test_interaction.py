@@ -25,8 +25,9 @@ DT = 1 / 54
 
 
 def make():
-    """The engine mechanics with the D44 gesture modes and 4 enter frames (D46 defaults are tested below)."""
-    return InteractionEngine(EngineParams(enter_frames=4), mode_of=GESTURE_MODES)
+    """The engine mechanics with the D44 gesture modes, 4 enter frames and no pen-lift delay (D46, D47 and D49
+    defaults are tested below)."""
+    return InteractionEngine(EngineParams(enter_frames=4, lift_s=0.0), mode_of=GESTURE_MODES)
 
 
 def hand(shape, x=100.0, y=200.0):
@@ -191,7 +192,7 @@ def test_keep_drawing_band_continues_a_stroke_and_open_hand_ends_it():
     assert {s.mode for s in steps} == {DRAW} and kinds(steps) == [STROKE_POINT] * 10
     steps = [e.update((18 + i) * DT, kept(PINCH, 280.0 + 10 * i)) for i in range(5)]    # thumb ignored
     assert {s.mode for s in steps} == {DRAW} and STROKE_END not in kinds(steps)
-    steps = [e.update((23 + i) * DT, kept(OPEN, 330.0, keeps=False)) for i in range(3)]
+    steps = [e.update((23 + i) * DT, kept(OPEN, 330.0, keeps=False)) for i in range(40)]   # 0.74 s > lift_s
     assert steps[-1].mode == HOVER and kinds(steps) == [STROKE_END]
 
 
@@ -202,3 +203,27 @@ def test_keep_drawing_band_never_starts_a_stroke():
     shapes = ([POINT] * 4 + [OTHER] * 3) * 5                       # strict runs shorter than 7, band in between
     steps = [e.update((40 + i) * DT, kept(s, 100.0 + i)) for i, s in enumerate(shapes)]
     assert DRAW not in {s.mode for s in steps}
+
+
+def test_pen_lift_delay_bridges_a_short_interruption():
+    # D49: 0.4 s of a non-pointing reading (or no hand) inside a stroke neither ends it nor adds its points.
+    for gap in ([OTHER] * 21, [None] * 21, [OPEN] * 10 + [None] * 11):
+        e = InteractionEngine()
+        steps = run(e, [POINT] * 8 + gap + [POINT] * 5)
+        assert STROKE_END not in kinds(steps) and kinds(steps).count(STROKE_START) == 1
+        assert all(s.mode == DRAW for s in steps[7:])
+        xs = [ev.point[0] for s in steps for ev in s.events if ev.kind == STROKE_POINT]
+        assert 100.0 + 10 * 8 not in xs and xs[-1] == 100.0 + 10 * (8 + len(gap) + 4)   # a straight join
+
+
+def test_pen_lifts_after_the_delay():
+    e = InteractionEngine()
+    steps = run(e, [POINT] * 8 + [OPEN] * 40)
+    end = next(i for i, s in enumerate(steps) if STROKE_END in [ev.kind for ev in s.events])
+    assert (end - 7) * DT == pytest.approx(EngineParams().lift_s, abs=2 * DT)   # 0.6 s after the last POINT
+    assert kinds(steps).count(STROKE_END) == 1 and steps[-1].mode == HOVER
+    e = InteractionEngine()
+    steps = run(e, [POINT] * 8 + [None] * 40)
+    assert kinds(steps).count(STROKE_END) == 1 and steps[-1].mode == IDLE
+    with pytest.raises(ValueError):
+        InteractionEngine(EngineParams(lift_s=-1.0))
