@@ -810,6 +810,13 @@ Resolved on 2026-10-08: Python install (D12), surface orientation (D13), camera 
 
 ### 13.2 Test log
 
+**2026-10-22 (18:14–18:18): G1′ run 1 — FAIL (pointing hand rarely detected)**
+
+- Before: the setup had moved again (variation 32.70 px, mean shift (−65.0, −5.1) camera px). The `gestures` automatic recovery refused at the validation step (point (345, 470) single-frame sd 0.74 px: the user was near it); after the user stepped away, `recalibrate` accepted (check target 2.05 px, validation mean 1.11 / max 2.35 px, confirmation 0.11 px; calibration 2026-10-22 18:15:19).
+- `gestures` (`gestures-20261022-181755.json`, frames `data/diagnostics/gestures-20261022-181626/`; setup 0.29 px, canvas region 153): **OPEN 99.8 % not POINT** (486 hand frames of 509) PASS; **FIST 100 % not POINT** (101 of 382) PASS; **DRAW during OPEN/FIST holds 0** PASS; **POINT 82.2 % POINT of only 45 hand frames (of 357 hold frames)** FAIL. **G1′ FAIL.**
+- Cause (saved frames): while pointing, the user's finger pointed into the wall and away from the camera; the camera saw a compact dark fist with a short finger stub and the on-wall indicator read "hand: NOT SEEN". MediaPipe finds no hand in any of the 4 saved pointing frames even at detection/presence/tracking confidence 0.3 and 0.2 (offline, design evidence): a pose/view limitation, not a threshold. The open hand (fingers spread) was found in 95 % of hold frames. On 2026-10-21 the user pointed sideways with the finger flat across the wall: 97 % tracked.
+- Next: a fresh recording with the finger held flat and sideways across the projection (side of the hand towards the camera), or a camera position that sees the hand from the side.
+
 **2026-10-22 (00:34): G1 run 1 — FAIL** (`gestures-20261022-003634.json`, frames `data/diagnostics/gestures-20261022-003449/`)
 
 - Results (hold phases, hand-present frames): point 8.6 % of 35 (of 367 hold frames); open 79.7 % of 335; pinch 2.8 % of 353 (301 read as other); fist 26.6 % of 402 (258 read as **pinch**); two 78.7 % of 328; DRAW during non-POINT holds 61 frames. **G1 FAIL.** Recorded as is; no threshold changed for this result.
