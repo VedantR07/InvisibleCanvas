@@ -99,7 +99,7 @@ class HandPoints:
         radius = float(np.clip(ERASER_SCALE * np.linalg.norm(proj[4] - proj[3]), ERASER_MIN, ERASER_MAX))
         pointer, pinch, palm = (tuple(float(v) for v in self._filters[k](t, p))
                                 for k, p in zip(("pointer", "pinch", "palm"), proj[:3]))
-        return shape, HandInput(shape.shape, pointer, pinch, palm, radius)
+        return shape, HandInput(shape.shape, pointer, pinch, palm, radius, keeps_draw=shape.keeps_point)
 
 
 def draw_skeleton(view: np.ndarray, landmarks: np.ndarray, colour=patterns.GREEN) -> None:

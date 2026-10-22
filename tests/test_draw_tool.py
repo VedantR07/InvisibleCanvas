@@ -212,3 +212,17 @@ def test_gestures_tool_records_frames_and_reports(tmp_path, monkeypatch):
     assert with_hand and len(with_hand[0]["landmarks"]) == 21 and len(with_hand[0]["world"]) == 21
     assert set(report["g1"]["prompts"]) == set(gestures_tool.EXPECTED)
     assert code in (0, 1)
+
+
+def test_g1_prime_evaluation_runs_the_engine_with_the_keep_drawing_flag():
+    # A hand still inside the keep-drawing band when the OPEN hold starts keeps the engine in DRAW (D47).
+    out, t = [], 0.0
+    for name, phase, n, shape, keeps in (("point", "hold", 30, POINT, True), ("open", "prepare", 10, OTHER, True),
+                                         ("open", "hold", 30, OPEN, False)):
+        for _ in range(n):
+            out.append({"t": t, "prompt": name, "phase": phase, "shape": shape, "keeps": keeps})
+            t += 1 / 54
+    assert gestures_tool.evaluate(out)["draw_frames_in_non_point_holds"] == 2   # 3 exit frames, the last HOVER
+    for r in out:
+        r.pop("keeps")
+    assert gestures_tool.evaluate(out)["draw_frames_in_non_point_holds"] == 0

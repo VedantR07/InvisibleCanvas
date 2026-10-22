@@ -17,6 +17,11 @@ Measures, all scale-free:
 MediaPipe's 3-D world landmarks (metres, hand-centred) are used when given: the camera sees the back of
 the hand from behind the user, and a finger pointing towards or away from the camera looks short in 2-D.
 The 2-D camera landmarks are the fallback.
+
+`keeps_point` (D47): looser limits that only keep a stroke going once drawing has started (the interaction
+engine decides). While drawing, the user's pointing hand drifts just past the strict limits (G3 run 1: index
+fold up to ~53 deg, middle down to ~54 deg) but stays far from an open hand (middle ~38 deg) or a fist (index
+~90 deg). Starting a stroke still needs a strict POINT.
 """
 
 from __future__ import annotations
@@ -52,6 +57,10 @@ class GestureParams:
     # In a fist the thumb lies on the curled index, close to its tip: not a pinch. A pinching index bends
     # moderately (~30-70 deg), a fist's index folds right back (~140 deg).
     pinch_index_max_deg: float = 110.0
+    # D47 keep-drawing band: each strict limit moved 15 deg towards the other side; the thumb is ignored.
+    keep_extended_max_deg: float = 60.0
+    keep_curled_min_deg: float = 45.0
+    keep_pinky_curled_min_deg: float = 30.0
 
 
 @dataclass(frozen=True)
@@ -61,10 +70,12 @@ class HandShape:
     pinch_ratio: float
     thumb_ratio: float
     space: str                    # "world" (3-D, metres) or "image" (2-D camera px)
+    keeps_point: bool = False     # within the keep-drawing band (D47); true for every strict POINT
 
     def as_dict(self) -> dict:
         return {"shape": self.shape, "space": self.space, "pinch_ratio": round(self.pinch_ratio, 3),
-                "thumb_ratio": round(self.thumb_ratio, 3), **{f"{k}_fold": round(v, 1) for k, v in self.fold_deg.items()}}
+                "thumb_ratio": round(self.thumb_ratio, 3), "keeps_point": self.keeps_point,
+                **{f"{k}_fold": round(v, 1) for k, v in self.fold_deg.items()}}
 
 
 def fold_angle(points: np.ndarray, chain) -> float:
@@ -107,7 +118,9 @@ def classify(landmarks, world=None, *, previous: str | None = None,
         shape = OPEN
     else:
         shape = OTHER
-    return HandShape(shape, fold, pinch_ratio, thumb_ratio, space)
+    keeps = (fold["index"] <= params.keep_extended_max_deg and fold["middle"] >= params.keep_curled_min_deg
+             and fold["ring"] >= params.keep_curled_min_deg and fold["pinky"] >= params.keep_pinky_curled_min_deg)
+    return HandShape(shape, fold, pinch_ratio, thumb_ratio, space, keeps)
 
 
 def palm_centre(points: np.ndarray) -> np.ndarray:

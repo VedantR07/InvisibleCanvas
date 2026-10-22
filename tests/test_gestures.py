@@ -107,3 +107,20 @@ def test_palm_centre_and_pinch_point():
     pts = hand()
     assert np.allclose(palm_centre(pts), pts[[0, 5, 9, 13, 17]].mean(axis=0))
     assert np.allclose(pinch_point(pts), (pts[4] + pts[8]) / 2)
+
+
+def test_keep_drawing_band():
+    # D47: looser limits that only keep a stroke going; every strict POINT is inside the band.
+    strict = classify(None, hand(**POINTING))
+    assert strict.shape == POINT and strict.keeps_point and strict.as_dict()["keeps_point"] is True
+    drifted = dict(index=(55, 0, 0), middle=(50, 0, 0), ring=(50, 0, 0), pinky=(35, 0, 0), thumb="tucked")
+    s = classify(None, hand(**drifted))
+    assert s.shape == OTHER and s.keeps_point                      # not a POINT, but it keeps drawing
+    pinching = classify(None, hand(**dict(POINTING, thumb="pinch")))
+    assert pinching.shape == PINCH and pinching.keeps_point        # the thumb is ignored by the band
+    assert not classify(None, hand(thumb="spread")).keeps_point    # open hand: lifts the pen
+    fist = hand(index=CURLED, middle=CURLED, ring=CURLED, pinky=CURLED, thumb="tucked")
+    assert not classify(None, fist).keeps_point                    # fist: lifts the pen
+    assert not classify(None, hand(**dict(drifted, index=(65, 0, 0)))).keeps_point
+    assert not classify(None, hand(**dict(drifted, middle=(40, 0, 0)))).keeps_point
+    assert not classify(None, hand(**dict(drifted, pinky=(25, 0, 0)))).keeps_point

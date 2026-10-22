@@ -176,3 +176,29 @@ def test_observed_misread_runs_never_draw(run_length):
     # G1 run 1: non-pointing shapes read as POINT for at most 6 frames (pinch-like), open/fist at most 3.
     steps = run(InteractionEngine(), [OPEN] * 5 + [POINT] * run_length + [OPEN] * 10)
     assert DRAW not in [s.mode for s in steps]
+
+
+def kept(shape, x=100.0, keeps=True):
+    return HandInput(shape, pointer=(x, 200.0), pinch=(x, 200.0), palm=(x, 200.0), keeps_draw=keeps)
+
+
+def test_keep_drawing_band_continues_a_stroke_and_open_hand_ends_it():
+    # D47: once drawing, a drifted pointing hand (not a strict POINT) keeps the stroke going and adds its points.
+    e = InteractionEngine()
+    steps = [e.update(i * DT, kept(POINT, 100.0 + 10 * i)) for i in range(8)]
+    assert steps[-1].mode == DRAW
+    steps = [e.update((8 + i) * DT, kept(OTHER, 180.0 + 10 * i)) for i in range(10)]
+    assert {s.mode for s in steps} == {DRAW} and kinds(steps) == [STROKE_POINT] * 10
+    steps = [e.update((18 + i) * DT, kept(PINCH, 280.0 + 10 * i)) for i in range(5)]    # thumb ignored
+    assert {s.mode for s in steps} == {DRAW} and STROKE_END not in kinds(steps)
+    steps = [e.update((23 + i) * DT, kept(OPEN, 330.0, keeps=False)) for i in range(3)]
+    assert steps[-1].mode == HOVER and kinds(steps) == [STROKE_END]
+
+
+def test_keep_drawing_band_never_starts_a_stroke():
+    e = InteractionEngine()
+    steps = [e.update(i * DT, kept(OTHER, 100.0 + i)) for i in range(40)]
+    assert {s.mode for s in steps} == {HOVER} and kinds(steps) == []
+    shapes = ([POINT] * 4 + [OTHER] * 3) * 5                       # strict runs shorter than 7, band in between
+    steps = [e.update((40 + i) * DT, kept(s, 100.0 + i)) for i, s in enumerate(shapes)]
+    assert DRAW not in {s.mode for s in steps}

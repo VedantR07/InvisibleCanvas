@@ -6,7 +6,8 @@ shape) and a hold phase (scored: keep the shape and move the hand slowly around 
 landmarks (camera px and 3-D world) and measures go to data/diagnostics/gestures-<stamp>/frames.jsonl.
 
 G1' (fixed 2026-10-22 before any run): POINT prompt >= 95 % of hand-present hold frames POINT; OPEN and FIST
-prompts >= 95 % not POINT; the debounced engine (D46 defaults) never in DRAW during an OPEN/FIST hold.
+prompts >= 95 % not POINT; the debounced engine (D46 defaults) never in DRAW during an OPEN/FIST hold. The
+engine is run with each frame's keep-drawing flag (D47), as in `draw`.
 (G1 run 1 used the D44 shapes, including pinch and two fingers: brain.md §13.2.)
 """
 
@@ -51,13 +52,15 @@ def add_parser(subparsers) -> None:
 
 
 def evaluate(records: list[dict], params: EngineParams = EngineParams()) -> dict:
-    """G1' from per-frame records {t, prompt, phase ("wait"/"prepare"/"hold"), shape (None: no hand)}. Pure.
-    A frame is correct when it is POINT for the POINT prompt and anything but POINT for the others."""
+    """G1' from per-frame records {t, prompt, phase ("wait"/"prepare"/"hold"), shape (None: no hand), keeps
+    (optional: the keep-drawing flag, D47)}. Pure. A frame is correct when it is POINT for the POINT prompt and
+    anything but POINT for the others."""
     per = defaultdict(lambda: {"hold_frames": 0, "hand_frames": 0, "correct": 0, "shapes": Counter()})
     engine = InteractionEngine(params)
     draw_in_other_holds = 0
     for r in records:
-        hand = None if r["shape"] is None else HandInput(r["shape"], (0.0, 0.0), (0.0, 0.0), (0.0, 0.0))
+        hand = None if r["shape"] is None else HandInput(r["shape"], (0.0, 0.0), (0.0, 0.0), (0.0, 0.0),
+                                                          keeps_draw=bool(r.get("keeps")))
         mode = engine.update(r["t"], hand).mode
         if r["phase"] != "hold":
             continue
@@ -153,7 +156,7 @@ def run(config: Config, args) -> int:
                 s.projector.show(_screen(size, title, f"{subtitle}   ({k + 1}/{len(plan)})", line, progress,
                                          hand.pointer if hand else None, obs is not None))
                 rec = {"t": frame.timestamp, "prompt": name, "round": k // len(PROMPTS) + 1, "phase": phase,
-                       "shape": shape.shape if shape else None}
+                       "shape": shape.shape if shape else None, "keeps": bool(shape and shape.keeps_point)}
                 records.append(rec)
                 out.write(json.dumps({**rec, "t_s": round(frame.timestamp - start, 4),
                                       "measures": shape.as_dict() if shape else None,

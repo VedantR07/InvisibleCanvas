@@ -14,6 +14,9 @@ GESTURE_MODES is the original D44 mapping (open hand -> ERASE, pinch -> SELECT).
 - While a change away from DRAW is pending, no points are added; if the change is confirmed those frames are
   never drawn (no hook at the stroke's end), and if the shape comes back, drawing simply continues.
 - No hand: the mode is kept for `hold_s` (a dropout, no events), then it ends cleanly.
+- Keep drawing (D47): once in DRAW, a frame whose hand is still within the looser keep-drawing band
+  (`HandInput.keeps_draw`, from vision.gestures) continues the stroke whatever its strict shape. Starting a
+  stroke still needs `enter_frames` strict POINT frames.
 """
 
 from __future__ import annotations
@@ -41,6 +44,7 @@ class HandInput:
     pinch: tuple[float, float]       # between the thumb and index tips
     palm: tuple[float, float]        # palm centre
     eraser_radius: float = 40.0
+    keeps_draw: bool = False         # within the keep-drawing band (D47): continues a stroke, never starts one
 
 
 @dataclass(frozen=True)
@@ -93,6 +97,8 @@ class InteractionEngine:
         if self.mode == IDLE:                       # a hand appears: the cursor shows at once
             self._switch(HOVER)
         target = self.mode_of[hand.shape]
+        if self.mode == DRAW and hand.keeps_draw:
+            target = DRAW
         if target != self._candidate:
             self._candidate, self._buffer = target, []
         self._buffer.append((t, hand))
