@@ -22,7 +22,7 @@ from ..config import Config
 from ..vision.hands import HandTracker, HandTrackingError
 from .common import now_iso, save_report
 from .gestures import ANGLE_EXPECTED, EXPECTED, G1PP_FOUND, evaluate, print_result
-from .tracking_session import ShapeReader
+from .tracking_session import TRACKER_OPTIONS, ShapeReader
 
 
 class ReplayError(RuntimeError):
@@ -102,7 +102,7 @@ def run(config: Config, args) -> int:
     try:
         rows = load_rows(folder)
         expected, min_found, test = prompt_set(rows)
-        with HandTracker(acquisition="tiled") as tracker:
+        with HandTracker(**TRACKER_OPTIONS) as tracker:
             records = replay(folder, tracker, rows=rows)
     except (ReplayError, HandTrackingError) as e:
         print(f"cannot replay: {e}")

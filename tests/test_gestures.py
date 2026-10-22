@@ -124,3 +124,35 @@ def test_keep_drawing_band():
     assert not classify(None, hand(**dict(drifted, index=(65, 0, 0)))).keeps_point
     assert not classify(None, hand(**dict(drifted, middle=(40, 0, 0)))).keeps_point
     assert not classify(None, hand(**dict(drifted, pinky=(25, 0, 0)))).keeps_point
+
+
+def test_two_views_count_a_cocked_index_as_extended():
+    # D48: pointing sideways with the hand cocked: 3-D fold ~55 deg, but the finger is long in the image.
+    cocked = hand(index=(55, 0, 0), middle=CURLED, ring=CURLED, pinky=CURLED, thumb="tucked")
+    long_in_image = to_image(hand(**POINTING))
+    s = classify(long_in_image, cocked)
+    assert s.shape == POINT and s.index_reach >= GestureParams().alt_reach_min
+    assert classify(None, cocked).shape == OTHER                        # no camera landmarks: the 3-D rule alone
+    assert classify(to_image(cocked), cocked).shape == OTHER            # short in the image too: not extended
+    bent = hand(index=(70, 0, 0), middle=CURLED, ring=CURLED, pinky=CURLED, thumb="tucked")
+    assert classify(long_in_image, bent).shape == OTHER                 # beyond 65 deg: the image cannot overrule
+    fist = hand(index=CURLED, middle=CURLED, ring=CURLED, pinky=CURLED, thumb="tucked")
+    assert classify(long_in_image, fist).shape == OTHER
+
+
+def test_a_phantom_middle_finger_counts_as_curled():
+    # D48: seen from behind, the tracker can put the middle finger on the one visible index finger.
+    w = hand(**POINTING)
+    w[9:13] = w[5:9] + np.array([-0.004, 0.0, 0.0])                    # the middle chain copies the index
+    s = classify(to_image(w), w)
+    assert s.shape == POINT and s.phantom_middle and s.tip_gap < 0.35 and s.keeps_point
+    assert classify(to_image(w), w, params=GestureParams(phantom_gap_max=0.0)).shape == OTHER
+    assert classify(None, w).shape == OTHER                             # needs the camera landmarks
+    # a half-curled middle finger whose tip lies near the index tip (a pinch seen from behind) is no phantom
+    half = hand(**dict(POINTING, middle=(55, 0, 0)))
+    lm = to_image(half)
+    lm[12] = lm[8] + 1.0
+    s = classify(lm, half)
+    assert s.shape == OTHER and not s.phantom_middle
+    d = s.as_dict()
+    assert {"index_reach", "tip_gap", "phantom_middle"} <= set(d)

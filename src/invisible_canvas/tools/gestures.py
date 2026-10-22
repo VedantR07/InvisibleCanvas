@@ -33,7 +33,7 @@ from ..interaction.engine import DRAW, EngineParams, HandInput, InteractionEngin
 from ..vision.gestures import POINT
 from ..vision.hands import HandTracker, HandTrackingError
 from .common import add_device_args, current_seq, now_iso, open_session, save_report, stamp
-from .tracking_session import HandPoints, brightness_check, checked_mapper, draw_skeleton
+from .tracking_session import TRACKER_OPTIONS, HandPoints, brightness_check, checked_mapper, draw_skeleton
 from .video import VideoRecorder
 
 NOT_POINT = "not point"
@@ -173,7 +173,7 @@ def run(config: Config, args) -> int:
     test, min_found = ("G1''", G1PP_FOUND) if args.angles else ("G1'", None)
     calibration = load_calibration(config.calibration_dir)
     try:
-        tracker = HandTracker(acquisition="tiled")
+        tracker = HandTracker(**TRACKER_OPTIONS)
     except HandTrackingError as e:
         print(f"cannot start hand tracking: {e}")
         return 2

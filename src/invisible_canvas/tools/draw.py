@@ -29,7 +29,7 @@ from ..interaction.drawing import DrawingController
 from ..interaction.engine import IDLE, InteractionEngine
 from ..vision.hands import HandTracker, HandTrackingError
 from .common import add_device_args, current_seq, now_iso, open_session, save_report, stamp
-from .tracking_session import HandPoints, brightness_check, checked_mapper, draw_skeleton
+from .tracking_session import TRACKER_OPTIONS, HandPoints, brightness_check, checked_mapper, draw_skeleton
 
 TITLE = "SETUP CHECK before drawing"
 HELP = "index finger = use the tool | open hand or fist = cursor only | hold the cursor on a button 1 s to press it"
@@ -65,7 +65,7 @@ def save_canvas(config: Config, canvas: Canvas, renderer: CanvasRenderer) -> tup
 def run(config: Config, args) -> int:
     calibration = load_calibration(config.calibration_dir)
     try:
-        tracker = HandTracker(acquisition="tiled")
+        tracker = HandTracker(**TRACKER_OPTIONS)
     except HandTrackingError as e:
         print(f"cannot start hand tracking: {e}")
         return 2
