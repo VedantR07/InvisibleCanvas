@@ -226,3 +226,102 @@ def test_g1_prime_evaluation_runs_the_engine_with_the_keep_drawing_flag():
     for r in out:
         r.pop("keeps")
     assert gestures_tool.evaluate(out)["draw_frames_in_non_point_holds"] == 0
+
+
+def angle_records(found=1.0, rate_ok=True):
+    """Synthetic G1'' records: every pointing angle POINT, open/fist not; `found` of the hold frames with a hand."""
+    out, t = [], 0.0
+    for name, expected in gestures_tool.ANGLE_EXPECTED.items():
+        for phase, n in (("prepare", 10), ("hold", 60)):
+            for k in range(n):
+                shape = POINT if expected == POINT else (OPEN if name == "open" else OTHER)
+                if phase == "hold" and k >= round(60 * found) and expected == POINT:
+                    shape = None
+                if not rate_ok and name == "up" and phase == "hold" and k % 10 == 0:
+                    shape = OTHER
+                out.append({"t": t, "prompt": name, "round": 1, "phase": phase, "shape": shape,
+                            "keeps": shape == POINT})
+                t += 1 / 54
+    return out
+
+
+def test_g1_double_prime_needs_the_hand_found_at_every_angle():
+    args = dict(expected=gestures_tool.ANGLE_EXPECTED, min_found=gestures_tool.G1PP_FOUND)
+    ok = gestures_tool.evaluate(angle_records(), **args)
+    assert ok["pass"] and "G1''" in ok["criterion"] and ok["prompts"]["up"]["found_rate"] == 1.0
+    lost = gestures_tool.evaluate(angle_records(found=0.8), **args)                # 48 of 60 hold frames
+    assert not lost["pass"] and lost["evaluable"]
+    assert lost["prompts"]["sideways"]["rate"] == 1.0 and not lost["prompts"]["sideways"]["pass"]
+    assert gestures_tool.evaluate(angle_records(found=0.8), expected=gestures_tool.ANGLE_EXPECTED)["pass"]  # G1' rule
+    rare = gestures_tool.evaluate(angle_records(found=0.3), **args)                # 18 hand frames: still a FAIL
+    assert rare["evaluable"] and not rare["prompts"]["up"]["pass"]
+    assert not gestures_tool.evaluate(angle_records(rate_ok=False), **args)["pass"]
+
+
+def test_timing_uses_the_g6_limits():
+    fast = [{"t": k / 50, "pipeline_ms": 20.0} for k in range(100)]
+    assert gestures_tool.timing(fast)["pass"] and gestures_tool.timing(fast)["processing_fps"] == pytest.approx(50)
+    assert not gestures_tool.timing([{"t": k / 50, "pipeline_ms": 40.0} for k in range(100)])["pass"]
+    assert not gestures_tool.timing([{"t": k / 20, "pipeline_ms": 20.0} for k in range(100)])["pass"]
+
+
+def test_angles_recording_with_video_then_replay(tmp_path, monkeypatch):
+    from invisible_canvas.tools import replay as replay_tool
+    names = [p[0] for p in gestures_tool.ANGLE_PROMPTS]
+    shape_of = {name: (POINT if e == POINT else OPEN if name == "open" else OTHER)
+                for name, e in gestures_tool.ANGLE_EXPECTED.items()}
+
+    def schedule(s, mapper):                     # roughly each prompt's shape (prompts last ~0.55 s each)
+        return shape_of[names[min(int(s / 0.55), len(names) - 1)]], (640.0, 360.0)
+
+    code, config, shown = run_tool(gestures_tool, tmp_path, monkeypatch,
+                                   ["gestures", "--angles", "--video", "--rounds", "1", "--prepare", "0.15",
+                                    "--hold", "0.35"], schedule)
+    report = json.loads(sorted(config.reports_dir.glob("gestures-*.json"))[-1].read_text())
+    assert report["test"] == "G1''" and report["prompt_set"] == "angles" and report["completed"]
+    assert set(report["g1"]["prompts"]) == set(names) and "processing_fps" in report["timing"]
+    rows = [json.loads(l) for l in open(report["frames_file"])]
+    with_video = [r for r in rows if r["video_index"] is not None]
+    assert report["video"]["frames"] == len(with_video) > 0
+    assert report["video"]["frames"] + report["video"]["dropped"] == len(rows)
+    assert [r["video_index"] for r in with_video] == list(range(len(with_video)))
+    assert all("pipeline_ms" in r and "keeps" in r for r in rows)
+
+    folder = config.reports_dir.parent / "diagnostics" / report["frames_file"].replace("\\", "/").split("/")[-2]
+    prompt_at = {r["t"]: r["prompt"] for r in rows}
+
+    class PromptTracker:                         # stands in for MediaPipe: the prompted shape, every frame
+        def __init__(self, *a, **k):
+            self.frames = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *e):
+            pass
+
+        def process(self, image, t):
+            assert image.shape == (1080, 1920, 3)
+            self.frames += 1
+            return observation(shape_of[prompt_at[t]], (900.0, 500.0))
+
+    tracker = PromptTracker()
+    records = replay_tool.replay(folder, tracker)
+    assert tracker.frames == len(records) == len(with_video)
+    summary = replay_tool.summarize(records, gestures_tool.ANGLE_EXPECTED, gestures_tool.G1PP_FOUND)
+    assert all(p["rate"] == 1.0 for p in summary["overall"]["prompts"].values() if p["hand_frames"])
+    assert set(summary["rounds"]) == {"1"} and 0.0 <= summary["shape_agreement_with_live"] <= 1.0
+
+    monkeypatch.setattr(replay_tool, "HandTracker", PromptTracker)
+    parser = argparse.ArgumentParser()
+    replay_tool.add_parser(parser.add_subparsers())
+    replay_tool.run(config, parser.parse_args(["replay", str(folder)]))
+    saved = json.loads(sorted(config.reports_dir.glob("replay-*.json"))[-1].read_text())
+    assert saved["test"] == "G1''" and saved["frames"] == len(with_video)
+
+
+def test_replay_refuses_a_recording_without_video(tmp_path):
+    from invisible_canvas.tools import replay as replay_tool
+    (tmp_path / "frames.jsonl").write_text("")
+    with pytest.raises(replay_tool.ReplayError):
+        replay_tool.load_rows(tmp_path)

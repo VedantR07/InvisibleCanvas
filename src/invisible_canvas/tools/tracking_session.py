@@ -1,6 +1,6 @@
-"""Shared by the gesture tools (`draw`, `gestures`; brain.md §9.10): the setup check with the validated
-automatic recovery (D28, D39, as in `cursor`), the brightness pre-check (D34), and one frame's hand as
-smoothed projector points with its shape.
+"""Shared by the gesture tools (`draw`, `gestures`, `replay`; brain.md §9.10): the setup check with the
+validated automatic recovery (D28, D39, as in `cursor`), the brightness pre-check (D34), one frame's hand shape
+(ShapeReader), and one frame's hand as smoothed projector points with its shape (HandPoints).
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from ..display import patterns
 from ..interaction.engine import HandInput
 from ..mapping.mapper import CoordinateMapper
 from ..vision.cursor import OneEuroFilter
-from ..vision.gestures import classify, palm_centre, pinch_point
+from ..vision.gestures import GestureParams, HandShape, classify, palm_centre, pinch_point
 from ..vision.hands import INDEX_TIP
 from .common import CameraMeasure, capture_frames
 from .hand_check import DARK_REGION_LUMA, canvas_mask, region_luma
@@ -70,26 +70,46 @@ def brightness_check(s, mapper, screen: np.ndarray) -> dict:
     return {"canvas_region_luma": luma, "too_dark": bool(too_dark)}
 
 
+class ShapeReader:
+    """One frame's hand -> its HandShape, keeping the previous shape for the pinch hysteresis. None (and reset)
+    for no hand or an extrapolated fingertip (D37: never drawn). The live tools and `replay` share it, so a
+    replay classifies exactly as the live run did."""
+
+    def __init__(self, params: GestureParams = GestureParams()):
+        self.params = params
+        self.previous: str | None = None
+
+    def reset(self) -> None:
+        self.previous = None
+
+    def __call__(self, obs) -> HandShape | None:
+        if obs is None or not obs.tip_in_view:
+            self.reset()
+            return None
+        shape = classify(obs.landmarks, obs.world, previous=self.previous, params=self.params)
+        self.previous = shape.shape
+        return shape
+
+
 class HandPoints:
     """One frame's hand -> (HandShape, HandInput in projector px), with One Euro smoothing per point (D37)."""
 
     def __init__(self, mapper: CoordinateMapper):
         self.mapper = mapper
-        self.previous: str | None = None
+        self.shapes = ShapeReader()
         self._filters = {k: OneEuroFilter() for k in ("pointer", "pinch", "palm")}
 
     def reset(self) -> None:
-        self.previous = None
+        self.shapes.reset()
         for f in self._filters.values():
             f.reset()
 
     def __call__(self, t: float, obs):
         """None (and reset) for no hand or an extrapolated fingertip (D37: never drawn)."""
-        if obs is None or not obs.tip_in_view:
+        shape = self.shapes(obs)
+        if shape is None:
             self.reset()
             return None, None
-        shape = classify(obs.landmarks, obs.world, previous=self.previous)
-        self.previous = shape.shape
         cam = obs.landmarks
         proj = self.mapper.camera_to_projector(np.array([cam[INDEX_TIP], pinch_point(cam), palm_centre(cam),
                                                          cam[0], cam[9]]))
