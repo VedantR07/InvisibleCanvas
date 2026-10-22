@@ -19,8 +19,10 @@ GESTURE_MODES is the original D44 mapping (open hand -> ERASE, pinch -> SELECT).
   stroke still needs `enter_frames` strict POINT frames.
 - Pen-lift delay (D49): DRAW ends only once no frame has continued the stroke for `lift_s` (other shapes and
   no hand alike), and after at least `exit_frames` frames of the new shape. A shorter interruption (a finger
-  turned towards the wall, a misread, a lost hand) is bridged: drawing goes on from the next continuing frame
-  with a straight join, and the interrupted frames are never drawn.
+  turned towards the wall, a misread, a lost hand) is bridged: drawing goes on with a straight join, and the
+  interrupted frames are never drawn. The window is checked on every frame, the continuing ones included
+  (R32: in G3 run 4 a pointing-like frame of a hand moving on after a real lift arrived just as the window
+  closed, before any other frame had ended the stroke, and resumed it with a 175-px straight tail).
 """
 
 from __future__ import annotations
@@ -95,6 +97,7 @@ class InteractionEngine:
         self._last: HandInput | None = None
         self._pinch_at: tuple[float, float] | None = None     # last pinch point while in SELECT
         self._kept_at: float | None = None                    # last frame that continued DRAW (D49)
+        self._gap_frames = 0                                  # other-shape frames since _kept_at (D49, R32)
         self.mode_frames: Counter = Counter()                 # frames spent in each mode
         self.entries: Counter = Counter()                     # times each mode was entered
 
@@ -109,16 +112,24 @@ class InteractionEngine:
         target = self.mode_of[hand.shape]
         if self.mode == DRAW and hand.keeps_draw:
             target = DRAW
+        events: list[Event] = []
+        if (self.mode == DRAW and target == DRAW and self._gap_frames >= self.params.exit_frames
+                and t - self._kept_at >= self.params.lift_s):
+            events += self._leave(t)                # R32: the window has ended: the pen lifted, no resume
+            self._switch(HOVER)
+            self._candidate, self._buffer = None, []
+            target = self.mode_of[hand.shape]
         if target != self._candidate:
             self._candidate, self._buffer = target, []
         self._buffer.append((t, hand))
-        events: list[Event] = []
         if target == self.mode:
             self._buffer = self._buffer[-1:]
             events += self._continue(t, hand)
             if self.mode == DRAW:
-                self._kept_at = t
+                self._kept_at, self._gap_frames = t, 0
         else:
+            if self.mode == DRAW:
+                self._gap_frames += 1
             needed = self.params.exit_frames
             if target in ACTIVE:
                 needed = max(self.params.enter_frames, self.params.exit_frames if self.mode in ACTIVE else 0)
@@ -128,6 +139,7 @@ class InteractionEngine:
                 self._switch(target)
                 buffered, self._buffer = self._buffer, self._buffer[-1:]
                 events += self._enter(buffered)
+                self._gap_frames = 0
                 if self.mode == DRAW:
                     self._kept_at = t
         self.mode_frames[self.mode] += 1
@@ -145,6 +157,7 @@ class InteractionEngine:
         if self.mode != IDLE:
             self._switch(IDLE)
         self._candidate, self._buffer = None, []
+        self._gap_frames = 0
         self.mode_frames[IDLE] += 1
         return Step(IDLE, None, tuple(events), None)
 

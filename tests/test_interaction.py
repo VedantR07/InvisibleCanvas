@@ -227,3 +227,16 @@ def test_pen_lifts_after_the_delay():
     assert kinds(steps).count(STROKE_END) == 1 and steps[-1].mode == IDLE
     with pytest.raises(ValueError):
         InteractionEngine(EngineParams(lift_s=-1.0))
+
+
+def test_a_pointing_frame_after_the_window_does_not_resume_the_stroke():
+    # R32 (G3 run 4): after a real lift, a pointing-like frame of the hand moving on arrived just as the 0.6-s
+    # window closed and resumed the stroke with a long straight tail. The window is checked on every frame.
+    e = InteractionEngine()
+    steps = run(e, [POINT] * 8 + [OTHER] * 32 + [POINT])           # 32 frames = 0.59 s, then 0.61 s after
+    assert [s.mode for s in steps[8:40]] == [DRAW] * 32             # still inside the window
+    last = steps[-1]
+    assert [ev.kind for ev in last.events] == [STROKE_END] and last.mode == HOVER
+    assert last.pending == DRAW                                     # a new stroke needs the enter frames again
+    xs = [ev.point[0] for s in steps for ev in s.events if ev.kind == STROKE_POINT]
+    assert max(xs) == 100.0 + 10 * 7                                # nothing drawn after the last real POINT
