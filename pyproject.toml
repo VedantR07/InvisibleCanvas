@@ -23,6 +23,10 @@ dependencies = [
 dev = [
     "pytest>=8",
 ]
+# Phase 3A AI on selected writing (brain.md D51, section 9.11): optional, only needed for `draw --ai`.
+ai = [
+    "anthropic>=2.2,<3",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

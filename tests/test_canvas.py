@@ -136,8 +136,14 @@ def test_a_new_action_clears_redo():
 # -- toolbar ----------------------------------------------------------------------------------------------
 
 def test_toolbar_layout_fits_the_bottom_band():
-    tb = Toolbar(SIZE)
-    assert len(tb.buttons) == len(TOOLS) + len(COLOURS) + len(WIDTHS) + 3
+    for tb, n in ((Toolbar(SIZE), 3), (Toolbar(SIZE, ai=True), 4)):          # D51: AI button only when AI is on
+        check_toolbar(tb, len(TOOLS) + len(COLOURS) + len(WIDTHS) + n)
+    assert "select" in TOOLS and Toolbar(SIZE, ai=True).button("ai").kind == "ai"
+    assert not any(b.name == "ai" for b in Toolbar(SIZE).buttons)
+
+
+def check_toolbar(tb, count):
+    assert len(tb.buttons) == count and 60 <= tb.button_w <= 80
     for b in tb.buttons:
         x0, y0, x1, y1 = b.rect
         assert 0 <= x0 < x1 <= SIZE[0] and tb.top <= y0 < y1 <= SIZE[1]

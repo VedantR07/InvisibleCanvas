@@ -5,6 +5,8 @@
     cursor held on a toolbar button 1 s (CLEAR 2 s) -> press it
 
 `--light` lights the hand plain white with a ring cursor (D50; off by default since 2026-10-23, user decision).
+`--ai` (or `[ai] enabled = true`) adds the AI button: Claude reads the SELECT-ed writing (D51, §9.11). Requests
+run in a background worker; the report records each answer and the frame rate while a request was running (S3).
 
 Keyboard (laptop): z undo, y redo, s save, c twice clear, ESC quit. Before tracking, the setup check runs
 (a moved setup is recalibrated automatically and validated first, D39). On exit the canvas is saved to
@@ -21,6 +23,8 @@ from pathlib import Path
 import cv2
 import numpy as np
 
+from ..ai.client import AIAnswer, ClaudeAssistant
+from ..ai.worker import AIWorker
 from ..calibration.store import check_compatible, load_calibration
 from ..canvas.model import Canvas
 from ..canvas.render import CanvasRenderer
@@ -49,6 +53,7 @@ def add_parser(subparsers) -> None:
     p.add_argument("--save-every", type=float, default=0.0, help="save a camera frame every S seconds (diagnostic)")
     p.add_argument("--trace", action="store_true", help="per-frame JSONL trace: shape measures, mode, events")
     p.add_argument("--light", action="store_true", help="light the hand plain white, ring cursor (D50; off by default)")
+    p.add_argument("--ai", action="store_true", help="switch the AI on for this session (Claude reads the selection, D51)")
     p.set_defaults(func=run)
 
 
@@ -57,6 +62,12 @@ def _percentiles(values) -> dict | None:
         return None
     a = np.asarray(values, dtype=np.float64)
     return {"median": float(np.median(a)), "p95": float(np.percentile(a, 95)), "max": float(a.max())}
+
+
+def segment_fps(times: list[float], gap: float = 0.5) -> float:
+    """Frames per second over a subset of frames, counting only intervals shorter than `gap` (separate blocks)."""
+    dts = [b - a for a, b in zip(times, times[1:]) if 0 < b - a < gap]
+    return len(dts) / sum(dts) if dts else 0.0
 
 
 def save_canvas(config: Config, canvas: Canvas, renderer: CanvasRenderer) -> tuple[Path, Path]:
@@ -70,6 +81,14 @@ def save_canvas(config: Config, canvas: Canvas, renderer: CanvasRenderer) -> tup
 
 def run(config: Config, args) -> int:
     calibration = load_calibration(config.calibration_dir)
+    ai_on = bool(getattr(args, "ai", False) or config.ai.enabled)
+    worker = None
+    if ai_on:
+        try:
+            worker = AIWorker(ClaudeAssistant(config.ai), save_dir=config.root / "data" / "ai")
+        except ImportError as e:
+            print(f"the AI needs the anthropic package ({e}): pip install -e .[ai]")
+            return 2
     try:
         tracker = HandTracker(**TRACKER_OPTIONS)
     except HandTrackingError as e:
@@ -86,7 +105,7 @@ def run(config: Config, args) -> int:
         mapper, calibration, setup_info = checked
         size = s.canvas_size
         canvas = Canvas.from_dict(json.loads(args.load.read_text(encoding="utf-8"))) if args.load else Canvas(size)
-        toolbar, renderer = Toolbar(size), CanvasRenderer(size)
+        toolbar, renderer = Toolbar(size, ai=ai_on), CanvasRenderer(size)
         controller, engine, points = DrawingController(canvas, toolbar), InteractionEngine(), HandPoints(mapper)
         light = HandLight() if args.light else None
         brightness = brightness_check(s, mapper, renderer.render(canvas, controller, toolbar, mode=IDLE, cursor=None))
@@ -111,6 +130,12 @@ def run(config: Config, args) -> int:
             step = engine.update(frame.timestamp, hand)
             controller.handle(step.events)
             controller.update_pointer(frame.timestamp, step.cursor)
+            if worker is not None:                         # D51: jobs to the background worker, answers back
+                for action, png in controller.take_ai_jobs():
+                    if not worker.submit(action, png):
+                        controller.ai_answer(AIAnswer(action, ok=False, error="Still busy with the previous request."))
+                for answer in worker.poll():
+                    controller.ai_answer(answer)
             lit = None if light is None else light.update(frame.timestamp, projector_landmarks(mapper, obs))
             img = renderer.render(canvas, controller, toolbar, mode=step.mode, cursor=step.cursor, light=lit)
             s.projector.show(img)
@@ -118,7 +143,8 @@ def run(config: Config, args) -> int:
             t2 = time.perf_counter()
             shapes[shape.shape if shape else None] += 1
             records.append({"t": frame.timestamp - start, "mode": step.mode, "hand": obs is not None,
-                            "inference_ms": (t1 - t0) * 1000, "pipeline_ms": (t2 - frame.timestamp) * 1000})
+                            "inference_ms": (t1 - t0) * 1000, "pipeline_ms": (t2 - frame.timestamp) * 1000,
+                            "ai_busy": bool(worker is not None and worker.busy)})
             if trace is not None:
                 trace.write(json.dumps({"t": round(frame.timestamp - start, 4), "seq": frame.seq, "mode": step.mode,
                                         "pending": step.pending, "shape": shape.as_dict() if shape else None,
@@ -140,7 +166,9 @@ def run(config: Config, args) -> int:
                     f"processing {fps:.1f} fps, capture -> projector "
                     f"{np.median([r['pipeline_ms'] for r in recent]):.0f} ms (+ display path)",
                     f"tool {controller.tool.upper()} | colour {controller.colour} | width {controller.width} | "
-                    f"strokes {len(canvas.strokes)}",
+                    f"strokes {len(canvas.strokes)} | selected {len(controller.selection)}",
+                    "AI: off" if worker is None else
+                    f"AI: {'working' if worker.busy else 'ready'} ({len(worker.answers)} answers)",
                     "", HELP, "keys: z undo  y redo  s save  c c clear  ESC quit"])
             key = cv2.waitKey(1)
             now = time.perf_counter()
@@ -166,6 +194,8 @@ def run(config: Config, args) -> int:
             controller.handle(engine.update(last_t + 1.0, None).events)
         camera_stats = s.camera.stats()
         s.projector.show(patterns.blank(size))
+    if worker is not None:
+        worker.close(timeout=0.2)                      # a request still running is abandoned (daemon thread)
 
     json_path, png_path = save_canvas(config, canvas, renderer)
     duration = records[-1]["t"] - records[0]["t"] if len(records) > 1 else 0.0
@@ -191,12 +221,27 @@ def run(config: Config, args) -> int:
         "canvas": {"json": str(json_path), "png": str(png_path), "saved_during_run": saved_paths},
         "trace": str(save_dir / "trace.jsonl") if args.trace else None,
         "light": bool(args.light),
+        "ai": None if worker is None else {
+            "model": config.ai.model, "effort": config.ai.effort, "fallbacks": config.ai.fallbacks,
+            "requests": controller.log["ai_requests"], "answers": [a.to_dict() for a in worker.answers],
+            "busy_frames": sum(r["ai_busy"] for r in records),
+            "busy_processing_fps": segment_fps([r["t"] for r in records if r["ai_busy"]]),
+            "busy_pipeline_ms": _percentiles([r["pipeline_ms"] for r in records if r["ai_busy"]]),
+        },
     }
     print(f"{len(records)} frames over {duration:.1f} s: processing {report['processing_fps']:.1f} fps "
           f"(camera {camera_stats.mean_fps:.1f}); pipeline median {report['pipeline_ms']['median']:.1f} ms, "
           f"p95 {report['pipeline_ms']['p95']:.1f} ms" if records else "no frames")
     print(f"modes (frames): {dict(engine.mode_frames)}; entered: {dict(engine.entries)}")
     print(f"actions: {dict(controller.log)}; strokes on the canvas {len(canvas.strokes)}")
+    if worker is not None:
+        for a in worker.answers:
+            print(f"AI {a.action}: {'ok' if a.ok else 'ERROR ' + a.error} in {a.latency_s:.1f} s"
+                  + (f" | read: {a.transcription[:60]!r}" if a.ok else ""))
+        ai = report["ai"]
+        if ai["busy_frames"]:
+            print(f"while AI requests ran: {ai['busy_frames']} frames, {ai['busy_processing_fps']:.1f} fps, "
+                  f"pipeline p95 {ai['busy_pipeline_ms']['p95']:.1f} ms")
     print(f"canvas: {json_path} (+ .png)")
     print(f"report: {save_report(config, 'draw', report)}")
     return 0

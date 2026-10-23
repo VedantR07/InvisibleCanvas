@@ -1,8 +1,9 @@
 """The projected toolbar along the bottom edge (brain.md §9.10, D44, D46). Pure layout.
 
 A button is pressed by holding the cursor on it for `DWELL_S` (CLEAR: `CLEAR_DWELL_S`, so it cannot be hit
-by accident); D46 replaced the pinch, which the camera cannot see from behind the user. Buttons are 80 x 56
-projector px (about 8 x 6 cm on the 2026-10 wall).
+by accident); D46 replaced the pinch, which the camera cannot see from behind the user. Buttons are 56 px high
+and at most 80 px wide (about 8 x 6 cm on the 2026-10 wall), narrower when more buttons must fit.
+D51: the SELECT tool (loop selection) and, only when AI is switched on, the AI button in its own group.
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ COLOURS = {          # BGR, dark ink on the white canvas
     "green": (40, 150, 40),
 }
 WIDTHS = {"thin": 4.0, "medium": 8.0, "thick": 14.0}
-TOOLS = ("pen", "eraser", "move")
+TOOLS = ("pen", "eraser", "move", "select")
 ACTIONS = ("undo", "redo", "clear")
 DWELL_S = 1.0
 CLEAR_DWELL_S = 2.0
@@ -40,15 +41,20 @@ class Button:
 
 
 class Toolbar:
-    def __init__(self, size: tuple[int, int], *, height: int = 72, button: int = 80, gap: int = 8,
-                 group_gap: int = 28):
+    def __init__(self, size: tuple[int, int], *, height: int = 72, button: int | None = None, gap: int = 8,
+                 group_gap: int = 28, ai: bool = False, edge: int = 16):
         w, h = int(size[0]), int(size[1])
         self.size, self.height = (w, h), height
         self.top = h - height
+        self.ai = ai
         names = ([(n, "tool") for n in TOOLS] + [(n, "colour") for n in COLOURS] + [(n, "width") for n in WIDTHS]
-                 + [(n, "action") for n in ACTIONS])
-        groups = [len(TOOLS), len(COLOURS), len(WIDTHS), len(ACTIONS)]
-        total = len(names) * button + (len(names) - len(groups)) * gap + (len(groups) - 1) * group_gap
+                 + [(n, "action") for n in ACTIONS] + ([("ai", "ai")] if ai else []))
+        groups = [len(TOOLS), len(COLOURS), len(WIDTHS), len(ACTIONS)] + ([1] if ai else [])
+        spacing = (len(names) - len(groups)) * gap + (len(groups) - 1) * group_gap
+        if button is None:                      # as wide as fits, at most 80 px
+            button = min(80, (w - 2 * edge - spacing) // len(names))
+        self.button_w = button
+        total = len(names) * button + spacing
         x = max((w - total) // 2, 0)
         y0, y1 = self.top + (height - 56) // 2, self.top + (height - 56) // 2 + 56
         self.buttons: list[Button] = []

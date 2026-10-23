@@ -377,3 +377,54 @@ def test_draw_light_is_off_by_default_and_can_be_turned_on(tmp_path, monkeypatch
         assert report["light"] is lit
         frame = shown[-2]                                     # the last canvas frame before the closing blank
         assert (frame[360, 640].tolist() == [255, 255, 255]) or not lit
+
+
+def test_draw_with_ai_asks_through_the_panel_and_reports_the_answer(tmp_path, monkeypatch):
+    # D51 end to end with a fake Claude: a stroke, AI button by dwell, SUMMARIZE by dwell, the answer back.
+    from invisible_canvas.ai.client import AIAnswer
+    from invisible_canvas.canvas.panel import AIPanel
+    from invisible_canvas.canvas.toolbar import Toolbar
+    tb = Toolbar((1280, 720), ai=True)
+    ai_button = tb.button("ai").centre
+    summarize = next(b for b in AIPanel((1280, 720), tb.top).buttons if b.name == "ai:summarize").centre
+    asked = []
+
+    class FakeAssistant:
+        def __init__(self, cfg, client=None):
+            pass
+
+        def ask(self, action, png):
+            asked.append((action, png))
+            time.sleep(0.3)                                       # the frame loop keeps running meanwhile
+            return AIAnswer(action, ok=True, transcription="hi", result="A greeting.", latency_s=0.3)
+
+    monkeypatch.setattr(draw_tool, "ClaudeAssistant", FakeAssistant)
+
+    def schedule(s, mapper):
+        if s < 0.5:
+            return POINT, (300.0 + 400 * s, 300.0)                # a stroke
+        if s < 1.4:
+            return OTHER, (500.0, 400.0)                          # pen lifts (D49: 0.6 s)
+        if s < 2.7:
+            return OTHER, ai_button                               # AI button: open the panel
+        if s < 2.8:
+            return OTHER, (500.0, 400.0)
+        if s < 4.1:
+            return OTHER, summarize                               # SUMMARIZE
+        return OTHER, (500.0, 400.0)
+
+    code, config, shown = run_tool(draw_tool, tmp_path, monkeypatch, ["draw", "--seconds", "5.0", "--ai"], schedule)
+    report = json.loads(sorted(config.reports_dir.glob("draw-*.json"))[-1].read_text())
+    ai = report["ai"]
+    assert report["actions"].get("press:ai") == 1 and report["actions"].get("press:ai:summarize") == 1
+    assert ai["requests"] == 1 and len(ai["answers"]) == 1 and ai["answers"][0]["ok"]
+    assert asked and asked[0][0] == "summarize" and asked[0][1][:4] == b"\x89PNG"
+    assert ai["busy_frames"] > 5 and ai["busy_processing_fps"] > 30            # S3 in the fake session
+    assert list((config.root / "data" / "ai").glob("*-summarize.json"))
+
+
+def test_draw_without_ai_has_no_ai_report(tmp_path, monkeypatch):
+    code, config, shown = run_tool(draw_tool, tmp_path, monkeypatch, ["draw", "--seconds", "0.3"],
+                                   lambda s, mapper: (OTHER, (640.0, 360.0)))
+    report = json.loads(sorted(config.reports_dir.glob("draw-*.json"))[-1].read_text())
+    assert report["ai"] is None

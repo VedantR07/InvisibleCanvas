@@ -72,6 +72,17 @@ class PathsConfig:
 
 
 @dataclass(frozen=True)
+class AIConfig:
+    """Phase 3A (brain.md D51, §9.11): Claude on selected writing. Off unless enabled (or `draw --ai`)."""
+    enabled: bool
+    model: str
+    effort: str                    # output_config.effort: low | medium | high | xhigh | max
+    max_tokens: int
+    timeout_s: float
+    fallbacks: bool                # server-side refusal fallbacks ("default", beta server-side-fallback-2026-07-01)
+
+
+@dataclass(frozen=True)
 class Config:
     camera: CameraConfig
     projector: ProjectorConfig
@@ -79,6 +90,7 @@ class Config:
     validation: ValidationConfig
     surface: SurfaceConfig
     paths: PathsConfig
+    ai: AIConfig
     root: Path
 
     @property
@@ -97,6 +109,7 @@ _SECTIONS = {
     "validation": ValidationConfig,
     "surface": SurfaceConfig,
     "paths": PathsConfig,
+    "ai": AIConfig,
 }
 
 
@@ -136,7 +149,17 @@ def config_from_dict(data: dict, root: Path = REPO_ROOT) -> Config:
     return config
 
 
+AI_EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
+
 def _check(config: Config) -> None:
+    ai = config.ai
+    if ai.effort not in AI_EFFORTS:
+        raise ConfigError(f"[ai] effort must be one of {', '.join(AI_EFFORTS)}")
+    if not ai.model.strip():
+        raise ConfigError("[ai] model must not be empty")
+    if ai.max_tokens < 1024 or ai.timeout_s <= 0:
+        raise ConfigError("[ai] max_tokens must be >= 1024 and timeout_s > 0")
     if config.camera.backend not in ("dshow", "msmf", "any"):
         raise ConfigError(f"[camera] backend must be dshow, msmf or any, got {config.camera.backend!r}")
     if len(config.camera.fourcc) != 4:

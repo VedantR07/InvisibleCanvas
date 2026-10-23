@@ -4,8 +4,14 @@ D46: one gesture + toolbar tools. A pointing stroke (STROKE_START .. STROKE_END)
 - pen: draws a stroke in the current colour and width (never on the toolbar band);
 - eraser: removes the ink within the eraser radius along the fingertip's path (one undo step per stroke);
 - move: picks up the drawing under the fingertip where the stroke starts and drags it (one undo step).
+- select (D51): the stroke draws a loop; at pen-up the strokes inside it become the selection.
 A toolbar button is pressed by holding the cursor on it (`update_pointer`, every frame): 1 s, CLEAR 2 s.
 The button fires once; the cursor must leave it before it can fire again.
+
+AI panel (D51, only with an AI toolbar): the AI button opens a panel whose buttons (summarize, explain, simplify,
+examples, questions, close) are pressed the same way. An action renders the selection (the whole canvas if
+nothing is selected) to a PNG and queues it in `ai_jobs`; the drawing tool hands jobs to the background worker
+(`take_ai_jobs`) and returns answers with `ai_answer`. The controller never talks to the network.
 """
 
 from __future__ import annotations
@@ -14,6 +20,8 @@ from collections import Counter
 
 from ..canvas.history import AddStroke, History, MoveStrokes, ReplaceStrokes
 from ..canvas.model import Canvas, Stroke
+from ..canvas.panel import AIPanel
+from ..canvas.selection import png_bytes, select_in_loop, selection_image
 from ..canvas.toolbar import COLOURS, WIDTHS, Toolbar
 
 ERASER_RADIUS = {"thin": 12.0, "medium": 24.0, "thick": 42.0}     # px, by the selected width
@@ -30,6 +38,12 @@ class DrawingController:
         self.log: Counter = Counter()
         self._erase_group: dict | None = None
         self._drag: dict | None = None
+        self.selection: list[int] = []                 # D51: strokes chosen with the SELECT loop
+        self.loop: list | None = None                  # the loop being drawn
+        self.panel_layout = AIPanel(canvas.size, toolbar.top) if getattr(toolbar, "ai", False) else None
+        self.panel: dict | None = None                 # {"state": menu|thinking|answer|error, "since", "action", "answer"}
+        self.ai_jobs: list[tuple[str, bytes]] = []
+        self.now = 0.0
 
     @property
     def eraser_radius(self) -> float:
@@ -52,12 +66,17 @@ class DrawingController:
                 raise ValueError(f"no handler for event {e.kind!r}")
             handler(e)
 
+    def _on_panel(self, point) -> bool:
+        return self.panel is not None and self.panel_layout.contains(point)
+
     def _stroke_start(self, e) -> None:
-        if e.point is None or self.toolbar.in_band(e.point):
-            self.log["strokes_refused_on_toolbar"] += 1
-            self.active = self._drag = None
+        if e.point is None or self.toolbar.in_band(e.point) or self._on_panel(e.point):
+            self.log["strokes_refused_on_toolbar" if not self._on_panel(e.point) else "strokes_refused_on_panel"] += 1
+            self.active = self._drag = self.loop = None
             return
-        if self.tool == "pen":
+        if self.tool == "select":
+            self.loop = [e.point]
+        elif self.tool == "pen":
             self.active = Stroke(self.canvas.new_id(), COLOURS[self.colour], WIDTHS[self.width])
             self.active.append(e.point)
         elif self.tool == "eraser":
@@ -69,9 +88,11 @@ class DrawingController:
             self._drag = None if sid is None else {"ids": [sid], "last": e.point, "dx": 0.0, "dy": 0.0}
 
     def _stroke_point(self, e) -> None:
-        if e.point is None or self.toolbar.in_band(e.point):
+        if e.point is None or self.toolbar.in_band(e.point) or self._on_panel(e.point):
             return
-        if self.tool == "pen" and self.active is not None:
+        if self.tool == "select" and self.loop is not None:
+            self.loop.append(e.point)
+        elif self.tool == "pen" and self.active is not None:
             self.active.append(e.point)
         elif self.tool == "eraser" and self._erase_group is not None:
             self._erase_at(e.point)
@@ -94,6 +115,10 @@ class DrawingController:
         if drag and (drag["dx"] or drag["dy"]):
             self.history.record(MoveStrokes(drag["ids"], drag["dx"], drag["dy"]))
             self.log["moves"] += 1
+        loop, self.loop = self.loop, None
+        if loop is not None:
+            self.selection = select_in_loop(self.canvas, loop)
+            self.log["selections"] += 1
         self.active, self.selected = None, None
 
     def _erase_at(self, point) -> None:
@@ -110,7 +135,10 @@ class DrawingController:
 
     def update_pointer(self, t: float, cursor) -> None:
         """Every frame, with the engine's cursor (None: no hand)."""
-        button = self.toolbar.hit(cursor) if cursor is not None else None
+        self.now = t
+        button = None
+        if cursor is not None:
+            button = (self.panel_layout.hit(cursor) if self.panel is not None else None) or self.toolbar.hit(cursor)
         d = self.dwell
         if button is None:
             self.dwell = None
@@ -124,9 +152,14 @@ class DrawingController:
             self.press(button.name)
 
     def press(self, name: str) -> None:
-        button = self.toolbar.button(name)
         self.log[f"press:{name}"] += 1
-        if button.kind == "tool":
+        if name.startswith("ai:"):
+            self._panel_action(name[3:])
+            return
+        button = self.toolbar.button(name)
+        if button.kind == "ai":
+            self.panel = None if self.panel is not None else {"state": "menu", "since": self.now}
+        elif button.kind == "tool":
             self.tool = name
         elif button.kind == "colour":
             self.colour, self.tool = name, "pen"
@@ -151,6 +184,39 @@ class DrawingController:
 
     def clear(self) -> None:
         removed = self.canvas.clear()
+        self.selection = []
         if removed:
             self.history.record(ReplaceStrokes(removed, [], name="clear"))
             self.log["clear"] += 1
+
+    # -- AI panel (D51) ----------------------------------------------------------------------------------
+
+    def _panel_action(self, action: str) -> None:
+        if self.panel is None:
+            return
+        if action == "close":
+            self.panel = None
+            return
+        if self.panel["state"] == "thinking":
+            self.log["ai_refused_busy"] += 1
+            return
+        image = selection_image(self.canvas, [i for i in self.selection if i in self.canvas.strokes])
+        if image is None:
+            self.panel = {"state": "error", "since": self.now, "action": action,
+                          "message": "Nothing written to read yet."}
+            return
+        self.ai_jobs.append((action, png_bytes(image)))
+        self.panel = {"state": "thinking", "since": self.now, "action": action}
+        self.log["ai_requests"] += 1
+
+    def take_ai_jobs(self) -> list[tuple[str, bytes]]:
+        jobs, self.ai_jobs = self.ai_jobs, []
+        return jobs
+
+    def ai_answer(self, answer) -> None:
+        """An answer from the AI worker (an AIAnswer). Shown if the panel is still open."""
+        self.log["ai_answers" if answer.ok else "ai_errors"] += 1
+        if self.panel is None:
+            return
+        self.panel = {"state": "answer" if answer.ok else "error", "since": self.now, "action": answer.action,
+                      "answer": answer, "message": "" if answer.ok else answer.error}

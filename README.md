@@ -45,6 +45,9 @@ python -m invisible_canvas draw           # Phase 2: index finger = use the tool
                                           #          open hand or fist = cursor; hold on a button 1 s to press;
                                           #          --light: light the hand white, ring cursor (D50, off by default)
 python -m invisible_canvas replay DIR     # Phase 2: replay a `gestures --video` recording offline (D48)
+python -m invisible_canvas draw --ai      # Phase 3A: SELECT a loop around writing, AI button -> Claude
+                                          #          summarizes / explains / ... (needs `pip install -e .[ai]`
+                                          #          and ANTHROPIC_API_KEY set in the environment; D51)
 python -m pytest                          # unit tests
 ```
 
