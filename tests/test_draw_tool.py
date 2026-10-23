@@ -368,10 +368,10 @@ def test_gestures_busy_light_ab_records_the_light_per_round(tmp_path, monkeypatc
     assert shown[-2].shape == (720, 1280, 3)
 
 
-def test_draw_light_is_on_by_default_and_can_be_turned_off(tmp_path, monkeypatch):
+def test_draw_light_is_off_by_default_and_can_be_turned_on(tmp_path, monkeypatch):
     def schedule(s, mapper):
         return OTHER, (640.0, 360.0)
-    for argv, lit in ((["draw", "--seconds", "0.4"], True), (["draw", "--seconds", "0.4", "--no-light"], False)):
+    for argv, lit in ((["draw", "--seconds", "0.4"], False), (["draw", "--seconds", "0.4", "--light"], True)):
         code, config, shown = run_tool(draw_tool, tmp_path / str(lit), monkeypatch, argv, schedule)
         report = json.loads(sorted(config.reports_dir.glob("draw-*.json"))[-1].read_text())
         assert report["light"] is lit

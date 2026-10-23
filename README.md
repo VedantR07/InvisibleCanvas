@@ -43,7 +43,7 @@ python -m invisible_canvas gestures       # Phase 2: guided recording, pointing 
                                           #          --video: save the camera video for replay; --busy --light ab: G8)
 python -m invisible_canvas draw           # Phase 2: index finger = use the tool (pen / eraser / move),
                                           #          open hand or fist = cursor; hold on a button 1 s to press;
-                                          #          the hand is lit white, ring cursor (D50; --no-light: off)
+                                          #          --light: light the hand white, ring cursor (D50, off by default)
 python -m invisible_canvas replay DIR     # Phase 2: replay a `gestures --video` recording offline (D48)
 python -m pytest                          # unit tests
 ```

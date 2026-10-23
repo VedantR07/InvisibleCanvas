@@ -13,7 +13,7 @@ prompts >= 95 % not POINT; the debounced engine (D46 defaults) never in DRAW dur
 engine is run with each frame's keep-drawing flag (D47), as in `draw`.
 G1'' (fixed 2026-10-22 before any D48 code): G1' for every pointing angle, the hand found in >= 90 % of each
 pointing prompt's hold frames, and processing >= 30 fps with pipeline p95 <= 33 ms over the recording (as G6).
-The hand is lit plain white (D50) unless `--light off`. G8 (fixed 2026-10-23 before any D50 code): with
+The hand is lit plain white (D50) only with `--light on` (off by default since 2026-10-23). G8 (fixed 2026-10-23 before any D50 code): with
 `--busy --light ab` (a busy background of text and lines; rounds alternate light off, on, off, on), the hand is
 found in >= 90 % of the pointing hold frames with the light on and at least as often as with it off; >= 30 fps
 and pipeline p95 <= 33 ms over the light-on frames.
@@ -80,8 +80,8 @@ def add_parser(subparsers) -> None:
                                                          "down-diagonal, then open hand and fist")
     p.add_argument("--video", action="store_true", help="also save the camera video for `replay` (D48)")
     p.add_argument("--busy", action="store_true", help="G8 (D50): a busy background of text and lines, prompt at the top")
-    p.add_argument("--light", choices=("on", "off", "ab"), default="on",
-                   help="light on the hand (D50): on (default), off, or ab = off/on in alternate rounds (G8)")
+    p.add_argument("--light", choices=("on", "off", "ab"), default="off",
+                   help="light on the hand (D50): off (default), on, or ab = off/on in alternate rounds (G8)")
     p.add_argument("--rounds", type=int, default=2, help="times through the prompts (default 2)")
     p.add_argument("--prepare", type=float, default=3.0, help="seconds to form each shape, not scored (default 3)")
     p.add_argument("--hold", type=float, default=6.0, help="seconds each shape is held and scored (default 6)")

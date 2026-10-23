@@ -4,7 +4,7 @@
     anything else (open hand, fist) -> cursor only
     cursor held on a toolbar button 1 s (CLEAR 2 s) -> press it
 
-The hand is lit plain white and the cursor is a ring around the fingertip (D50); `--no-light` turns that off.
+`--light` lights the hand plain white with a ring cursor (D50; off by default since 2026-10-23, user decision).
 
 Keyboard (laptop): z undo, y redo, s save, c twice clear, ESC quit. Before tracking, the setup check runs
 (a moved setup is recalibrated automatically and validated first, D39). On exit the canvas is saved to
@@ -48,7 +48,7 @@ def add_parser(subparsers) -> None:
     p.add_argument("--no-recalibrate", action="store_true", help="stop instead of recalibrating a moved setup")
     p.add_argument("--save-every", type=float, default=0.0, help="save a camera frame every S seconds (diagnostic)")
     p.add_argument("--trace", action="store_true", help="per-frame JSONL trace: shape measures, mode, events")
-    p.add_argument("--no-light", action="store_true", help="do not light the hand (D50: ink on the hand, dot cursor)")
+    p.add_argument("--light", action="store_true", help="light the hand plain white, ring cursor (D50; off by default)")
     p.set_defaults(func=run)
 
 
@@ -88,7 +88,7 @@ def run(config: Config, args) -> int:
         canvas = Canvas.from_dict(json.loads(args.load.read_text(encoding="utf-8"))) if args.load else Canvas(size)
         toolbar, renderer = Toolbar(size), CanvasRenderer(size)
         controller, engine, points = DrawingController(canvas, toolbar), InteractionEngine(), HandPoints(mapper)
-        light = None if args.no_light else HandLight()
+        light = HandLight() if args.light else None
         brightness = brightness_check(s, mapper, renderer.render(canvas, controller, toolbar, mode=IDLE, cursor=None))
         if args.trace:
             save_dir.mkdir(parents=True, exist_ok=True)
@@ -190,7 +190,7 @@ def run(config: Config, args) -> int:
         "strokes_on_canvas": len(canvas.strokes),
         "canvas": {"json": str(json_path), "png": str(png_path), "saved_during_run": saved_paths},
         "trace": str(save_dir / "trace.jsonl") if args.trace else None,
-        "light": not args.no_light,
+        "light": bool(args.light),
     }
     print(f"{len(records)} frames over {duration:.1f} s: processing {report['processing_fps']:.1f} fps "
           f"(camera {camera_stats.mean_fps:.1f}); pipeline median {report['pipeline_ms']['median']:.1f} ms, "
