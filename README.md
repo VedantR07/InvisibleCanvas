@@ -40,9 +40,10 @@ python -m invisible_canvas cursor         # index-fingertip cursor on the projec
 python -m invisible_canvas detect         # cross-detector diagnostic (read-only)
 python -m invisible_canvas setupcheck     # repeated automatic setup checks (read-only)
 python -m invisible_canvas gestures       # Phase 2: guided recording, pointing vs not (G1'; --angles: G1'',
-                                          #          --video: save the camera video for replay)
+                                          #          --video: save the camera video for replay; --busy --light ab: G8)
 python -m invisible_canvas draw           # Phase 2: index finger = use the tool (pen / eraser / move),
-                                          #          open hand or fist = cursor; hold on a button 1 s to press
+                                          #          open hand or fist = cursor; hold on a button 1 s to press;
+                                          #          the hand is lit white, ring cursor (D50; --no-light: off)
 python -m invisible_canvas replay DIR     # Phase 2: replay a `gestures --video` recording offline (D48)
 python -m pytest                          # unit tests
 ```

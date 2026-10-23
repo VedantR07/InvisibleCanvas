@@ -4,6 +4,8 @@
     anything else (open hand, fist) -> cursor only
     cursor held on a toolbar button 1 s (CLEAR 2 s) -> press it
 
+The hand is lit plain white and the cursor is a ring around the fingertip (D50); `--no-light` turns that off.
+
 Keyboard (laptop): z undo, y redo, s save, c twice clear, ESC quit. Before tracking, the setup check runs
 (a moved setup is recalibrated automatically and validated first, D39). On exit the canvas is saved to
 data/canvas/ (strokes JSON + PNG) and a report to data/reports/draw-*.json.
@@ -25,11 +27,14 @@ from ..canvas.render import CanvasRenderer
 from ..canvas.toolbar import Toolbar
 from ..config import Config
 from ..display import patterns
+from ..display.handlight import HandLight
 from ..interaction.drawing import DrawingController
 from ..interaction.engine import IDLE, InteractionEngine
 from ..vision.hands import HandTracker, HandTrackingError
 from .common import add_device_args, current_seq, now_iso, open_session, save_report, stamp
-from .tracking_session import TRACKER_OPTIONS, HandPoints, brightness_check, checked_mapper, draw_skeleton
+from .tracking_session import (
+    TRACKER_OPTIONS, HandPoints, brightness_check, checked_mapper, draw_skeleton, projector_landmarks,
+)
 
 TITLE = "SETUP CHECK before drawing"
 HELP = "index finger = use the tool | open hand or fist = cursor only | hold the cursor on a button 1 s to press it"
@@ -43,6 +48,7 @@ def add_parser(subparsers) -> None:
     p.add_argument("--no-recalibrate", action="store_true", help="stop instead of recalibrating a moved setup")
     p.add_argument("--save-every", type=float, default=0.0, help="save a camera frame every S seconds (diagnostic)")
     p.add_argument("--trace", action="store_true", help="per-frame JSONL trace: shape measures, mode, events")
+    p.add_argument("--no-light", action="store_true", help="do not light the hand (D50: ink on the hand, dot cursor)")
     p.set_defaults(func=run)
 
 
@@ -82,6 +88,7 @@ def run(config: Config, args) -> int:
         canvas = Canvas.from_dict(json.loads(args.load.read_text(encoding="utf-8"))) if args.load else Canvas(size)
         toolbar, renderer = Toolbar(size), CanvasRenderer(size)
         controller, engine, points = DrawingController(canvas, toolbar), InteractionEngine(), HandPoints(mapper)
+        light = None if args.no_light else HandLight()
         brightness = brightness_check(s, mapper, renderer.render(canvas, controller, toolbar, mode=IDLE, cursor=None))
         if args.trace:
             save_dir.mkdir(parents=True, exist_ok=True)
@@ -104,7 +111,8 @@ def run(config: Config, args) -> int:
             step = engine.update(frame.timestamp, hand)
             controller.handle(step.events)
             controller.update_pointer(frame.timestamp, step.cursor)
-            img = renderer.render(canvas, controller, toolbar, mode=step.mode, cursor=step.cursor)
+            lit = None if light is None else light.update(frame.timestamp, projector_landmarks(mapper, obs))
+            img = renderer.render(canvas, controller, toolbar, mode=step.mode, cursor=step.cursor, light=lit)
             s.projector.show(img)
             cv2.pollKey()
             t2 = time.perf_counter()
@@ -115,7 +123,7 @@ def run(config: Config, args) -> int:
                 trace.write(json.dumps({"t": round(frame.timestamp - start, 4), "seq": frame.seq, "mode": step.mode,
                                         "pending": step.pending, "shape": shape.as_dict() if shape else None,
                                         "cursor": step.cursor, "events": [e.kind for e in step.events],
-                                        "source": obs.source if obs else None}) + "\n")
+                                        "source": obs.source if obs else None, "lit": lit is not None}) + "\n")
             if args.save_every and frame.timestamp - last_saved >= args.save_every:
                 last_saved = frame.timestamp
                 save_dir.mkdir(parents=True, exist_ok=True)
@@ -182,6 +190,7 @@ def run(config: Config, args) -> int:
         "strokes_on_canvas": len(canvas.strokes),
         "canvas": {"json": str(json_path), "png": str(png_path), "saved_during_run": saved_paths},
         "trace": str(save_dir / "trace.jsonl") if args.trace else None,
+        "light": not args.no_light,
     }
     print(f"{len(records)} frames over {duration:.1f} s: processing {report['processing_fps']:.1f} fps "
           f"(camera {camera_stats.mean_fps:.1f}); pipeline median {report['pipeline_ms']['median']:.1f} ms, "

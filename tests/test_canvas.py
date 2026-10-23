@@ -10,6 +10,7 @@ from invisible_canvas.canvas.toolbar import CLEAR_DWELL_S, COLOURS, DWELL_S, TOO
 from invisible_canvas.interaction.drawing import ERASER_RADIUS, DrawingController
 from invisible_canvas.interaction.engine import (
     DRAW,
+    HOVER,
     STROKE_END,
     STROKE_POINT,
     STROKE_START,
@@ -309,3 +310,21 @@ def test_render_shows_strokes_toolbar_and_cursor():
     c.move(list(c.strokes), 1, 0)
     r.render(c, ctl, tb, mode=DRAW, cursor=None)
     assert r.redraws == 2
+
+
+def test_render_with_the_light_on_the_hand():
+    # D50: the hand area is plain white even over ink, the cursor is a ring outside the light, a dwell is an arc.
+    from invisible_canvas.canvas.render import RING_RADIUS
+    from invisible_canvas.display.handlight import grown_hull
+    c, tb, ctl = controller()
+    ctl.handle([ev(STROKE_START, 0, (500, 300)), ev(STROKE_POINT, 0, (800, 300)), ev(STROKE_END, 0)])
+    light = grown_hull(np.array([[620, 280], [660, 280], [660, 380], [620, 380]]), 25)
+    r = CanvasRenderer(SIZE)
+    img = r.render(c, ctl, tb, mode=HOVER, cursor=(640, 280), light=light)
+    assert img[300, 640].tolist() == [255, 255, 255]                   # ink under the hand: lit white
+    assert img[300, 520].tolist() == list(COLOURS["black"])             # ink elsewhere unchanged
+    assert img[280 - RING_RADIUS, 640].tolist() != [255, 255, 255]     # the ring ahead of the fingertip
+    ctl.update_pointer(0.0, tb.button("undo").centre)
+    ctl.update_pointer(0.5, tb.button("undo").centre)
+    arc = r.render(c, ctl, tb, mode=HOVER, cursor=(640, 280), light=light)
+    assert (arc != img).any()                                           # the dwell arc is drawn on the ring

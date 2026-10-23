@@ -1,6 +1,10 @@
 """Renders the canvas for the projector: strokes, the stroke being drawn, the selection, the toolbar (with the
 hold-to-press progress) and the cursor, whose look shows the mode and tool (brain.md §9.10, D44, D46). The
 committed strokes are cached and redrawn only when the canvas changes.
+
+D50: with a light polygon (display.handlight) the hand is painted plain white last, so no ink, text or cursor
+falls on it, and the cursor becomes a ring around the fingertip, wider than the light's margin, so it lands on
+the wall; a toolbar dwell fills the ring as a progress arc (the button itself is often under the hand).
 """
 
 from __future__ import annotations
@@ -8,6 +12,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
+from ..display.handlight import LightParams, paint
 from ..interaction.engine import DRAW, HOVER
 from .model import Canvas, Stroke
 from .toolbar import COLOURS, WIDTHS, Toolbar
@@ -17,6 +22,7 @@ TOOLBAR_BG = (232, 232, 232)
 HIGHLIGHT = (200, 60, 200)            # magenta: selection, pinch cursor, current tool
 ERASER = (0, 140, 255)                # orange
 FONT = cv2.FONT_HERSHEY_SIMPLEX
+RING_RADIUS = int(LightParams().margin_px) + 13   # D50 ring cursor: just outside the light around the fingertip
 
 
 def draw_stroke(img: np.ndarray, stroke: Stroke, colour=None, extra: int = 0) -> None:
@@ -47,7 +53,8 @@ class CanvasRenderer:
             self.redraws += 1
         return self._cache
 
-    def render(self, canvas: Canvas, controller, toolbar: Toolbar, *, mode: str, cursor, status: str = "") -> np.ndarray:
+    def render(self, canvas: Canvas, controller, toolbar: Toolbar, *, mode: str, cursor, status: str = "",
+               light: np.ndarray | None = None) -> np.ndarray:
         img = self._strokes(canvas).copy()
         if controller.selected is not None and controller.selected in canvas.strokes:
             s = canvas.strokes[controller.selected]
@@ -59,7 +66,11 @@ class CanvasRenderer:
         if status:
             cv2.putText(img, status, (12, 26), FONT, 0.6, (120, 120, 120), 1, cv2.LINE_AA)
         if cursor is not None:
-            self._cursor(img, mode, cursor, controller)
+            if light is None:
+                self._cursor(img, mode, cursor, controller)
+            else:
+                self._ring_cursor(img, mode, cursor, controller)
+        paint(img, light)
         return img
 
     def _toolbar(self, img: np.ndarray, toolbar: Toolbar, controller) -> None:
@@ -103,3 +114,17 @@ class CanvasRenderer:
             cv2.circle(img, (x, y), r, COLOURS[controller.colour], -1, cv2.LINE_AA)
         if mode == HOVER and tool == "pen":
             cv2.circle(img, (x, y), 12, (110, 110, 110), 2, cv2.LINE_AA)
+
+    def _ring_cursor(self, img: np.ndarray, mode: str, cursor, controller) -> None:
+        x, y = int(round(cursor[0])), int(round(cursor[1]))
+        tool = controller.tool
+        colour = ERASER if tool == "eraser" else HIGHLIGHT if tool == "move" else COLOURS[controller.colour]
+        if mode == DRAW:
+            cv2.circle(img, (x, y), RING_RADIUS, colour, 4, cv2.LINE_AA)
+        else:
+            cv2.circle(img, (x, y), RING_RADIUS, (110, 110, 110), 2, cv2.LINE_AA)
+            cv2.circle(img, (x, y), RING_RADIUS + 4, colour, 2, cv2.LINE_AA)       # the tool's colour
+        progress = controller.dwell_progress
+        if progress is not None and progress[1] > 0:                          # hold-to-press on the ring
+            cv2.ellipse(img, (x, y), (RING_RADIUS, RING_RADIUS), -90, 0, 360 * progress[1],
+                        (40, 40, 215) if progress[0] == "clear" else HIGHLIGHT, 7, cv2.LINE_AA)

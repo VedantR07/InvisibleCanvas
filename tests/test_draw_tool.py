@@ -327,3 +327,53 @@ def test_replay_refuses_a_recording_without_video(tmp_path):
     (tmp_path / "frames.jsonl").write_text("")
     with pytest.raises(replay_tool.ReplayError):
         replay_tool.load_rows(tmp_path)
+
+
+def test_g8_evaluation_compares_light_off_and_on():
+    def recs(found_off, found_on, fps=50.0, pipe=20.0):
+        out, t = [], 0.0
+        for rnd in (1, 2, 3, 4):
+            on = rnd % 2 == 0
+            for name, expected in gestures_tool.ANGLE_EXPECTED.items():
+                for k in range(60):
+                    seen = k < round(60 * (found_on if on else found_off))
+                    shape = (POINT if expected == POINT else OPEN) if seen else None
+                    out.append({"t": t, "prompt": name, "round": rnd, "phase": "hold", "shape": shape,
+                                "light": on, "pipeline_ms": pipe})
+                    t += 1 / fps
+                t += 3.0                                                 # the next prompt's gate and prepare
+        return out
+    ok = gestures_tool.evaluate_light(recs(0.7, 0.95), gestures_tool.ANGLE_EXPECTED)
+    assert ok["pass"] and ok["off"]["found_rate"] == pytest.approx(0.7, abs=0.01)
+    assert ok["on"]["found_rate"] == pytest.approx(0.95, abs=0.01) and ok["timing_light_on"]["processing_fps"] == pytest.approx(50)
+    assert not gestures_tool.evaluate_light(recs(0.7, 0.85), gestures_tool.ANGLE_EXPECTED)["pass"]   # < 90 %
+    assert not gestures_tool.evaluate_light(recs(0.98, 0.93), gestures_tool.ANGLE_EXPECTED)["pass"]  # worse than off
+    assert not gestures_tool.evaluate_light(recs(0.7, 0.95, pipe=40.0), gestures_tool.ANGLE_EXPECTED)["pass"]
+
+
+def test_gestures_busy_light_ab_records_the_light_per_round(tmp_path, monkeypatch):
+    names = [p[0] for p in gestures_tool.ANGLE_PROMPTS]
+    shape_of = {n: (POINT if e == POINT else OPEN if n == "open" else OTHER) for n, e in gestures_tool.ANGLE_EXPECTED.items()}
+
+    def schedule(s, mapper):
+        return shape_of[names[min(int(s / 0.55), len(names) - 1) % len(names)]], (640.0, 400.0)
+
+    code, config, shown = run_tool(gestures_tool, tmp_path, monkeypatch,
+                                   ["gestures", "--angles", "--busy", "--light", "ab", "--rounds", "2",
+                                    "--prepare", "0.15", "--hold", "0.35"], schedule)
+    report = json.loads(sorted(config.reports_dir.glob("gestures-*.json"))[-1].read_text())
+    assert report["test"] == "G8" and report["busy"] and report["light"] == "ab" and report["g8"] is not None
+    rows = [json.loads(l) for l in open(report["frames_file"])]
+    assert {r["light"] for r in rows if r["round"] == 1} == {False} and {r["light"] for r in rows if r["round"] == 2} == {True}
+    assert shown[-2].shape == (720, 1280, 3)
+
+
+def test_draw_light_is_on_by_default_and_can_be_turned_off(tmp_path, monkeypatch):
+    def schedule(s, mapper):
+        return OTHER, (640.0, 360.0)
+    for argv, lit in ((["draw", "--seconds", "0.4"], True), (["draw", "--seconds", "0.4", "--no-light"], False)):
+        code, config, shown = run_tool(draw_tool, tmp_path / str(lit), monkeypatch, argv, schedule)
+        report = json.loads(sorted(config.reports_dir.glob("draw-*.json"))[-1].read_text())
+        assert report["light"] is lit
+        frame = shown[-2]                                     # the last canvas frame before the closing blank
+        assert (frame[360, 640].tolist() == [255, 255, 255]) or not lit

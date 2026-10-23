@@ -127,6 +127,14 @@ class HandPoints:
         return shape, HandInput(shape.shape, pointer, pinch, palm, radius, keeps_draw=shape.keeps_point)
 
 
+def projector_landmarks(mapper: CoordinateMapper, obs) -> np.ndarray | None:
+    """The hand's 21 landmarks in projector px, for the light on the hand (D50); None without a hand. An
+    extrapolated fingertip still counts here: the hand is there and should be lit."""
+    if obs is None:
+        return None
+    return mapper.camera_to_projector(np.asarray(obs.landmarks, dtype=np.float64))
+
+
 def draw_skeleton(view: np.ndarray, landmarks: np.ndarray, colour=patterns.GREEN) -> None:
     pts = np.round(landmarks).astype(int)
     for a, b in BONES:

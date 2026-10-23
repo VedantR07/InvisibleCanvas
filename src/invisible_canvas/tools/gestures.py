@@ -13,6 +13,10 @@ prompts >= 95 % not POINT; the debounced engine (D46 defaults) never in DRAW dur
 engine is run with each frame's keep-drawing flag (D47), as in `draw`.
 G1'' (fixed 2026-10-22 before any D48 code): G1' for every pointing angle, the hand found in >= 90 % of each
 pointing prompt's hold frames, and processing >= 30 fps with pipeline p95 <= 33 ms over the recording (as G6).
+The hand is lit plain white (D50) unless `--light off`. G8 (fixed 2026-10-23 before any D50 code): with
+`--busy --light ab` (a busy background of text and lines; rounds alternate light off, on, off, on), the hand is
+found in >= 90 % of the pointing hold frames with the light on and at least as often as with it off; >= 30 fps
+and pipeline p95 <= 33 ms over the light-on frames.
 (G1 run 1 used the D44 shapes, including pinch and two fingers: brain.md §13.2.)
 """
 
@@ -28,12 +32,17 @@ import numpy as np
 
 from ..calibration.store import check_compatible, load_calibration
 from ..config import Config
+from ..canvas.render import RING_RADIUS
+from ..canvas.toolbar import COLOURS
 from ..display import patterns
+from ..display.handlight import HandLight, paint
 from ..interaction.engine import DRAW, EngineParams, HandInput, InteractionEngine
 from ..vision.gestures import POINT
 from ..vision.hands import HandTracker, HandTrackingError
 from .common import add_device_args, current_seq, now_iso, open_session, save_report, stamp
-from .tracking_session import TRACKER_OPTIONS, HandPoints, brightness_check, checked_mapper, draw_skeleton
+from .tracking_session import (
+    TRACKER_OPTIONS, HandPoints, brightness_check, checked_mapper, draw_skeleton, projector_landmarks,
+)
 from .video import VideoRecorder
 
 NOT_POINT = "not point"
@@ -59,6 +68,9 @@ G1PP_FOUND = 0.90                 # G1'': hand found in >= 90 % of each pointing
 G6_FPS, G6_P95_MS = 30.0, 33.0
 MIN_SCORED_FRAMES = 30            # fewer hand frames in a hold: that prompt is not evaluable
 HAND_GATE_FRAMES, HAND_GATE_TIMEOUT_S = 10, 20.0   # a prompt starts after 10 frames with a hand (or 20 s)
+G8_FOUND = 0.90                   # G8: hand found in >= 90 % of the pointing hold frames with the light on
+BANNER_H = 160                    # --busy: the prompt sits in a white banner at the top
+SEGMENT_GAP_S = 0.5               # timing: consecutive frames further apart belong to different segments
 
 
 def add_parser(subparsers) -> None:
@@ -67,6 +79,9 @@ def add_parser(subparsers) -> None:
     p.add_argument("--angles", action="store_true", help="G1'' (D48): point up, up-left, up-right, sideways, "
                                                          "down-diagonal, then open hand and fist")
     p.add_argument("--video", action="store_true", help="also save the camera video for `replay` (D48)")
+    p.add_argument("--busy", action="store_true", help="G8 (D50): a busy background of text and lines, prompt at the top")
+    p.add_argument("--light", choices=("on", "off", "ab"), default="on",
+                   help="light on the hand (D50): on (default), off, or ab = off/on in alternate rounds (G8)")
     p.add_argument("--rounds", type=int, default=2, help="times through the prompts (default 2)")
     p.add_argument("--prepare", type=float, default=3.0, help="seconds to form each shape, not scored (default 3)")
     p.add_argument("--hold", type=float, default=6.0, help="seconds each shape is held and scored (default 6)")
@@ -122,14 +137,60 @@ def evaluate(records: list[dict], params: EngineParams = EngineParams(), expecte
 
 
 def timing(records: list[dict]) -> dict:
-    """Processing rate and capture -> projector time over a recording (G1'' uses the G6 limits)."""
+    """Processing rate and capture -> projector time over a recording or a subset of its frames (G1'' and G8 use
+    the G6 limits). The rate counts only intervals between consecutive frames < SEGMENT_GAP_S apart, so a subset
+    made of separate blocks (G8's light-on rounds) is not diluted by the time between them."""
     ts = [r["t"] for r in records]
     pipe = [r["pipeline_ms"] for r in records if r.get("pipeline_ms") is not None]
-    fps = (len(ts) - 1) / (ts[-1] - ts[0]) if len(ts) > 1 and ts[-1] > ts[0] else 0.0
+    dts = [b - a for a, b in zip(ts, ts[1:]) if 0 < b - a < SEGMENT_GAP_S]
+    fps = len(dts) / sum(dts) if dts else 0.0
     p95 = float(np.percentile(pipe, 95)) if pipe else None
     return {"processing_fps": fps, "pipeline_ms_median": float(np.median(pipe)) if pipe else None,
             "pipeline_ms_p95": p95, "limits": {"fps_min": G6_FPS, "pipeline_p95_max_ms": G6_P95_MS},
             "pass": bool(fps >= G6_FPS and p95 is not None and p95 <= G6_P95_MS)}
+
+
+def evaluate_light(records: list[dict], expected: dict) -> dict:
+    """G8 (D50) from per-frame records with a "light" flag: hand found over the pointing hold frames with the light
+    off and on, and timing over the light-on frames. Pure."""
+    out = {}
+    for name, cond in (("off", False), ("on", True)):
+        sel = [r for r in records if r["phase"] == "hold" and expected.get(r["prompt"]) == POINT
+               and bool(r.get("light")) == cond]
+        hand = sum(r["shape"] is not None for r in sel)
+        out[name] = {"hold_frames": len(sel), "hand_frames": hand, "found_rate": hand / len(sel) if sel else None,
+                     "point_rate": (sum(r["shape"] == POINT for r in sel) / hand) if hand else None}
+    times = timing([r for r in records if r.get("light")])
+    on, off = out["on"]["found_rate"], out["off"]["found_rate"]
+    evaluable = on is not None and off is not None and out["on"]["hold_frames"] >= MIN_SCORED_FRAMES
+    passed = bool(evaluable and on >= G8_FOUND and on >= off and times["pass"])
+    return {**out, "timing_light_on": times, "evaluable": evaluable, "pass": passed,
+            "criterion": f"G8: hand found >= {G8_FOUND:.0%} of pointing hold frames with the light on and >= with it "
+                         f"off; light-on frames >= {G6_FPS:g} fps, pipeline p95 <= {G6_P95_MS:g} ms"}
+
+
+def busy_background(size, seed: int = 50) -> np.ndarray:
+    """A deterministic 'full canvas' below the prompt banner: dark strokes in the ink colours and lines of text."""
+    w, h = size
+    rng = np.random.default_rng(seed)
+    img = patterns.blank(size, 255)
+    colours = list(COLOURS.values())
+    for _ in range(45):
+        n = int(rng.integers(8, 20))
+        steps = rng.normal(0, 28, size=(n, 2))
+        start = np.array([rng.uniform(0, w), rng.uniform(BANNER_H, h)])
+        pts = np.round(start + np.cumsum(steps, axis=0)).astype(np.int32)
+        cv2.polylines(img, [pts], False, colours[int(rng.integers(len(colours)))], int(rng.choice([4, 8, 14])),
+                      cv2.LINE_AA)
+    words = "the quick brown fox jumps over the lazy dog 0123456789 invisible canvas".split()
+    for y in range(BANNER_H + 40, h, 70):
+        x = int(rng.integers(0, 120))
+        while x < w:
+            word = words[int(rng.integers(len(words)))]
+            cv2.putText(img, word, (x, y), cv2.FONT_HERSHEY_SIMPLEX, 1.1, (50, 50, 50), 2, cv2.LINE_AA)
+            x += 30 * len(word) + int(rng.integers(20, 60))
+    cv2.rectangle(img, (0, 0), (w - 1, BANNER_H), (255, 255, 255), -1)
+    return img
 
 
 def print_result(result: dict, name: str) -> None:
@@ -144,26 +205,33 @@ def print_result(result: dict, name: str) -> None:
 
 
 def _screen(size, title: str, subtitle: str, line: str, progress: float | None, cursor, hand_seen: bool,
-            arrow=None) -> np.ndarray:
-    img = patterns.blank(size, 255)
+            arrow=None, background: np.ndarray | None = None, light: np.ndarray | None = None) -> np.ndarray:
+    """The prompt screen. With a (busy) `background` the prompt sits in the white banner at the top; with a
+    `light` polygon the hand is painted white last and the cursor is a ring outside it (D50)."""
     w, h = size
+    busy = background is not None
+    img = background.copy() if busy else patterns.blank(size, 255)
     cv2.putText(img, "hand: seen" if hand_seen else "hand: NOT SEEN", (16, 34), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
                 (40, 150, 40) if hand_seen else (40, 40, 215), 2, cv2.LINE_AA)
-    for text, y, scale, thick in ((title, h // 2 - 60, 2.0, 4), (subtitle, h // 2, 0.9, 2), (line, h // 2 + 60, 0.9, 2)):
+    rows = (((title, 60, 1.4, 3), (subtitle, 98, 0.7, 2), (line, 126, 0.7, 2)) if busy else
+            ((title, h // 2 - 60, 2.0, 4), (subtitle, h // 2, 0.9, 2), (line, h // 2 + 60, 0.9, 2)))
+    for text, y, scale, thick in rows:
         (tw, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, thick)
         cv2.putText(img, text, ((w - tw) // 2, y), cv2.FONT_HERSHEY_SIMPLEX, scale, (40, 40, 40), thick, cv2.LINE_AA)
     if arrow is not None:                  # which way to point (D48 angle prompts)
         d = np.asarray(arrow, dtype=np.float64)
-        d = 90 * d / np.linalg.norm(d)
-        c = np.array([w / 2, h / 2 - 190])
+        d = (45 if busy else 90) * d / np.linalg.norm(d)
+        c = np.array([w - 110, 80]) if busy else np.array([w / 2, h / 2 - 190])
         cv2.arrowedLine(img, tuple(int(v) for v in c - d), tuple(int(v) for v in c + d), (40, 40, 40), 6,
                         cv2.LINE_AA, tipLength=0.35)
     if progress is not None:
-        x0, x1, y = w // 4, 3 * w // 4, h // 2 + 100
-        cv2.rectangle(img, (x0, y), (x1, y + 14), (200, 200, 200), -1)
-        cv2.rectangle(img, (x0, y), (x0 + int((x1 - x0) * progress), y + 14), (40, 150, 40), -1)
+        x0, x1, y = (w // 4, 3 * w // 4, 138) if busy else (w // 4, 3 * w // 4, h // 2 + 100)
+        cv2.rectangle(img, (x0, y), (x1, y + (10 if busy else 14)), (200, 200, 200), -1)
+        cv2.rectangle(img, (x0, y), (x0 + int((x1 - x0) * progress), y + (10 if busy else 14)), (40, 150, 40), -1)
     if cursor is not None:
-        cv2.circle(img, (int(cursor[0]), int(cursor[1])), 12, (110, 110, 110), 2, cv2.LINE_AA)
+        r = 12 if light is None else RING_RADIUS
+        cv2.circle(img, (int(cursor[0]), int(cursor[1])), r, (110, 110, 110), 2, cv2.LINE_AA)
+    paint(img, light)
     return img
 
 
@@ -171,6 +239,7 @@ def run(config: Config, args) -> int:
     prompts = ANGLE_PROMPTS if args.angles else PROMPTS
     expected = {p[0]: p[3] for p in prompts}
     test, min_found = ("G1''", G1PP_FOUND) if args.angles else ("G1'", None)
+    background = busy_background((1280, 720)) if args.busy else None
     calibration = load_calibration(config.calibration_dir)
     try:
         tracker = HandTracker(**TRACKER_OPTIONS)
@@ -194,10 +263,15 @@ def run(config: Config, args) -> int:
         size = s.canvas_size
         brightness = brightness_check(s, mapper, patterns.blank(size, 255))
         points = HandPoints(mapper)
+        light = HandLight()
+        if background is not None and background.shape[:2] != (size[1], size[0]):
+            background = busy_background(size)
         seq = current_seq(s)
         start = time.perf_counter()
         quit_early = False
         for k, (name, title, subtitle, _, arrow) in enumerate(plan):
+            round_no = k // len(prompts) + 1
+            light_on = args.light == "on" or (args.light == "ab" and round_no % 2 == 0)   # ab: off, on, off, on
             gate_start, seen_run, prompt_start = time.perf_counter(), 0, None
             saved = 0
             while True:
@@ -223,10 +297,11 @@ def run(config: Config, args) -> int:
                         else f"get ready: {args.prepare - elapsed:.0f}" if phase == "prepare"
                         else "HOLD - move the hand slowly around the projection")
                 progress = None if phase != "hold" else (elapsed - args.prepare) / args.hold
+                lit = light.update(frame.timestamp, projector_landmarks(mapper, obs)) if light_on else None
                 s.projector.show(_screen(size, title, f"{subtitle}   ({k + 1}/{len(plan)})", line, progress,
-                                         hand.pointer if hand else None, obs is not None, arrow))
+                                         hand.pointer if hand else None, obs is not None, arrow, background, lit))
                 pipeline_ms = (time.perf_counter() - frame.timestamp) * 1000
-                rec = {"t": frame.timestamp, "prompt": name, "round": k // len(prompts) + 1, "phase": phase,
+                rec = {"t": frame.timestamp, "prompt": name, "round": round_no, "phase": phase, "light": light_on,
                        "shape": shape.shape if shape else None, "keeps": bool(shape and shape.keeps_point),
                        "process_ms": round(process_ms, 2), "pipeline_ms": round(pipeline_ms, 2),
                        "video_index": video.add(frame.image) if video is not None else None}
@@ -258,11 +333,14 @@ def run(config: Config, args) -> int:
     result = evaluate(records, expected=expected, min_found=min_found)
     times = timing(records)
     passed = result["pass"] and (times["pass"] or not args.angles)
+    g8 = evaluate_light(records, expected) if args.light == "ab" else None
+    if g8 is not None:
+        test, passed = "G8", g8["pass"]
     report = {"created_at": now_iso(), "calibration_created_at": calibration.created_at, "setup_check": setup_info,
               "brightness": brightness, "test": test, "prompt_set": "angles" if args.angles else "point",
               "rounds": args.rounds, "prepare_s": args.prepare, "hold_s": args.hold, "completed": not quit_early,
               "frames_file": str(folder / "frames.jsonl"), "video": video_info, "g1": result, "timing": times,
-              "pass": passed}
+              "light": args.light, "busy": args.busy, "g8": g8, "pass": passed}
     print_result(result, test)
     p95 = times["pipeline_ms_p95"]
     print(f"  timing: processing {times['processing_fps']:.1f} fps, pipeline p95 "
@@ -270,6 +348,15 @@ def run(config: Config, args) -> int:
           + (f" ({'PASS' if times['pass'] else 'FAIL'}: >= {G6_FPS:g} fps, <= {G6_P95_MS:g} ms)" if args.angles else ""))
     if video_info:
         print(f"  video: {video_info['frames']} frames, {video_info['dropped']} dropped: {video_info['file']}")
+    if g8 is not None:
+        for cond in ("off", "on"):
+            c = g8[cond]
+            found = "n/a" if c["found_rate"] is None else f"{100 * c['found_rate']:.1f} %"
+            pt = "n/a" if c["point_rate"] is None else f"{100 * c['point_rate']:.1f} %"
+            print(f"  G8 light {cond:<3}: hand found {found} of {c['hold_frames']} pointing hold frames; POINT {pt} of hand frames")
+        tl = g8["timing_light_on"]
+        print(f"  G8 light-on timing: {tl['processing_fps']:.1f} fps, pipeline p95 "
+              + ("n/a" if tl["pipeline_ms_p95"] is None else f"{tl['pipeline_ms_p95']:.1f} ms"))
     print(f"{test}: {'PASS' if passed else 'FAIL' if result['evaluable'] else 'NOT EVALUABLE'}")
     print(f"frames: {folder / 'frames.jsonl'}")
     print(f"report: {save_report(config, 'gestures', report)}")
