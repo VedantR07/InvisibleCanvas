@@ -73,9 +73,13 @@ class PathsConfig:
 
 @dataclass(frozen=True)
 class AIConfig:
-    """Phase 3A (brain.md D51, §9.11): Claude on selected writing. Off unless enabled (or `draw --ai`)."""
+    """Phase 3A (brain.md D51, D52, §9.11): AI on selected writing. Off unless enabled (or `draw --ai`).
+    backend "local" (D52, default): a vision model in Ollama on this laptop, free; "claude": the Claude API (paid)."""
     enabled: bool
-    model: str
+    backend: str                   # "local" | "claude"
+    local_model: str               # Ollama model tag (D52)
+    local_url: str                 # Ollama server
+    model: str                     # Claude model (backend "claude")
     effort: str                    # output_config.effort: low | medium | high | xhigh | max
     max_tokens: int
     timeout_s: float
@@ -154,6 +158,10 @@ AI_EFFORTS = ("low", "medium", "high", "xhigh", "max")
 
 def _check(config: Config) -> None:
     ai = config.ai
+    if ai.backend not in ("local", "claude"):
+        raise ConfigError('[ai] backend must be "local" or "claude"')
+    if not ai.local_url.startswith(("http://", "https://")) or not ai.local_model.strip():
+        raise ConfigError("[ai] local_url must be an http(s) URL and local_model must not be empty")
     if ai.effort not in AI_EFFORTS:
         raise ConfigError(f"[ai] effort must be one of {', '.join(AI_EFFORTS)}")
     if not ai.model.strip():

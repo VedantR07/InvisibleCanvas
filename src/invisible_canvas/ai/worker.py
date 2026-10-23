@@ -15,7 +15,7 @@ from pathlib import Path
 
 
 class AIWorker:
-    def __init__(self, assistant, save_dir: Path | None = None):
+    def __init__(self, assistant, save_dir: Path | None = None, warm_up: bool = False):
         self.assistant = assistant
         self.save_dir = None if save_dir is None else Path(save_dir)
         self._jobs: queue.Queue = queue.Queue()
@@ -23,6 +23,8 @@ class AIWorker:
         self._busy = threading.Event()
         self._count = 0
         self.answers: list = []                      # every finished answer, in order (for the report)
+        self.warmed_up: bool | None = None           # None: not tried; True/False: the local model loaded or not
+        self._warm_up = warm_up and hasattr(assistant, "warm_up")
         self._thread = threading.Thread(target=self._run, name="ai-worker", daemon=True)
         self._thread.start()
 
@@ -47,6 +49,8 @@ class AIWorker:
                 return out
 
     def _run(self) -> None:
+        if self._warm_up:                             # D52: load the local model before the first question
+            self.warmed_up = bool(self.assistant.warm_up())
         while True:
             job = self._jobs.get()
             if job is None:

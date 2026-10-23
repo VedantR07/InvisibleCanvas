@@ -26,8 +26,8 @@ from invisible_canvas.interaction.drawing import DrawingController
 from invisible_canvas.interaction.engine import HOVER, STROKE_END, STROKE_POINT, STROKE_START, Event
 
 SIZE = (1280, 720)
-CFG = AIConfig(enabled=True, model="claude-opus-5-5", effort="medium", max_tokens=16000, timeout_s=60.0,
-               fallbacks=True)
+CFG = AIConfig(enabled=True, backend="claude", local_model="qwen3-vl:8b", local_url="http://127.0.0.1:11434",
+               model="claude-opus-5-5", effort="medium", max_tokens=16000, timeout_s=60.0, fallbacks=True)
 PNG = png_bytes(np.full((40, 60, 3), 255, np.uint8))
 
 
@@ -252,3 +252,120 @@ def test_ai_off_never_loads_the_sdk():
             "print('anthropic' in sys.modules)")
     out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, timeout=120)
     assert out.stdout.strip() == "False", out.stderr
+
+
+# -- local backend (D52): Ollama on this laptop --------------------------------------------------------------
+
+import http.server
+import socketserver
+
+from invisible_canvas.ai.local import LocalAssistant, build_local_request, local_error_message, parse_local_response
+
+LOCAL = AIConfig(**{**CFG.__dict__, "backend": "local", "timeout_s": 2.0})
+
+
+def test_the_local_request_matches_the_claude_one():
+    r = build_local_request(LOCAL, "explain", PNG)
+    assert r["model"] == "qwen3-vl:8b" and r["stream"] is False and r["format"] == SCHEMA
+    system, user = r["messages"]
+    assert system["role"] == "system" and ACTIONS["explain"] in user["content"]
+    assert base64.b64decode(user["images"][0]) == PNG
+    with pytest.raises(ValueError):
+        build_local_request(LOCAL, "translate", PNG)
+
+
+def test_the_local_answer_is_parsed():
+    reply = {"model": "qwen3-vl:8b", "done_reason": "stop", "prompt_eval_count": 900, "eval_count": 60,
+             "message": {"role": "assistant", "content": json.dumps({"transcription": "x = 2", "result": "Two."})}}
+    a = parse_local_response("explain", reply)
+    assert a.ok and a.transcription == "x = 2" and a.usage == {"prompt_eval_count": 900, "eval_count": 60}
+    assert "cut off" in parse_local_response("explain", {**reply, "done_reason": "length"}).error
+    assert not parse_local_response("explain", {**reply, "message": {"content": "not json"}}).ok
+    assert not parse_local_response("explain", {"model": "m"}).ok
+
+
+class OllamaStub(http.server.BaseHTTPRequestHandler):
+    mode = "ok"
+    seen = []
+
+    def do_POST(self):
+        body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        OllamaStub.seen.append((self.path, body))
+        if OllamaStub.mode == "missing":
+            self.send_response(404)
+            self.end_headers()
+            self.wfile.write(b'{"error": "model not found"}')
+            return
+        if OllamaStub.mode == "slow":
+            time.sleep(3)
+        out = {"model": body["model"], "done_reason": "stop", "message": {
+            "content": json.dumps({"transcription": "hello", "result": "A greeting."})}}
+        data = json.dumps(out).encode()
+        try:
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        except ConnectionError:                    # the client gave up first (the timeout test)
+            pass
+
+    def log_message(self, *a):
+        pass
+
+
+@pytest.fixture
+def ollama():
+    server = socketserver.ThreadingTCPServer(("127.0.0.1", 0), OllamaStub)
+    server.daemon_threads = True
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    OllamaStub.mode, OllamaStub.seen = "ok", []
+    yield f"http://127.0.0.1:{server.server_address[1]}"
+    server.shutdown()
+    server.server_close()
+
+
+def test_the_local_assistant_talks_to_ollama_over_http(ollama):
+    cfg = AIConfig(**{**LOCAL.__dict__, "local_url": ollama})
+    assistant = LocalAssistant(cfg)
+    assert assistant.warm_up() and OllamaStub.seen[-1][0] == "/api/generate"
+    a = assistant.ask("summarize", PNG)
+    assert a.ok and a.result == "A greeting." and OllamaStub.seen[-1][0] == "/api/chat"
+    OllamaStub.mode = "missing"
+    assert "ollama pull qwen3-vl:8b" in assistant.ask("summarize", PNG).error
+    OllamaStub.mode = "slow"
+    assert "No answer within 2 s" in assistant.ask("summarize", PNG).error
+
+
+def test_the_local_assistant_says_when_ollama_is_not_running():
+    with socketserver.TCPServer(("127.0.0.1", 0), OllamaStub) as s:
+        port = s.server_address[1]                                 # a port with nothing listening after close
+    # Windows refuses a closed local port only after ~2 s of retries: a realistic timeout lets the refusal win
+    cfg = AIConfig(**{**LOCAL.__dict__, "local_url": f"http://127.0.0.1:{port}", "timeout_s": 15.0})
+    a = LocalAssistant(cfg).ask("summarize", PNG)
+    assert not a.ok and "start Ollama" in a.error
+    assert LocalAssistant(cfg).warm_up() is False
+    assert "Local AI request failed" in local_error_message(ValueError("x"), cfg)
+
+
+def test_the_worker_warms_the_local_model_up_first():
+    class Warm:
+        def __init__(self):
+            self.order = []
+
+        def warm_up(self):
+            self.order.append("warm")
+            return True
+
+        def ask(self, action, png):
+            self.order.append(action)
+            return AIAnswer(action, ok=True)
+
+    assistant = Warm()
+    w = AIWorker(assistant, warm_up=True)
+    w.submit("summarize", PNG)
+    deadline = time.time() + 5
+    while not w.answers and time.time() < deadline:
+        time.sleep(0.01)
+    assert assistant.order == ["warm", "summarize"] and w.warmed_up is True
+    w.close()

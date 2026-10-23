@@ -5,7 +5,8 @@
     cursor held on a toolbar button 1 s (CLEAR 2 s) -> press it
 
 `--light` lights the hand plain white with a ring cursor (D50; off by default since 2026-10-23, user decision).
-`--ai` (or `[ai] enabled = true`) adds the AI button: Claude reads the SELECT-ed writing (D51, §9.11). Requests
+`--ai` (or `[ai] enabled = true`) adds the AI button: the AI reads the SELECT-ed writing (D51, §9.11); by default
+a free local model through Ollama (D52), or Claude with `[ai] backend = "claude"`. Requests
 run in a background worker; the report records each answer and the frame rate while a request was running (S3).
 
 Keyboard (laptop): z undo, y redo, s save, c twice clear, ESC quit. Before tracking, the setup check runs
@@ -24,6 +25,7 @@ import cv2
 import numpy as np
 
 from ..ai.client import AIAnswer, ClaudeAssistant
+from ..ai.local import LocalAssistant
 from ..ai.worker import AIWorker
 from ..calibration.store import check_compatible, load_calibration
 from ..canvas.model import Canvas
@@ -85,7 +87,8 @@ def run(config: Config, args) -> int:
     worker = None
     if ai_on:
         try:
-            worker = AIWorker(ClaudeAssistant(config.ai), save_dir=config.root / "data" / "ai")
+            assistant = LocalAssistant(config.ai) if config.ai.backend == "local" else ClaudeAssistant(config.ai)
+            worker = AIWorker(assistant, save_dir=config.root / "data" / "ai", warm_up=True)
         except ImportError as e:
             print(f"the AI needs the anthropic package ({e}): pip install -e .[ai]")
             return 2
@@ -222,7 +225,9 @@ def run(config: Config, args) -> int:
         "trace": str(save_dir / "trace.jsonl") if args.trace else None,
         "light": bool(args.light),
         "ai": None if worker is None else {
-            "model": config.ai.model, "effort": config.ai.effort, "fallbacks": config.ai.fallbacks,
+            "backend": config.ai.backend, "warmed_up": worker.warmed_up,
+            "model": config.ai.local_model if config.ai.backend == "local" else config.ai.model,
+            "effort": config.ai.effort, "fallbacks": config.ai.fallbacks,
             "requests": controller.log["ai_requests"], "answers": [a.to_dict() for a in worker.answers],
             "busy_frames": sum(r["ai_busy"] for r in records),
             "busy_processing_fps": segment_fps([r["t"] for r in records if r["ai_busy"]]),

@@ -71,12 +71,19 @@ calibration = "data/calibration"
 reports = "data/reports"
 
 [ai]
-# Phase 3A (brain.md D51, section 9.11): Claude reads the selected writing (an image of the strokes) and
+# Phase 3A (brain.md D51, D52, section 9.11): the AI reads the selected writing (an image of the strokes) and
 # summarizes / explains / simplifies / gives examples / asks questions. Off by default; `draw --ai` turns it
-# on for one session. Credentials come from the environment (ANTHROPIC_API_KEY), never from this file.
+# on for one session.
 enabled = false
+# D52: "local" = free, offline: a vision model served by Ollama on this laptop (install Ollama, then
+# `ollama pull <local_model>`). "claude" = the Claude API, paid per request; credentials from the environment
+# (ANTHROPIC_API_KEY), never from this file.
+backend = "local"
+local_model = "qwen3-vl:8b"
+local_url = "http://127.0.0.1:11434"
+# Claude backend only:
 model = "claude-opus-5-5"
 effort = "medium"          # the model's default; answer time is measured in acceptance test S2
 max_tokens = 16000         # thinking counts towards it
-timeout_s = 60.0
+timeout_s = 120.0          # the first local request also loads the model into GPU memory
 fallbacks = true           # server-side refusal fallbacks

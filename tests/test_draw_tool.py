@@ -399,6 +399,7 @@ def test_draw_with_ai_asks_through_the_panel_and_reports_the_answer(tmp_path, mo
             return AIAnswer(action, ok=True, transcription="hi", result="A greeting.", latency_s=0.3)
 
     monkeypatch.setattr(draw_tool, "ClaudeAssistant", FakeAssistant)
+    monkeypatch.setattr(draw_tool, "LocalAssistant", FakeAssistant)               # D52: local is the default
 
     def schedule(s, mapper):
         if s < 0.5:
