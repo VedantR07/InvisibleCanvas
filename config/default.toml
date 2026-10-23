@@ -79,7 +79,7 @@ enabled = false
 # `ollama pull <local_model>`). "claude" = the Claude API, paid per request; credentials from the environment
 # (ANTHROPIC_API_KEY), never from this file.
 backend = "local"
-local_model = "qwen3-vl:8b"
+local_model = "qwen3-vl:8b-instruct"   # the direct-answer variant (qwen3-vl:8b is the thinking one)
 local_url = "http://127.0.0.1:11434"
 # Claude backend only:
 model = "claude-opus-5-5"

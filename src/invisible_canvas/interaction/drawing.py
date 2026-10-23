@@ -39,6 +39,7 @@ class DrawingController:
         self._erase_group: dict | None = None
         self._drag: dict | None = None
         self.selection: list[int] = []                 # D51: strokes chosen with the SELECT loop
+        self.selection_log: list[dict] = []            # every loop: when, its points' bounds, what it selected (S1)
         self.loop: list | None = None                  # the loop being drawn
         self.panel_layout = AIPanel(canvas.size, toolbar.top) if getattr(toolbar, "ai", False) else None
         self.panel: dict | None = None                 # {"state": menu|thinking|answer|error, "since", "action", "answer"}
@@ -119,6 +120,9 @@ class DrawingController:
         if loop is not None:
             self.selection = select_in_loop(self.canvas, loop)
             self.log["selections"] += 1
+            xs, ys = [p[0] for p in loop], [p[1] for p in loop]
+            self.selection_log.append({"t": round(self.now, 3), "ids": list(self.selection),
+                                       "loop_bounds": [round(min(xs)), round(min(ys)), round(max(xs)), round(max(ys))]})
         self.active, self.selected = None, None
 
     def _erase_at(self, point) -> None:

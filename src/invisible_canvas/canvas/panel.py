@@ -16,7 +16,7 @@ from .toolbar import Button
 PANEL_ACTIONS = ("summarize", "explain", "simplify", "examples", "questions")
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 _ASCII = {"‘": "'", "’": "'", "“": '"', "”": '"', "–": "-", "—": "-", "…": "...",
-          " ": " ", "•": "-", "×": "x", "→": "->"}
+          " ": " ", "•": "-", "×": "x", "→": "->", "°": " deg"}
 
 
 def ascii_text(text: str) -> str:

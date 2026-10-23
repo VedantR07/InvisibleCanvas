@@ -224,6 +224,7 @@ def run(config: Config, args) -> int:
         "canvas": {"json": str(json_path), "png": str(png_path), "saved_during_run": saved_paths},
         "trace": str(save_dir / "trace.jsonl") if args.trace else None,
         "light": bool(args.light),
+        "selections": controller.selection_log,
         "ai": None if worker is None else {
             "backend": config.ai.backend, "warmed_up": worker.warmed_up,
             "model": config.ai.local_model if config.ai.backend == "local" else config.ai.model,

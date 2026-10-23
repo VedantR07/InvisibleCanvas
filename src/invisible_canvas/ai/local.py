@@ -21,6 +21,10 @@ from ..config import AIConfig
 from .client import ACTIONS, SCHEMA, SYSTEM, AIAnswer
 
 KEEP_ALIVE = "30m"
+# A hard cap on the generated tokens: a transcription plus an answer of <= ~80 words needs ~300. Without it, the
+# thinking variant of qwen3-vl (tag qwen3-vl:8b) deliberated on rough finger-writing for 2,895 tokens / 88 s
+# and never answered (2026-10-23 smoke test); the default is now the instruct variant (D52).
+LOCAL_MAX_TOKENS = 1024
 
 
 def build_local_request(cfg: AIConfig, action: str, png: bytes) -> dict:
@@ -32,7 +36,7 @@ def build_local_request(cfg: AIConfig, action: str, png: bytes) -> dict:
         "stream": False,
         "format": SCHEMA,
         "keep_alive": KEEP_ALIVE,
-        "options": {"temperature": 0},
+        "options": {"temperature": 0, "num_predict": LOCAL_MAX_TOKENS},
         "messages": [
             {"role": "system", "content": SYSTEM},
             {"role": "user", "content": f"Task: {ACTIONS[action]}",

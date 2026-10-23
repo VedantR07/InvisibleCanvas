@@ -170,6 +170,7 @@ def test_panel_layout_and_ascii_text():
     assert all(panel.contains(b.centre) and panel.hit(b.centre) is b for b in panel.buttons)
     assert panel.rect[3] <= tb.top and not panel.contains((100, 100))
     assert ascii_text("“E = mc²” — it’s") == '"E = mc2" - it\'s'
+    assert ascii_text("100°C") == "100 degC"
     lines = wrap("a " * 200 + "supercalifragilisticexpialidocious" * 3, 300, 0.6)
     assert all(cv2.getTextSize(l, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 1)[0][0] <= 300 for l in lines)
 
@@ -189,6 +190,7 @@ def test_select_then_ask_then_answer():
     loop = square(470, 260, 650, 370)
     ctl.handle([ev(STROKE_START, loop[0])] + [ev(STROKE_POINT, p) for p in loop[1:]] + [ev(STROKE_END)])
     assert ctl.selection == [3, 4] and len(c.strokes) == 6                 # selecting draws nothing
+    assert ctl.selection_log[-1]["ids"] == [3, 4] and ctl.selection_log[-1]["loop_bounds"] == [470, 260, 650, 370]
     ctl.press("ai")
     assert ctl.panel["state"] == "menu"
     ctl.press("ai:summarize")
@@ -267,6 +269,7 @@ LOCAL = AIConfig(**{**CFG.__dict__, "backend": "local", "timeout_s": 2.0})
 def test_the_local_request_matches_the_claude_one():
     r = build_local_request(LOCAL, "explain", PNG)
     assert r["model"] == "qwen3-vl:8b" and r["stream"] is False and r["format"] == SCHEMA
+    assert r["options"]["num_predict"] == 1024                        # never runs away (2026-10-23 smoke test)
     system, user = r["messages"]
     assert system["role"] == "system" and ACTIONS["explain"] in user["content"]
     assert base64.b64decode(user["images"][0]) == PNG
