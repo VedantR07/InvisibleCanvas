@@ -18,13 +18,16 @@ import urllib.error
 import urllib.request
 
 from ..config import AIConfig
-from .client import ACTIONS, SCHEMA, SYSTEM, AIAnswer
+from .client import ACTIONS, SYSTEM, AIAnswer, answer_from_json, no_topic, schema_for
 
 KEEP_ALIVE = "30m"
 # A hard cap on the generated tokens: a transcription plus an answer of <= ~80 words needs ~300. Without it, the
 # thinking variant of qwen3-vl (tag qwen3-vl:8b) deliberated on rough finger-writing for 2,895 tokens / 88 s
 # and never answered (2026-10-23 smoke test); the default is now the instruct variant (D52).
 LOCAL_MAX_TOKENS = 1024
+# D54: EXPLORE answers took 75-93 tokens in the dry run; on a scribble the model repeated '[?]' to the limit
+# (1024 tokens, 26 s). 400 still leaves room for a long transcription and ends such a loop in ~10 s.
+EXPLORE_MAX_TOKENS = 400
 
 
 def build_local_request(cfg: AIConfig, action: str, png: bytes) -> dict:
@@ -34,9 +37,10 @@ def build_local_request(cfg: AIConfig, action: str, png: bytes) -> dict:
     return {
         "model": cfg.local_model,
         "stream": False,
-        "format": SCHEMA,
+        "format": schema_for(action),
         "keep_alive": KEEP_ALIVE,
-        "options": {"temperature": 0, "num_predict": LOCAL_MAX_TOKENS},
+        "options": {"temperature": 0,
+                    "num_predict": EXPLORE_MAX_TOKENS if action == "explore" else LOCAL_MAX_TOKENS},
         "messages": [
             {"role": "system", "content": SYSTEM},
             {"role": "user", "content": f"Task: {ACTIONS[action]}",
@@ -51,14 +55,14 @@ def parse_local_response(action: str, data: dict) -> AIAnswer:
     base = dict(action=action, model=str(data.get("model", "")), stop_reason=str(data.get("done_reason", "")),
                 usage=usage)
     if data.get("done_reason") == "length":
+        if action == "explore":
+            return no_topic(**base)
         return AIAnswer(ok=False, error="The answer was cut off; try a smaller selection.", **base)
     content = (data.get("message") or {}).get("content")
     if not content:
         return AIAnswer(ok=False, error="The local AI returned no text.", **base)
     try:
-        parsed = json.loads(content)
-        return AIAnswer(ok=True, transcription=str(parsed["transcription"]).strip(),
-                        result=str(parsed["result"]).strip(), **base)
+        return answer_from_json(json.loads(content), **base)
     except (ValueError, KeyError, TypeError):
         return AIAnswer(ok=False, error="The local AI's answer could not be read.", **base)
 

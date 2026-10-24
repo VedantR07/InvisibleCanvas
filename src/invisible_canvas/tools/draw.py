@@ -55,7 +55,7 @@ def add_parser(subparsers) -> None:
     p.add_argument("--save-every", type=float, default=0.0, help="save a camera frame every S seconds (diagnostic)")
     p.add_argument("--trace", action="store_true", help="per-frame JSONL trace: shape measures, mode, events")
     p.add_argument("--light", action="store_true", help="light the hand plain white, ring cursor (D50; off by default)")
-    p.add_argument("--ai", action="store_true", help="switch the AI on for this session (Claude reads the selection, D51)")
+    p.add_argument("--ai", action="store_true", help="switch the AI on for this session (the AI reads the selection, D51/D52)")
     p.set_defaults(func=run)
 
 
@@ -243,7 +243,8 @@ def run(config: Config, args) -> int:
     if worker is not None:
         for a in worker.answers:
             print(f"AI {a.action}: {'ok' if a.ok else 'ERROR ' + a.error} in {a.latency_s:.1f} s"
-                  + (f" | read: {a.transcription[:60]!r}" if a.ok else ""))
+                  + (f" | read: {a.transcription[:60]!r}" if a.ok else "")
+                  + (f" | topic: {a.topic!r}" if a.readable else " | no clear topic" if a.readable is False else ""))
         ai = report["ai"]
         if ai["busy_frames"]:
             print(f"while AI requests ran: {ai['busy_frames']} frames, {ai['busy_processing_fps']:.1f} fps, "

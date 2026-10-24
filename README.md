@@ -46,7 +46,9 @@ python -m invisible_canvas draw           # Phase 2: index finger = use the tool
                                           #          --light: light the hand white, ring cursor (D50, off by default)
 python -m invisible_canvas replay DIR     # Phase 2: replay a `gestures --video` recording offline (D48)
 python -m invisible_canvas draw --ai      # Phase 3A: SELECT a loop around writing, AI button -> the AI
-                                          #          summarizes / explains / ... Free and offline by default:
+                                          #          summarizes / explains / ... / explores the topic (EXPLORE:
+                                          #          background, key facts, a connected concept; D54).
+                                          #          Free and offline by default:
                                           #          Ollama + `ollama pull qwen3-vl:8b-instruct` (D52). Optional paid
                                           #          backend: [ai] backend = "claude" + `pip install -e .[ai]`.
 python -m pytest                          # unit tests

@@ -9,7 +9,7 @@ A toolbar button is pressed by holding the cursor on it (`update_pointer`, every
 The button fires once; the cursor must leave it before it can fire again.
 
 AI panel (D51, only with an AI toolbar): the AI button opens a panel whose buttons (summarize, explain, simplify,
-examples, questions, close) are pressed the same way. An action renders the selection (the whole canvas if
+examples, questions, explore (D54), close) are pressed the same way. An action renders the selection (the whole canvas if
 nothing is selected) to a PNG and queues it in `ai_jobs`; the drawing tool hands jobs to the background worker
 (`take_ai_jobs`) and returns answers with `ai_answer`. The controller never talks to the network.
 """

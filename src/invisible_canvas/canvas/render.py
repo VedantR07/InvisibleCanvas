@@ -148,7 +148,10 @@ class CanvasRenderer:
             answer = panel["answer"]
             rows = [("READ:", 0.55, PANEL_TEXT, 2)]                  # what the AI read, as large as the answer
             rows += [(line, 0.62, PANEL_TEXT, 1) for line in wrap(answer.transcription or "-", width, 0.62)]
-            rows += [("", 0.3, PANEL_TEXT, 1), (panel["action"].upper() + ":", 0.55, PANEL_TEXT, 2)]
+            header = panel["action"].upper() + ":"
+            if getattr(answer, "readable", None) and answer.topic:              # D54: EXPLORE names its topic
+                header += " " + answer.topic.upper()
+            rows += [("", 0.3, PANEL_TEXT, 1)] + [(line, 0.55, PANEL_TEXT, 2) for line in wrap(header, width, 0.55, 2)]
             rows += [(line, 0.62, PANEL_TEXT, 1) for line in wrap(answer.result, width, 0.62)]
         for k, (line, scale, colour, thick) in enumerate(rows):
             step = int(34 * scale) + 6

@@ -7,6 +7,10 @@ plus the action. Structured output (`output_config.format`) guarantees a JSON an
 `server-side-fallback-2026-07-01`) re-run a declined request on another model. Every failure becomes an
 `AIAnswer` with a message for the projected panel; nothing raises out of `ask`.
 
+EXPLORE (D54) goes beyond the writing (topic, background, key facts, a connected concept) in the same single
+request; its answer format adds `readable` and `topic`, and an answer without a topic read with confidence is
+replaced by a fixed message (`UNREADABLE`), so no guessed topic reaches the panel. The other actions are unchanged.
+
 Credentials come from the environment (`ANTHROPIC_API_KEY`); without them the SDK raises TypeError at request
 time ("Could not resolve authentication method"), mapped to a "no API key" message.
 """
@@ -26,6 +30,15 @@ ACTIONS = {
     "simplify": "Rewrite what is written in simpler words, keeping its meaning.",
     "examples": "Give two or three short, concrete examples of what is written.",
     "questions": "Write three short questions that check understanding of what is written.",
+    # D54: beyond the writing; its own answer format (EXPLORE_SCHEMA) says whether a topic was read at all
+    "explore": ("Find the topic of what is written and help the reader explore it beyond the written words: "
+                "3 or 4 short lines, each starting with '- ' and at most 12 words, giving background, key facts "
+                "and one connected concept worth exploring next. Do not repeat or summarize the writing. Only "
+                "state well-established facts. Put the topic itself (1 to 4 words) in the topic field. In the "
+                "transcription write a single [?] for each part you cannot read. If the writing cannot be read "
+                "with confidence, names no clear topic, or names something you do not know as a real subject "
+                "(for example a misspelled word or an unknown name), set readable to false and leave the topic "
+                "empty: never guess a topic or invent facts."),
 }
 
 SYSTEM = (
@@ -46,7 +59,33 @@ SCHEMA = {
     "additionalProperties": False,
 }
 
+# D54: EXPLORE also reports whether the writing named a topic it could read; the other actions keep SCHEMA
+EXPLORE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "transcription": SCHEMA["properties"]["transcription"],
+        "readable": {"type": "boolean",
+                     "description": "true only if the writing was read with confidence and names a clear topic"},
+        "topic": {"type": "string", "description": "The topic in 1 to 4 words; empty when readable is false"},
+        "result": {"type": "string", "description": "3 or 4 short lines starting with '- ', plain text"},
+    },
+    "required": ["transcription", "readable", "topic", "result"],
+    "additionalProperties": False,
+}
+
+# Shown instead of the model's text when EXPLORE found no topic it could read: nothing is invented on the wall
+UNREADABLE = "Could not read a clear topic. Write it larger, or select just the topic word, and try again."
+
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
+
+
+def schema_for(action: str) -> dict:
+    return EXPLORE_SCHEMA if action == "explore" else SCHEMA
+
+
+def legible(text: str) -> bool:
+    """At least two letters or digits outside the [?] marks the model writes for what it cannot read."""
+    return sum(ch.isalnum() for ch in text.replace("[?]", "")) >= 2
 
 
 @dataclass
@@ -61,9 +100,33 @@ class AIAnswer:
     latency_s: float = 0.0
     usage: dict = field(default_factory=dict)
     request_id: str = ""
+    topic: str = ""                       # EXPLORE only (D54)
+    readable: bool | None = None          # EXPLORE only: False = no topic read with confidence; None = not asked
 
     def to_dict(self) -> dict:
         return dict(self.__dict__)
+
+
+def answer_from_json(data, **base) -> AIAnswer:
+    """The structured answer's JSON object -> AIAnswer (`base`: action, model, ...); raises KeyError / TypeError /
+    ValueError when malformed.
+
+    EXPLORE (D54) counts as read only when the model says so, names a topic and transcribed more than [?] marks;
+    otherwise its text is replaced by UNREADABLE, so no guessed topic or facts reach the panel."""
+    transcription, result = str(data["transcription"]).strip(), str(data["result"]).strip()
+    if base["action"] != "explore":
+        return AIAnswer(ok=True, transcription=transcription, result=result, **base)
+    topic = str(data["topic"]).strip()
+    if data["readable"] is True and topic and legible(transcription):
+        return AIAnswer(ok=True, transcription=transcription, result=result, topic=topic, readable=True, **base)
+    return no_topic(transcription, **base)
+
+
+def no_topic(transcription: str = "", **base) -> AIAnswer:
+    """EXPLORE without a topic read with confidence (D54): the fixed note, never the model's text. Also used for
+    an EXPLORE answer cut off at the token limit: on scribbles the model repeated '[?]' until the limit
+    (dry run 2026-10-25), an answer that is only a few short lines never needs it."""
+    return AIAnswer(ok=True, transcription=transcription, result=UNREADABLE, readable=False, **base)
 
 
 def build_request(cfg: AIConfig, action: str, png: bytes) -> dict:
@@ -74,7 +137,7 @@ def build_request(cfg: AIConfig, action: str, png: bytes) -> dict:
         "model": cfg.model,
         "max_tokens": cfg.max_tokens,
         "system": SYSTEM,
-        "output_config": {"effort": cfg.effort, "format": {"type": "json_schema", "schema": SCHEMA}},
+        "output_config": {"effort": cfg.effort, "format": {"type": "json_schema", "schema": schema_for(action)}},
         "messages": [{
             "role": "user",
             "content": [
@@ -100,14 +163,14 @@ def parse_response(action: str, response) -> AIAnswer:
     if stop == "refusal":
         return AIAnswer(ok=False, error="Claude declined this request.", **base)
     if stop == "max_tokens":
+        if action == "explore":
+            return no_topic(**base)
         return AIAnswer(ok=False, error="The answer was cut off (max_tokens); try a smaller selection.", **base)
     text = next((b.text for b in getattr(response, "content", []) if getattr(b, "type", "") == "text"), None)
     if text is None:
         return AIAnswer(ok=False, error="Claude returned no text.", **base)
     try:
-        data = json.loads(text)
-        return AIAnswer(ok=True, transcription=str(data["transcription"]).strip(), result=str(data["result"]).strip(),
-                        **base)
+        return answer_from_json(json.loads(text), **base)
     except (ValueError, KeyError, TypeError):
         return AIAnswer(ok=False, error="Claude's answer could not be read.", **base)
 

@@ -1,8 +1,9 @@
 """The projected AI panel (brain.md D51, §9.11). Pure layout and text fitting.
 
-The panel sits at the right of the canvas above the toolbar: six buttons (five actions and CLOSE), pressed by
-holding the cursor on them like the toolbar, then the answer: what the AI read and the result, wrapped to the
-panel. OpenCV draws ASCII only, so answers are reduced to ASCII first (typographic quotes and dashes mapped).
+The panel sits at the right of the canvas above the toolbar: seven buttons in three columns (six actions, then
+CLOSE alone at the bottom right; D54 added EXPLORE without shrinking the answer area), pressed by holding the
+cursor on them like the toolbar, then the answer: what the AI read and the result, wrapped to the panel. OpenCV
+draws ASCII only, so answers are reduced to ASCII first (typographic quotes and dashes mapped).
 """
 
 from __future__ import annotations
@@ -13,7 +14,8 @@ import cv2
 
 from .toolbar import Button
 
-PANEL_ACTIONS = ("summarize", "explain", "simplify", "examples", "questions")
+PANEL_ACTIONS = ("summarize", "explain", "simplify", "examples", "questions", "explore")
+COLUMNS = 3
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 _ASCII = {"‘": "'", "’": "'", "“": '"', "”": '"', "–": "-", "—": "-", "…": "...",
           " ": " ", "•": "-", "×": "x", "→": "->", "°": " deg"}
@@ -61,13 +63,16 @@ class AIPanel:
         w, _ = size
         self.rect = (w - width - margin, margin, w - margin, toolbar_top - margin)
         x0, y0, x1, _ = self.rect
-        bw, bh, gap = (width - 3 * 12) // 2, 52, 10
-        names = [f"ai:{a}" for a in PANEL_ACTIONS] + ["ai:close"]
-        self.buttons = []
-        for k, name in enumerate(names):
-            col, row = k % 2, k // 2
+        bw, bh, gap = (width - (COLUMNS + 1) * 12) // COLUMNS, 52, 10
+
+        def cell(row: int, col: int) -> tuple[int, int, int, int]:
             bx, by = x0 + 12 + col * (bw + 12), y0 + 48 + row * (bh + gap)
-            self.buttons.append(Button(name, "panel", (bx, by, bx + bw, by + bh)))
+            return bx, by, bx + bw, by + bh
+
+        self.buttons = [Button(f"ai:{a}", "panel", cell(k // COLUMNS, k % COLUMNS))
+                        for k, a in enumerate(PANEL_ACTIONS)]
+        rows = -(-len(PANEL_ACTIONS) // COLUMNS)
+        self.buttons.append(Button("ai:close", "panel", cell(rows, COLUMNS - 1)))
         self.text_top = self.buttons[-1].rect[3] + 18
         self.text_left, self.text_right = x0 + 14, x1 - 14
 

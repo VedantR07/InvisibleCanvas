@@ -2,6 +2,7 @@
 controller flow. No network: Claude is a fake client."""
 
 import base64
+import itertools
 import json
 import subprocess
 import sys
@@ -14,8 +15,8 @@ import cv2
 import numpy as np
 import pytest
 
-from invisible_canvas.ai.client import ACTIONS, FALLBACK_BETA, SCHEMA, AIAnswer, ClaudeAssistant, build_request, \
-    error_message, parse_response
+from invisible_canvas.ai.client import ACTIONS, EXPLORE_SCHEMA, FALLBACK_BETA, SCHEMA, UNREADABLE, AIAnswer, \
+    ClaudeAssistant, build_request, error_message, parse_response
 from invisible_canvas.ai.worker import AIWorker
 from invisible_canvas.canvas.model import Canvas, Stroke
 from invisible_canvas.canvas.panel import PANEL_ACTIONS, AIPanel, ascii_text, wrap
@@ -366,8 +367,10 @@ class OllamaStub(http.server.BaseHTTPRequestHandler):
             return
         if OllamaStub.mode == "slow":
             time.sleep(3)
-        out = {"model": body["model"], "done_reason": "stop", "message": {
-            "content": json.dumps({"transcription": "hello", "result": "A greeting."})}}
+        answer = {"transcription": "hello", "result": "A greeting."}
+        if "topic" in body.get("format", {}).get("properties", {}):          # an EXPLORE request (D54)
+            answer = {"transcription": "VOLCANO", "readable": True, "topic": "Volcanoes", "result": "- Molten rock"}
+        out = {"model": body["model"], "done_reason": "stop", "message": {"content": json.dumps(answer)}}
         data = json.dumps(out).encode()
         try:
             self.send_response(200)
@@ -437,3 +440,106 @@ def test_the_worker_warms_the_local_model_up_first():
         time.sleep(0.01)
     assert assistant.order == ["warm", "summarize"] and w.warmed_up is True
     w.close()
+
+
+# -- EXPLORE (D54): the topic and what lies beyond the writing, in the same single request ----------------------
+
+EXPLORE_OK = {"transcription": "VOLCANO", "readable": True, "topic": "Volcanoes",
+              "result": "- Openings where molten rock reaches the surface\n- Related: plate tectonics"}
+
+
+def claude_reply(data):
+    return response(json.dumps(data))
+
+
+def ollama_reply(data):
+    return {"model": "qwen3-vl:8b", "done_reason": "stop", "message": {"content": json.dumps(data)}}
+
+
+def test_explore_has_its_own_answer_format_and_the_other_actions_keep_theirs():
+    assert "explore" in ACTIONS and "explore" in PANEL_ACTIONS
+    assert EXPLORE_SCHEMA["required"] == ["transcription", "readable", "topic", "result"]
+    assert EXPLORE_SCHEMA["properties"]["readable"]["type"] == "boolean"
+    claude, local = build_request(CFG, "explore", PNG), build_local_request(LOCAL, "explore", PNG)
+    assert claude["output_config"]["format"]["schema"] == EXPLORE_SCHEMA and local["format"] == EXPLORE_SCHEMA
+    assert ACTIONS["explore"] in claude["messages"][0]["content"][1]["text"]
+    assert ACTIONS["explore"] in local["messages"][1]["content"]
+    for action in ("summarize", "explain", "simplify", "examples", "questions"):     # unchanged requests
+        assert build_request(CFG, action, PNG)["output_config"]["format"]["schema"] == SCHEMA
+        assert build_local_request(LOCAL, action, PNG)["format"] == SCHEMA
+
+
+@pytest.mark.parametrize("parse, reply", [(parse_response, claude_reply), (parse_local_response, ollama_reply)])
+def test_explore_names_a_topic_or_says_it_could_not_read_one(parse, reply):
+    a = parse("explore", reply(EXPLORE_OK))
+    assert a.ok and a.readable is True and a.topic == "Volcanoes" and a.result.startswith("- Openings")
+    for unread in ({**EXPLORE_OK, "readable": False},                 # the model could not read it
+                   {**EXPLORE_OK, "topic": "  "},                     # no topic named
+                   {**EXPLORE_OK, "transcription": "[?] [?]"},        # nothing read but unreadable marks
+                   {**EXPLORE_OK, "readable": "true"}):               # not a JSON true
+        u = parse("explore", reply(unread))
+        assert u.ok and u.readable is False and u.topic == ""
+        assert u.result == UNREADABLE                                 # the model's facts are never shown
+    assert not parse("explore", reply({"transcription": "x", "result": "y"})).ok     # format not kept: an error
+    s = parse("summarize", reply({"transcription": "x", "result": "y"}))
+    assert s.ok and s.result == "y" and s.readable is None and s.topic == ""        # other actions unchanged
+
+
+def test_the_panel_has_explore_and_keeps_its_answer_area():
+    tb = Toolbar(SIZE, ai=True)
+    panel = AIPanel(SIZE, tb.top)
+    assert [b.name for b in panel.buttons] == [f"ai:{a}" for a in PANEL_ACTIONS] + ["ai:close"]
+    x0, y0, x1, y1 = panel.rect
+    rects = [b.rect for b in panel.buttons]
+    assert all(x0 < bx0 and bx1 < x1 and y0 < by0 and by1 < panel.text_top for bx0, by0, bx1, by1 in rects)
+    assert not any(a[0] < b[2] and b[0] < a[2] and a[1] < b[3] and b[1] < a[3]          # no two buttons overlap
+                   for a, b in itertools.combinations(rects, 2))
+    for b in panel.buttons:                    # every label fits; every button at least toolbar-sized
+        bw, bh = b.rect[2] - b.rect[0], b.rect[3] - b.rect[1]
+        assert cv2.getTextSize(b.name[3:].upper(), cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)[0][0] <= bw - 16
+        assert bw >= tb.button_w and bh >= 52
+    close = panel.buttons[-1].rect
+    assert close[2] == max(r[2] for r in rects) and close[3] == max(r[3] for r in rects)   # bottom right, as before
+    assert y1 - panel.text_top == 374                                 # the answer area did not shrink (D51: 374 px)
+
+
+def test_explore_is_pressed_by_dwell_and_its_answer_shows_the_topic_or_the_note(monkeypatch):
+    c, ctl = ai_controller()
+    ctl.press("ai")
+    target = next(b for b in ctl.panel_layout.buttons if b.name == "ai:explore").centre
+    ctl.update_pointer(0.0, target)
+    ctl.update_pointer(1.05, target)
+    (action, png), = ctl.take_ai_jobs()
+    assert action == "explore" and png[:4] == b"\x89PNG" and ctl.panel["state"] == "thinking"
+    texts, real = [], cv2.putText
+    monkeypatch.setattr(cv2, "putText", lambda img, text, *a, **k: (texts.append(text), real(img, text, *a, **k))[1])
+    ctl.ai_answer(parse_local_response("explore", ollama_reply(EXPLORE_OK)))
+    CanvasRenderer(SIZE).render(c, ctl, ctl.toolbar, mode=HOVER, cursor=None)
+    assert "READ:" in texts and "VOLCANO" in texts and "EXPLORE: VOLCANOES" in texts
+    assert "- Openings where molten rock reaches the surface" in " ".join(texts)
+    texts.clear()
+    ctl.ai_answer(parse_local_response("explore", ollama_reply(
+        {"transcription": "[?] [?]", "readable": False, "topic": "Dragons", "result": "- Dragons breathe fire"})))
+    CanvasRenderer(SIZE).render(c, ctl, ctl.toolbar, mode=HOVER, cursor=None)
+    shown = " ".join(texts)
+    assert "EXPLORE:" in texts and UNREADABLE in shown                    # the fixed note, as written
+    assert "Dragons" not in shown and "DRAGONS" not in shown and "fire" not in shown   # nothing guessed
+
+
+def test_explore_goes_through_the_same_local_request(ollama):
+    a = LocalAssistant(AIConfig(**{**LOCAL.__dict__, "local_url": ollama})).ask("explore", PNG)
+    assert a.ok and a.topic == "Volcanoes" and a.readable is True and a.result == "- Molten rock"
+    path, body = OllamaStub.seen[-1]
+    assert path == "/api/chat" and body["format"] == EXPLORE_SCHEMA
+
+
+def test_a_cut_off_explore_answer_shows_the_note_and_the_other_actions_still_report_it():
+    # dry run 2026-10-25: on a scribble the model repeated "[?]" until the token limit
+    cut = [parse_response("explore", response('{"transcription": "[?] [?] [?', stop="max_tokens")),
+           parse_local_response("explore", {**ollama_reply({}), "done_reason": "length"})]
+    assert all(a.ok and a.readable is False and a.result == UNREADABLE and a.topic == "" for a in cut)
+    assert "cut off" in parse_response("summarize", response('{"tr', stop="max_tokens")).error      # unchanged
+    assert "cut off" in parse_local_response("summarize", {**ollama_reply({}), "done_reason": "length"}).error
+    assert build_local_request(LOCAL, "explore", PNG)["options"]["num_predict"] == 400
+    assert all(build_local_request(LOCAL, a, PNG)["options"]["num_predict"] == 1024
+               for a in ("summarize", "explain", "simplify", "examples", "questions"))
