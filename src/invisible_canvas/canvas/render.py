@@ -138,16 +138,16 @@ class CanvasRenderer:
         state = panel["state"]
         rows: list[tuple[str, float, tuple, int]] = []
         if state == "menu":
-            rows = [(line, 0.6, PANEL_MUTED, 1) for line in wrap("Choose what Claude should do with it.", width, 0.6)]
+            rows = [(line, 0.6, PANEL_MUTED, 1) for line in wrap("Choose what the AI should do with it.", width, 0.6)]
         elif state == "thinking":
             seconds = max(controller.now - panel.get("since", controller.now), 0.0)
-            rows = [(f"Claude is reading... {seconds:.0f} s", 0.65, PANEL_TEXT, 2)]
+            rows = [(f"The AI is reading... {seconds:.0f} s", 0.65, PANEL_TEXT, 2)]
         elif state == "error":
             rows = [(line, 0.6, PANEL_ERROR, 2) for line in wrap(panel.get("message", "Error."), width, 0.6, 2)]
         else:
             answer = panel["answer"]
-            rows = [("Read:", 0.5, PANEL_MUTED, 1)]
-            rows += [(line, 0.5, PANEL_MUTED, 1) for line in wrap(answer.transcription or "-", width, 0.5)]
+            rows = [("READ:", 0.55, PANEL_TEXT, 2)]                  # what the AI read, as large as the answer
+            rows += [(line, 0.62, PANEL_TEXT, 1) for line in wrap(answer.transcription or "-", width, 0.62)]
             rows += [("", 0.3, PANEL_TEXT, 1), (panel["action"].upper() + ":", 0.55, PANEL_TEXT, 2)]
             rows += [(line, 0.62, PANEL_TEXT, 1) for line in wrap(answer.result, width, 0.62)]
         for k, (line, scale, colour, thick) in enumerate(rows):

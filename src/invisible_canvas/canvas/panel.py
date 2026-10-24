@@ -1,7 +1,7 @@
 """The projected AI panel (brain.md D51, §9.11). Pure layout and text fitting.
 
 The panel sits at the right of the canvas above the toolbar: six buttons (five actions and CLOSE), pressed by
-holding the cursor on them like the toolbar, then the answer: what Claude read and the result, wrapped to the
+holding the cursor on them like the toolbar, then the answer: what the AI read and the result, wrapped to the
 panel. OpenCV draws ASCII only, so answers are reduced to ASCII first (typographic quotes and dashes mapped).
 """
 
