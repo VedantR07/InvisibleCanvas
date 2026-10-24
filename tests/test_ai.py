@@ -543,3 +543,22 @@ def test_a_cut_off_explore_answer_shows_the_note_and_the_other_actions_still_rep
     assert build_local_request(LOCAL, "explore", PNG)["options"]["num_predict"] == 400
     assert all(build_local_request(LOCAL, a, PNG)["options"]["num_predict"] == 1024
                for a in ("summarize", "explain", "simplify", "examples", "questions"))
+
+
+def test_explore_points_run_together_are_put_on_their_own_lines():
+    # EXPLORE physical run 1 (2026-10-25): the SQL answer came as one line and the panel wrapped it as a paragraph
+    sql = ("- Structured Query Language manages relational databases. - Standardized by ANSI and ISO for data "
+           "manipulation. - Used for querying, updating, and managing database structures. - Explore ACID properties "
+           "for transactional integrity.")
+    a = parse_local_response("explore", ollama_reply({**EXPLORE_OK, "transcription": "WHAT IS SQL", "topic": "SQL",
+                                                      "result": sql}))
+    assert a.result.split("\n") == [
+        "- Structured Query Language manages relational databases.",
+        "- Standardized by ANSI and ISO for data manipulation.",
+        "- Used for querying, updating, and managing database structures.",
+        "- Explore ACID properties for transactional integrity."]
+    assert parse_local_response("explore", ollama_reply(EXPLORE_OK)).result == EXPLORE_OK["result"]   # already lines
+    kept = parse_local_response("explore", ollama_reply({**EXPLORE_OK, "result": "- A well - known x-ray fact"}))
+    assert kept.result == "- A well - known x-ray fact"                       # a dash inside a point stays
+    s = parse_local_response("summarize", ollama_reply({"transcription": "x", "result": "One. - Two"}))
+    assert s.result == "One. - Two"                                            # other actions untouched

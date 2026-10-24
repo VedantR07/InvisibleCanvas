@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import time
 from dataclasses import dataclass, field
 
@@ -88,6 +89,12 @@ def legible(text: str) -> bool:
     return sum(ch.isalnum() for ch in text.replace("[?]", "")) >= 2
 
 
+def point_lines(text: str) -> str:
+    """Each '- ' point of an EXPLORE answer on its own line: the model sometimes runs them together in one line
+    (EXPLORE physical run 1: 'databases. - Standardized by ...'), which the panel wrapped into one paragraph."""
+    return re.sub(r"[ \t]+-[ \t]+(?=[A-Z0-9])", "\n- ", text)
+
+
 @dataclass
 class AIAnswer:
     action: str
@@ -118,7 +125,8 @@ def answer_from_json(data, **base) -> AIAnswer:
         return AIAnswer(ok=True, transcription=transcription, result=result, **base)
     topic = str(data["topic"]).strip()
     if data["readable"] is True and topic and legible(transcription):
-        return AIAnswer(ok=True, transcription=transcription, result=result, topic=topic, readable=True, **base)
+        return AIAnswer(ok=True, transcription=transcription, result=point_lines(result), topic=topic, readable=True,
+                        **base)
     return no_topic(transcription, **base)
 
 
