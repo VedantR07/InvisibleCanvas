@@ -897,6 +897,15 @@ Resolved on 2026-10-08: Python install (D12), surface orientation (D13), camera 
 
 ### 13.2 Test log
 
+**2026-10-25 (00:13–00:33): S2 AI answer, run 1 (local `qwen3-vl:8b-instruct`, on battery) — 5 SUMMARIZE tries, 5 summaries shown; transcriptions to be judged by the user**
+
+- Power: on battery (the user's choice), 91 % at the start, 71 % at the end; tracking 8.8 ms on a saved frame and AI answers 1.1–1.4 s on the dry-run words just before (normal). Setup moved 34.2 px (mean shift −68.2, −3.2 camera px); automatic recovery accepted (check target 1.77 px, validation mean 1.04 / max 2.19 px; calibration 2026-10-25 00:14:55). Canvas brightness 157.
+- `draw --ai --seconds 1200 --trace --save-every 2` (`draw-20261025-003329.json`, trace `data/diagnostics/draw-20261025-*`, requests in `data/ai/20261025-00*`): ended by the user (ESC) at 1040 s. 43,120 frames, 41.5 fps (camera 60.2), pipeline median 25.7 / p95 43.4 ms; inference median 10.6 ms; 43–49 fps per minute with the hand in view, 29–36 fps in minutes mostly without a hand (search frames, D40): no slowdown on battery. 81 strokes, 20 undo, ERASER used, CLEAR 4×.
+- 15 AI requests, all answered (0 errors): 5 SUMMARIZE on 5 writings, plus EXPLAIN 3, EXAMPLES 3, SIMPLIFY 2, QUESTIONS 2 on the same writings. What the model read (SUMMARIZE, time to answer): (1) "I Love Pengyien" 3.47 s; (2) "WHAT Is AI" 2.27 s; (3) "Tell me about CaT" 4.00 s; (4) "Tell me about DOG" 3.78 s; (5) "CAT FISH" 1.52 s (after EXPLAIN 3.51 s and EXAMPLES on the same writing). Every request on new writing took 2.3–4.0 s; repeated requests on the same writing 0.8–1.5 s (median of all 15: 1.23 s).
+- Checked against the images sent (`data/ai/*.png`): each transcription matches the letters visible in the image, including the case ("Is", "CaT"); in (1) the image shows "Pengyien" as written. Try (4) reused the strokes of "Tell me about" from try (3) (CaT erased and DOG written; no CLEAR in between), so only "DOG" was new writing there.
+- S3 data (not an S3 pass: drawing during a request was not exercised): while requests ran, 918 frames at 32.5 fps, pipeline p95 54.4 ms.
+- **S2 verdict: pending the user's judgment of the 5 transcriptions** (criterion: ≥ 4 of 5 judged correct, with a summary).
+
 **2026-10-24 (23:09–23:15): S1 selection, run 3 (D53, run 2 canvas loaded) — count 1: 10 of 10 completed loops exact (meets ≥ 9 of 10); count 2: 10 of 12 loops (83 %, does not); CPU throttled at low battery**
 
 - On the charger (charging, 18 % at the start). Setup unchanged (variation 0.21 px; calibration 2026-10-24 22:51:16). Canvas brightness 163.
