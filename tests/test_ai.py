@@ -7,6 +7,7 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 from types import SimpleNamespace
 
 import cv2
@@ -19,7 +20,7 @@ from invisible_canvas.ai.worker import AIWorker
 from invisible_canvas.canvas.model import Canvas, Stroke
 from invisible_canvas.canvas.panel import PANEL_ACTIONS, AIPanel, ascii_text, wrap
 from invisible_canvas.canvas.render import CanvasRenderer
-from invisible_canvas.canvas.selection import loop_area, png_bytes, select_in_loop, selection_image
+from invisible_canvas.canvas.selection import close_loop, loop_area, png_bytes, select_in_loop, selection_image
 from invisible_canvas.canvas.toolbar import Toolbar
 from invisible_canvas.config import AIConfig
 from invisible_canvas.interaction.drawing import DrawingController
@@ -150,6 +151,69 @@ def test_a_loop_selects_the_strokes_inside_it():
     assert select_in_loop(c, square(500, 300, 510, 310)) == [] and loop_area(square(500, 300, 510, 310)) < 400
 
 
+# D53: the stroke starts where pointing starts, so a drawn loop carries the finger's way to its start (lead-in) and
+# may run on past it. Joined end-to-start, those pieces changed the polygon (S1 run 1, loops 8 and 9).
+
+def arc(cx, cy, rx, ry, a0, a1, n):
+    return [(cx + rx * np.cos(a), cy + ry * np.sin(a)) for a in np.linspace(a0, a1, n)]
+
+
+def line(p, q, step=10.0):
+    n = max(int(np.hypot(q[0] - p[0], q[1] - p[1]) / step), 1)
+    return [(p[0] + (q[0] - p[0]) * t, p[1] + (q[1] - p[1]) * t) for t in np.arange(n) / n]
+
+
+def selected_as_drawn(c, loop):
+    """The selection with the loop joined end-to-start as drawn (the behaviour before D53)."""
+    contour = np.asarray(loop, np.float32).reshape(-1, 1, 2)
+    return [sid for sid, s in c.strokes.items()
+            if np.mean([cv2.pointPolygonTest(contour, (float(x), float(y)), False) >= 0 for x, y in s.array()]) >= 0.6]
+
+
+def on_ellipse(points, cx, cy, rx, ry):
+    p = np.asarray(points)
+    return np.allclose(((p[:, 0] - cx) / rx) ** 2 + ((p[:, 1] - cy) / ry) ** 2, 1.0, atol=1e-6)
+
+
+def test_close_loop_keeps_closed_and_short_loops():
+    circle = arc(558, 315, 100, 60, 0, 2 * np.pi, 60)
+    assert np.array_equal(close_loop(circle), np.asarray(circle))
+    assert np.array_equal(close_loop(square(470, 260, 650, 370)), np.asarray(square(470, 260, 650, 370)))
+
+
+def test_a_lead_in_over_a_neighbouring_word_is_not_selected():
+    c = canvas_with_words()
+    lead_in = line((190, 350), (190, 280)) + line((190, 280), (458, 315))   # from below the first word, over it
+    loop = lead_in + arc(558, 315, 100, 60, np.pi, 3 * np.pi - 0.08, 100)    # then around the middle word
+    assert selected_as_drawn(c, loop) == [1, 2, 3, 4]                         # the bug: the first word came too
+    closed = close_loop(loop)
+    assert len(closed) == 100 and on_ellipse(closed, 558, 315, 100, 60)      # exactly the loop, lead-in dropped
+    assert select_in_loop(c, loop) == [3, 4]
+
+
+def test_a_lead_in_through_the_word_does_not_cut_its_strokes_out():
+    c = canvas_with_words()
+    lead_in = line((560, 360), (558, 255))                                  # from inside, up through the word
+    loop = lead_in + arc(558, 315, 100, 60, -np.pi / 2, 1.5 * np.pi + 1.2, 120)   # around, running on past the top
+    assert selected_as_drawn(c, loop) == [4]                                 # the bug: stroke 3 cut out
+    closed = close_loop(loop)
+    assert on_ellipse(closed, 558, 315, 100, 60) and np.linalg.norm(closed[0] - closed[-1]) < 2.0
+    assert select_in_loop(c, loop) == [3, 4]
+
+
+def test_s1_run1_recorded_loops():
+    """The 17 loops of S1 run 1 (2026-10-24), rebuilt from the trace: every completed loop selects exactly its word
+    (before D53, loops 8 and 9 did not); the 5 loops that broke off (tracking lost) still select nothing."""
+    data = json.loads((Path(__file__).parent / "fixtures" / "s1_run1_loops.json").read_text())
+    canvas = Canvas.from_dict(data["canvas"])
+    words = data["words"]
+    for loop in data["loops"]:
+        expected = words[loop["word"]] if loop["word"] else []
+        assert (selected_as_drawn(canvas, loop["points"]) == expected) == (loop["n"] not in (8, 9)), loop["n"]
+        assert select_in_loop(canvas, loop["points"]) == expected, loop["n"]
+    assert sum(1 for loop in data["loops"] if loop["word"]) == 12
+
+
 def test_the_selection_image_is_cropped_scaled_and_png():
     c = canvas_with_words()
     img = selection_image(c, [3, 4])
@@ -191,6 +255,7 @@ def test_select_then_ask_then_answer():
     ctl.handle([ev(STROKE_START, loop[0])] + [ev(STROKE_POINT, p) for p in loop[1:]] + [ev(STROKE_END)])
     assert ctl.selection == [3, 4] and len(c.strokes) == 6                 # selecting draws nothing
     assert ctl.selection_log[-1]["ids"] == [3, 4] and ctl.selection_log[-1]["loop_bounds"] == [470, 260, 650, 370]
+    assert ctl.selection_log[-1]["points"] == ctl.selection_log[-1]["closed_points"] == 5
     ctl.press("ai")
     assert ctl.panel["state"] == "menu"
     ctl.press("ai:summarize")

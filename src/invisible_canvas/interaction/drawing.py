@@ -21,7 +21,7 @@ from collections import Counter
 from ..canvas.history import AddStroke, History, MoveStrokes, ReplaceStrokes
 from ..canvas.model import Canvas, Stroke
 from ..canvas.panel import AIPanel
-from ..canvas.selection import png_bytes, select_in_loop, selection_image
+from ..canvas.selection import close_loop, png_bytes, select_in_loop, selection_image
 from ..canvas.toolbar import COLOURS, WIDTHS, Toolbar
 
 ERASER_RADIUS = {"thin": 12.0, "medium": 24.0, "thick": 42.0}     # px, by the selected width
@@ -122,7 +122,8 @@ class DrawingController:
             self.log["selections"] += 1
             xs, ys = [p[0] for p in loop], [p[1] for p in loop]
             self.selection_log.append({"t": round(self.now, 3), "ids": list(self.selection),
-                                       "loop_bounds": [round(min(xs)), round(min(ys)), round(max(xs)), round(max(ys))]})
+                                       "loop_bounds": [round(min(xs)), round(min(ys)), round(max(xs)), round(max(ys))],
+                                       "points": len(loop), "closed_points": len(close_loop(loop))})
         self.active, self.selected = None, None
 
     def _erase_at(self, point) -> None:
