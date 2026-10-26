@@ -926,6 +926,12 @@ Resolved on 2026-10-08: Python install (D12), surface orientation (D13), camera 
 
 ### 13.2 Test log
 
+**2026-10-26 (15:53–15:59): mission baseline B-2 round a (contact) — INVALID: nobody in the projection**
+
+- Power: on battery 53 %. Setup moved 33.1 px (mean shift −65.9, +0.7 camera px); automatic recovery accepted (check target 2.11 px, validation mean 1.11 / max 2.00 px; calibration 2026-10-26 15:54:09). Canvas region 103 at grey 128, unlit surround 55.
+- `cursor --accuracy --aim finger --trace --save-every 1 --targets (9, bottom row y 600)` (`cursor-20261026-155944.json`, frames `data/diagnostics/cursor-20261026-155355/`): all 9 targets skipped after 30 s each; hand found in 0 % of 8816 frames. All 267 saved frames show the empty grey test screen: no hand, body or shadow ever entered the projection (dark fraction inside the projection 0.0000 in every frame). Not an accuracy result; to be repeated.
+- Usable measurement: with no hand in view the frame loop ran at **32.6 fps** (camera 60.2): every frame a search, search 23 ms median, inference median 22.7 / p95 25.7 ms, queue 8.5 ms, pipeline median 34.1 / p95 42.9 ms (D40: 2 views per search frame).
+
 **2026-10-26 (15:50–15:52): mission baseline B-1 (§9.12) — display → camera latency 262 ms; capture 60.16 fps**
 
 - Power: on battery 55 %; tracking a saved frame 8.1 ms (normal). Nobody in the projection; room light on.
