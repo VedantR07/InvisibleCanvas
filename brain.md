@@ -927,6 +927,14 @@ Resolved on 2026-10-08: Python install (D12), surface orientation (D13), camera 
 
 ### 13.2 Test log
 
+**2026-10-26 (16:11–16:16): mission baseline B-3 (trace guides, contact) — no ink at all: every stroke started on the toolbar and stayed dead (a confirmed usability failure); not a writing measurement**
+
+- First attempt 16:11: the setup check stopped (1 of 4 corners not seen steadily: the user was in front of the projection); nothing ran.
+- 16:13 `draw --seconds 300 --trace --save-every 1 --load data/canvas/guides-b3.json` (`draw-20261026-161641.json`, trace and frames `data/diagnostics/draw-20261026-161331/`, sheet `b3_frames_sheet.jpg`): setup 0.35 px, on battery 37 %, 173.5 s, 39.7 fps (pipeline median 27.7 / p95 41.4 ms). **0 strokes drawn**; DRAW entered 3 times (12.1, 29.8 and 13.4 s), each **started in the toolbar band** (cursor y 747, 686, 712) and was refused (`strokes_refused_on_toolbar` 3); 7 dwell presses (thin, pen ×2, black, green, blue, select, move). The cursor was in the toolbar band or below in 1492 of 3289 frames (45 %), down to y 956 and x −190.
+- Saved frames: the user **pressed toolbar buttons with the index finger pointing** (16.2, 39.5, 49.5 s) — natural, and D46 allows any shape for a dwell press — so DRAW began on the toolbar; then, still pointing, the user moved up and traced the guides (21.3, 30.4, 85.0, 90.1 s: fingertip on the bottom and middle guides, cursor next to it) while the refused stroke stayed open: nothing was drawn and nothing on the wall said why. SELECT and MOVE were pressed in passing.
+- Root cause (code, `interaction/drawing.py`): a stroke whose start lies in the toolbar band (or under the panel) is refused as a whole and stays refused until the pen lifts (open hand / fist, then the 0.6-s delay); points inside the band are dropped silently. With the toolbar at the bottom and pointing used to press, writing right after a press fails. (Together with the 408 dropped points of the earlier sessions.)
+- Not a writing-accuracy measurement: B-3 to be repeated with the instruction "move to the start of the line with an open hand, then point" (the D46 usage).
+
 **2026-10-26 (16:09–16:10): mission baseline B-2 round c ("5 cm hover", the user's estimate) — 9 of 9: mean 7.22, max 9.70 px; hovering mainly costs steadiness**
 
 - Power: on battery 40 %. Setup unchanged (0.24 px).
