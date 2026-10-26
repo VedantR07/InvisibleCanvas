@@ -133,6 +133,17 @@ def test_a_long_dropout_ends_the_stroke_and_hides_the_cursor():
     assert steps[-1].mode == IDLE and steps[-1].cursor is None
 
 
+def test_release_lifts_the_pen_at_once_and_nothing_is_bridged_across_a_pause():
+    # D58: before the loop pauses for a recalibration; the shipped engine, pen-lift delay (D49) included
+    e = InteractionEngine()
+    steps = [e.update(k * DT, hand(POINT, 100.0 + 10 * k)) for k in range(10)]
+    assert e.mode == DRAW and STROKE_START in kinds(steps)
+    assert [ev.kind for ev in e.release(10 * DT)] == [STROKE_END] and e.mode == IDLE
+    after = [e.update(20.0 + k * DT, hand(POINT, 500.0 + 10 * k)) for k in range(8)]   # back, still pointing
+    assert kinds(after[:6]) == [] and kinds(after).count(STROKE_START) == 1           # a new stroke, 7 frames
+    assert InteractionEngine().release(0.0) == []                                     # nothing active: nothing
+
+
 def test_returning_after_a_long_dropout_needs_the_enter_frames_again():
     e = make()
     steps = run(e, [POINT] * 6 + [None] * 12 + [POINT] * 2)

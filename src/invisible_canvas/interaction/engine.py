@@ -161,6 +161,15 @@ class InteractionEngine:
         self.mode_frames[IDLE] += 1
         return Step(IDLE, None, tuple(events), None)
 
+    def release(self, t: float) -> list[Event]:
+        """End the active mode now, as a pen lift, and go IDLE: before the frame loop pauses (D58: a recalibration
+        during a session), so a stroke is never bridged across the pause. Returns the leaving events."""
+        events = self._leave(t) if self.mode != IDLE else []
+        if self.mode != IDLE:
+            self._switch(IDLE)
+        self._candidate, self._buffer, self._gap_frames = None, [], 0
+        return events
+
     # -- mode actions -----------------------------------------------------------------------------------
 
     def _switch(self, mode: str) -> None:

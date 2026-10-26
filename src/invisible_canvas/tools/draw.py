@@ -29,6 +29,7 @@ from ..ai.client import AIAnswer, ClaudeAssistant
 from ..ai.local import LocalAssistant
 from ..ai.worker import AIWorker
 from ..calibration.store import check_compatible, load_calibration
+from ..calibration.watch import SetupWatch, expected_corners
 from ..canvas.model import Canvas
 from ..canvas.render import CanvasRenderer
 from ..canvas.toolbar import Toolbar
@@ -45,7 +46,15 @@ from .tracking_session import (
 )
 
 TITLE = "SETUP CHECK before drawing"
+RECHECK_TITLE = "SETUP CHECK: the projection moved"
 HELP = "index finger = use the tool | open hand or fist = cursor only | hold the cursor on a button 1 s to press it"
+# D58: the projector or camera moved during the session
+MOVED_TEXT = ("The projector or camera moved: recalibrating.", "Keep hands and objects out of the projection.")
+MOVED_WARNING = ("The projector or camera moved: the cursor may be off.", "Restart to recalibrate.")
+FAILED_WARNING = ("The projector or camera moved and recalibration failed.", "Keep the projection clear: retrying.")
+COUNTDOWN_S = 3.0      # the message is shown this long before the setup check starts
+RETRY_S = 15.0         # after a failed recalibration, the watch waits this long before it may trigger again
+MAX_SETUP_EVENTS = 5   # after this many events that did not end in a recalibration, the watch stops
 
 
 def add_parser(subparsers) -> None:
@@ -77,6 +86,33 @@ def segment_fps(times: list[float], gap: float = 0.5) -> float:
     """Frames per second over a subset of frames, counting only intervals shorter than `gap` (separate blocks)."""
     dts = [b - a for a, b in zip(times, times[1:]) if 0 < b - a < gap]
     return len(dts) / sum(dts) if dts else 0.0
+
+
+def with_message(img: np.ndarray, lines) -> np.ndarray:
+    """The image with `lines` in a framed white box at its centre (D58 messages on the wall)."""
+    out = img.copy()
+    scale, thick = 0.8, 2
+    sizes = [cv2.getTextSize(line, cv2.FONT_HERSHEY_SIMPLEX, scale, thick)[0] for line in lines]
+    w = max(s[0] for s in sizes) + 48
+    step = max(s[1] for s in sizes) + 18
+    h = step * len(lines) + 30
+    x0, y0 = (out.shape[1] - w) // 2, (out.shape[0] - h) // 2
+    cv2.rectangle(out, (x0, y0), (x0 + w, y0 + h), (255, 255, 255), -1)
+    cv2.rectangle(out, (x0, y0), (x0 + w, y0 + h), (40, 40, 215), 3)
+    for k, line in enumerate(lines):
+        cv2.putText(out, line, (x0 + 24, y0 + 15 + step * (k + 1) - 9), cv2.FONT_HERSHEY_SIMPLEX, scale, (30, 30, 30),
+                    thick, cv2.LINE_AA)
+    return out
+
+
+def recheck(config: Config, s, calibration, canvas_image: np.ndarray):
+    """D58: say on the wall why drawing pauses, then run the setup check again (and the validated recovery when
+    the setup moved, D39): (mapper, calibration, info), or None when it failed."""
+    s.projector.show(with_message(canvas_image, MOVED_TEXT))
+    end = time.perf_counter() + COUNTDOWN_S
+    while time.perf_counter() < end:
+        cv2.waitKey(50)
+    return checked_mapper(config, s, calibration, no_recalibrate=False, title=RECHECK_TITLE)
 
 
 def save_canvas(config: Config, canvas: Canvas, renderer: CanvasRenderer) -> tuple[Path, Path]:
@@ -120,6 +156,8 @@ def run(config: Config, args) -> int:
         light = HandLight() if args.light else None
         brightness = brightness_check(s, mapper, renderer.render(canvas, controller, toolbar, mode=IDLE, cursor=None))
         diag = DrawDiagnostics(size, toolbar.top)       # §9.12 item 1: observation only
+        watch = SetupWatch(expected_corners(mapper, size))   # D58: did the projector or camera move meanwhile?
+        setup_events, warning, watch_from = [], None, 0.0
         if args.trace:
             save_dir.mkdir(parents=True, exist_ok=True)
             trace = open(save_dir / "trace.jsonl", "w", encoding="utf-8", buffering=1 << 20)   # ~1 write per s
@@ -155,6 +193,8 @@ def run(config: Config, args) -> int:
             ta = time.perf_counter()
             lit = None if light is None else light.update(frame.timestamp, projector_landmarks(mapper, obs))
             img = renderer.render(canvas, controller, toolbar, mode=step.mode, cursor=step.cursor, light=lit)
+            if warning is not None:                        # D58: the setup moved and is not recalibrated (yet)
+                img = with_message(img, warning)
             tr = time.perf_counter()
             s.projector.show(img)
             cv2.pollKey()
@@ -214,6 +254,37 @@ def run(config: Config, args) -> int:
                     "AI: off" if worker is None else
                     f"AI: {'working' if worker.busy else 'ready'} ({len(worker.answers)} answers)",
                     "", HELP, "keys: z undo  y redo  s save  c c clear  ESC quit"])
+            moved = watch.update(frame.timestamp, frame.image) if time.perf_counter() >= watch_from else None
+            if moved is not None:                          # D58: the projector or the camera moved
+                controller.handle(engine.release(frame.timestamp))     # a pen lift: nothing bridged across the pause
+                event = {"t": round(frame.timestamp - start, 2), "displacement_px": [round(float(v), 1) for v in moved]}
+                print(f"the projection moved by {event['displacement_px']} camera px at {event['t']} s")
+                if args.no_recalibrate:
+                    event["status"], warning, watch_from = "warned", MOVED_WARNING, float("inf")
+                else:
+                    paused = time.perf_counter()
+                    rechecked = recheck(config, s, calibration,
+                                        renderer.render(canvas, controller, toolbar, mode=IDLE, cursor=None))
+                    event["pause_s"] = round(time.perf_counter() - paused, 1)
+                    if rechecked is None:
+                        event["status"], warning, watch_from = "failed", FAILED_WARNING, time.perf_counter() + RETRY_S
+                    else:
+                        mapper, calibration, info = rechecked
+                        points.mapper = mapper
+                        points.reset()
+                        warning = None
+                        if info["recovery"]:                   # recalibrated: watch against the new calibration
+                            event["status"] = "recalibrated"
+                            watch.reset(expected_corners(mapper, size))
+                        else:                                  # the setup check found no move: watch from what is seen
+                            event["status"] = "unchanged"
+                            watch.reset(watch.expected + moved)
+                        event.update(setup_variation_px=round(info["setup_variation_px"], 2),
+                                     calibration_created_at=calibration.created_at, recovery=info["recovery"])
+                    if len(setup_events) + 1 >= MAX_SETUP_EVENTS and event["status"] != "recalibrated":
+                        watch_from = float("inf")              # something keeps triggering it: stop watching
+                    seq, last_t0 = current_seq(s), None
+                setup_events.append(event)
             key = cv2.waitKey(1)
             now = time.perf_counter()
             diag.stages["post"].add((now - t2) * 1000)
@@ -269,6 +340,8 @@ def run(config: Config, args) -> int:
         "selections": controller.selection_log,
         # §9.12 item 1: why fingertips did or did not become ink, per band, and per-stage timing (observation only)
         "diagnostics": diag.report(strokes_committed=controller.log["strokes"], attempts=controller.attempts),
+        # D58: the projector or camera moving during the session: checks, and each move with what was done
+        "setup_watch": {**watch.summary(), "events": setup_events},
         "ai": None if worker is None else {
             "backend": config.ai.backend, "warmed_up": worker.warmed_up,
             "model": config.ai.local_model if config.ai.backend == "local" else config.ai.model,
@@ -284,6 +357,10 @@ def run(config: Config, args) -> int:
           f"p95 {report['pipeline_ms']['p95']:.1f} ms" if records else "no frames")
     print(f"modes (frames): {dict(engine.mode_frames)}; entered: {dict(engine.entries)}")
     print(f"actions: {dict(controller.log)}; strokes on the canvas {len(canvas.strokes)}")
+    w = report["setup_watch"]
+    print(f"setup watch: {w['checks']} checks (mean {w['check_ms_mean']} ms), {len(w['events'])} moves"
+          + "".join(f"\n  at {e['t']} s moved {e['displacement_px']} camera px: {e['status']}"
+                    + (f" (paused {e['pause_s']} s)" if "pause_s" in e else "") for e in w["events"]))
     d = report["diagnostics"]
     print(f"diagnostics: states {d['states']}")
     print(f"  ink {d['ink']}")

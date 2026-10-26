@@ -44,7 +44,8 @@ python -m invisible_canvas gestures       # Phase 2: guided recording, pointing 
 python -m invisible_canvas draw           # Phase 2: index finger = use the tool (pen / eraser / move),
                                           #          open hand or fist = cursor; hold on a button 1 s to press;
                                           #          a stroke stops at the toolbar; a slashed ring = not drawing:
-                                          #          open the hand, then point again (D56)
+                                          #          open the hand, then point again (D56); if the projector or
+                                          #          camera is moved, it recalibrates by itself (D58: keep clear)
                                           #          --light: light the hand white, ring cursor (D50, off by default)
 python -m invisible_canvas replay DIR     # Phase 2: replay a `gestures --video` recording offline (D48)
 python -m invisible_canvas draw          # with the AI (on by default, D57; `draw --no-ai` for a session

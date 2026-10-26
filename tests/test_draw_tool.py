@@ -433,6 +433,98 @@ def test_draw_with_ai_asks_through_the_panel_and_reports_the_answer(tmp_path, mo
     assert list((config.root / "data" / "ai").glob("*-summarize.json"))
 
 
+# -- D58: the projector or camera moved during the session ---------------------------------------------------------
+
+class MovedOnce:
+    """Stands in for SetupWatch: reports a move once, `after` s into the session."""
+    after = 0.8
+
+    def __init__(self, expected):
+        self.expected, self.resets, self.fired, self.t0 = np.asarray(expected), [], False, None
+
+    def update(self, t, frame):
+        self.t0 = t if self.t0 is None else self.t0
+        if not self.fired and t - self.t0 >= self.after:
+            self.fired = True
+            return np.array([85.0, -5.0])
+        return None
+
+    def reset(self, expected):
+        self.resets.append(np.asarray(expected))
+
+    def summary(self):
+        return {"checks": 1, "no_canvas": 0, "moved_checks": 1, "check_ms_mean": 0.0, "check_ms_max": 0.0}
+
+
+def moved_session(monkeypatch, recheck_result):
+    """The watch fires during drawing; `recheck_result(real result)` -> what the second setup check returns."""
+    real_checked, real_message = draw_tool.checked_mapper, draw_tool.with_message
+    rechecks, messages = [], []
+
+    def checked(config, s, calibration, *, no_recalibrate, title):
+        result = real_checked(config, s, calibration, no_recalibrate=no_recalibrate, title=title)
+        if title == draw_tool.RECHECK_TITLE:
+            rechecks.append(title)
+            return recheck_result(result)
+        return result
+
+    monkeypatch.setattr(draw_tool, "checked_mapper", checked)
+    monkeypatch.setattr(draw_tool, "with_message", lambda img, lines: (messages.append(lines), real_message(img, lines))[1])
+    monkeypatch.setattr(draw_tool, "SetupWatch", MovedOnce)
+    monkeypatch.setattr(draw_tool, "COUNTDOWN_S", 0.0)
+    return rechecks, messages
+
+
+def pointing_right(s, mapper):
+    return (POINT, (200.0 + 150 * s, 300.0)) if s < 2.4 else (OTHER, (600.0, 500.0))
+
+
+def test_a_move_lifts_the_pen_recalibrates_and_drawing_goes_on_with_the_new_calibration(tmp_path, monkeypatch):
+    shift = np.array([[1.0, 0.0, 100.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]])     # the new calibration: +100 px in x
+
+    def recalibrated(result):
+        mapper, cal, info = result
+        return CoordinateMapper(shift @ mapper.homography, mapper.canvas_size), cal, {**info, "recovery": {"status": "accepted"}}
+
+    rechecks, messages = moved_session(monkeypatch, recalibrated)
+    code, config, shown = run_tool(draw_tool, tmp_path, monkeypatch, ["draw", "--seconds", "3.2", "--trace"],
+                                   pointing_right)
+    report, trace = draw_report(config)
+    (event,) = report["setup_watch"]["events"]
+    assert code == 0 and rechecks == [draw_tool.RECHECK_TITLE] and draw_tool.MOVED_TEXT in messages
+    assert event["status"] == "recalibrated" and event["displacement_px"] == [85.0, -5.0] and event["pause_s"] >= 0
+    strokes = json.load(open(report["canvas"]["json"], encoding="utf-8"))["strokes"]
+    assert len(strokes) == 2 and report["actions"]["strokes"] == 2      # ended at the move, a new one after it
+    before, after = ([p[0] for p in s_["points"]] for s_ in strokes)
+    assert max(before) < 200 + 150 * 1.0                                 # the first ends where the move was seen
+    def offsets(lines):                                                 # mapped fingertip - where it really was
+        return [line["raw_proj"][0] - (200.0 + 150 * (line["t"] - trace[0]["t"])) for line in lines
+                if line["raw_proj"] and line["t"] - trace[0]["t"] < 2.4]
+    before_move = offsets([line for line in trace if line["t"] < event["t"]])
+    after_move = offsets([line for line in trace if line["t"] > event["t"] + 0.1])
+    assert len(before_move) >= 5 and len(after_move) >= 5
+    assert abs(np.median(before_move)) < 15 and abs(np.median(after_move) - 100) < 15    # the new calibration in use
+    assert draw_tool.FAILED_WARNING not in messages and draw_tool.MOVED_WARNING not in messages
+
+
+def test_a_failed_recalibration_keeps_drawing_warns_and_waits_before_retrying(tmp_path, monkeypatch):
+    rechecks, messages = moved_session(monkeypatch, lambda result: None)
+    code, config, shown = run_tool(draw_tool, tmp_path, monkeypatch, ["draw", "--seconds", "2.5"], pointing_right)
+    report = json.loads(sorted(config.reports_dir.glob("draw-*.json"))[-1].read_text())
+    (event,) = report["setup_watch"]["events"]
+    assert code == 0 and event["status"] == "failed" and rechecks == [draw_tool.RECHECK_TITLE]
+    assert draw_tool.FAILED_WARNING in messages and report["actions"]["strokes"] >= 1
+
+
+def test_with_no_recalibrate_a_move_is_only_warned_about(tmp_path, monkeypatch):
+    rechecks, messages = moved_session(monkeypatch, lambda result: result)
+    code, config, shown = run_tool(draw_tool, tmp_path, monkeypatch, ["draw", "--seconds", "1.6", "--no-recalibrate"],
+                                   pointing_right)
+    report = json.loads(sorted(config.reports_dir.glob("draw-*.json"))[-1].read_text())
+    (event,) = report["setup_watch"]["events"]
+    assert event["status"] == "warned" and rechecks == [] and draw_tool.MOVED_WARNING in messages
+
+
 def test_draw_without_ai_has_no_ai_report(tmp_path, monkeypatch):
     code, config, shown = run_tool(draw_tool, tmp_path, monkeypatch, ["draw", "--seconds", "0.3"],
                                    lambda s, mapper: (OTHER, (640.0, 360.0)))
