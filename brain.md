@@ -926,6 +926,13 @@ Resolved on 2026-10-08: Python install (D12), surface orientation (D13), camera 
 
 ### 13.2 Test log
 
+**2026-10-26 (16:01–16:02): mission baseline B-2 round a (contact) — 9 of 9 measured: mean 9.62, max 26.93 projector px; the cursor sits on the visible fingertip end, the errors are fingertip placement**
+
+- Power: on battery 46 %. Setup unchanged (0.19 px; calibration 2026-10-26 15:54:09). Canvas region 103 at grey 128, unlit surround 54.
+- `cursor --accuracy --aim finger --trace --save-every 1 --targets (9; bottom row y 600)` (`cursor-20261026-160212.json`, trace and capture frames `data/diagnostics/cursor-20261026-160113/`, annotated sheet `b2a_captures_annotated.jpg`): 42.5 s; errors TL 13.92 (−13.9, +0.0), TC 26.93 (−26.1, +6.7), TR 6.76 (−4.7, +4.8); ML 11.16 (+0.8, +11.1), MC 10.64 (−0.9, +10.6), MR 5.15 (+3.8, +3.5); BL 1.73 (+1.6, +0.7), BC 4.10 (+0.8, −4.0), BR 6.20 (+3.3, +5.3). **Mean 9.62, max 26.93 px**, 1-s spread sd median 3.06 px. Against the provisional D35 criterion (mean ≤ 5, max ≤ 12): not met. Bottom row best (1.7–6.2 px).
+- Capture frames (each cropped around its target with the cursor mean, through H⁻¹): **in all 9 the cursor mean lies on the visible end of the fingertip.** At TL and TC the finger came in horizontally from the left and its end stopped 14–27 px short of the target centre; at ML and MC the fingertip ended just below the centre; on the bottom row it was on the target. So this round measures where the fingertip was placed relative to the target (the user's aim; contact at the high targets not verified), not a camera / landmark / mapping error; the fingertip end vs the cursor is within a few px by eye (not yet measured numerically). The hypothesis that landmark 8 lies behind the touching point (cursor past the target) is not supported: the cursor was short of it.
+- Timing with the hand present: 53.7 fps (camera 60.2), inference median 9.2 / p95 20.5 ms, queue 6.8 ms, pipeline median 19.5 / p95 33.5 ms; hand found 88.3 %, 5 tracking losses, reacquired median 0.18 s.
+
 **2026-10-26 (15:53–15:59): mission baseline B-2 round a (contact) — INVALID: nobody in the projection**
 
 - Power: on battery 53 %. Setup moved 33.1 px (mean shift −65.9, +0.7 camera px); automatic recovery accepted (check target 2.11 px, validation mean 1.11 / max 2.00 px; calibration 2026-10-26 15:54:09). Canvas region 103 at grey 128, unlit surround 55.
