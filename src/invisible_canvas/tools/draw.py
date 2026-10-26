@@ -179,6 +179,7 @@ def run(config: Config, args) -> int:
                          or "stroke_end" in kinds else None,
                          "stroke_id": None if controller.active is None else controller.active.id,
                          "blocked": controller.blocked,                  # D56: why the pointing draws nothing
+                         "ai_busy": records[-1]["ai_busy"],              # an AI request was running (S3, §9.13)
                          "candidate": engine._candidate, "buffered": len(engine._buffer),
                          "queue_ms": round(stage_ms["queue"], 2), "inference_ms": round(stage_ms["inference"], 2),
                          "pipeline_ms": round((t2 - frame.timestamp) * 1000, 2),

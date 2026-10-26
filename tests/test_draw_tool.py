@@ -416,9 +416,11 @@ def test_draw_with_ai_asks_through_the_panel_and_reports_the_answer(tmp_path, mo
             return OTHER, summarize                               # SUMMARIZE
         return OTHER, (500.0, 400.0)
 
-    code, config, shown = run_tool(draw_tool, tmp_path, monkeypatch, ["draw", "--seconds", "5.0", "--ai"], schedule)
-    report = json.loads(sorted(config.reports_dir.glob("draw-*.json"))[-1].read_text())
+    code, config, shown = run_tool(draw_tool, tmp_path, monkeypatch, ["draw", "--seconds", "5.0", "--ai", "--trace"],
+                                   schedule)
+    report, trace = draw_report(config)
     ai = report["ai"]
+    assert sum(line["ai_busy"] for line in trace) == ai["busy_frames"]       # per frame in the trace (§9.13)
     assert report["actions"].get("press:ai") == 1 and report["actions"].get("press:ai:summarize") == 1
     assert ai["requests"] == 1 and len(ai["answers"]) == 1 and ai["answers"][0]["ok"]
     assert asked and asked[0][0] == "summarize" and asked[0][1][:4] == b"\x89PNG"
