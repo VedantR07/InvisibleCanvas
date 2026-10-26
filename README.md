@@ -47,7 +47,8 @@ python -m invisible_canvas draw           # Phase 2: index finger = use the tool
                                           #          open the hand, then point again (D56)
                                           #          --light: light the hand white, ring cursor (D50, off by default)
 python -m invisible_canvas replay DIR     # Phase 2: replay a `gestures --video` recording offline (D48)
-python -m invisible_canvas draw --ai      # Phase 3A: SELECT a loop around writing, AI button -> the AI
+python -m invisible_canvas draw          # with the AI (on by default, D57; `draw --no-ai` for a session
+                                          #          without it): SELECT a loop around writing, AI button -> the AI
                                           #          summarizes / explains / ... / explores the topic (EXPLORE:
                                           #          background, key facts, a connected concept; D54).
                                           #          Free and offline by default:

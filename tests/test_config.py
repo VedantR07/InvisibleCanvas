@@ -79,6 +79,13 @@ def test_default_camera_is_the_measured_kreo_mode():
     assert 1000 * 2.0 ** camera.exposure_value <= 1000 / camera.fps   # exposure fits the frame time
 
 
+def test_default_ai_is_on_and_local():
+    # D57: the AI is on by default; D52: free and offline, the instruct variant on this laptop's Ollama
+    ai = load_config().ai
+    assert ai.enabled and ai.backend == "local"
+    assert (ai.local_model, ai.local_url) == ("qwen3-vl:8b-instruct", "http://127.0.0.1:11434")
+
+
 @pytest.mark.parametrize("name", ["focus", "gain"])
 def test_invalid_lock_mode_is_rejected(data, name):
     data["camera"][f"{name}_mode"] = "fixed"

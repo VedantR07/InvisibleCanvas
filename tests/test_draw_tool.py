@@ -42,10 +42,15 @@ def observation(shape, tip_camera):
     return HandObservation((float(lm[8, 0]), float(lm[8, 1])), lm, "Right", 0.9, world=world)
 
 
-def run_tool(tool, tmp_path, monkeypatch, argv, schedule):
-    """schedule(seconds since the first tracked frame, mapper) -> (shape, tip in projector px) or None."""
+def run_tool(tool, tmp_path, monkeypatch, argv, schedule, ai_enabled=False):
+    """schedule(seconds since the first tracked frame, mapper) -> (shape, tip in projector px) or None.
+    ai_enabled: `[ai] enabled` for the run (default False: no test reaches a real Ollama unless it asks with
+    `--ai` and a fake assistant); None keeps the shipped config's value (D57: on)."""
     with open(DEFAULT_CONFIG_PATH, "rb") as f:
-        config = config_from_dict(copy.deepcopy(tomllib.load(f)), root=tmp_path)
+        data = copy.deepcopy(tomllib.load(f))
+    if ai_enabled is not None:
+        data["ai"]["enabled"] = ai_enabled
+    config = config_from_dict(data, root=tmp_path)
     scene = SyntheticScene()
     calibration = auto_calibration(scene)
     save_calibration(calibration, config.calibration_dir)
@@ -433,6 +438,39 @@ def test_draw_without_ai_has_no_ai_report(tmp_path, monkeypatch):
                                    lambda s, mapper: (OTHER, (640.0, 360.0)))
     report = json.loads(sorted(config.reports_dir.glob("draw-*.json"))[-1].read_text())
     assert report["ai"] is None
+
+
+def test_the_ai_is_on_by_default_and_no_ai_switches_it_off(tmp_path, monkeypatch):
+    # D57: the shipped config switches the AI on (button, worker, report); --no-ai turns it off for one session
+    from invisible_canvas.canvas.toolbar import Toolbar
+    made = []
+
+    class FakeAssistant:                                          # no network: the real backend is tested in test_ai
+        def __init__(self, cfg, client=None):
+            made.append(cfg)
+
+        def ask(self, action, png):
+            raise AssertionError("no request is made in this test")
+
+    toolbars = []
+    monkeypatch.setattr(draw_tool, "LocalAssistant", FakeAssistant)
+    monkeypatch.setattr(draw_tool, "ClaudeAssistant", FakeAssistant)
+    monkeypatch.setattr(draw_tool, "Toolbar", lambda size, ai=False: toolbars.append(Toolbar(size, ai=ai)) or toolbars[-1])
+    hover = lambda s, mapper: (OTHER, (640.0, 360.0))                                     # noqa: E731
+
+    code, config, shown = run_tool(draw_tool, tmp_path / "on", monkeypatch, ["draw", "--seconds", "0.3"], hover,
+                                   ai_enabled=None)
+    report = json.loads(sorted(config.reports_dir.glob("draw-*.json"))[-1].read_text())
+    assert code == 0 and config.ai.enabled and len(made) == 1
+    assert made[0].backend == "local" and made[0].local_model == "qwen3-vl:8b-instruct"
+    assert report["ai"] is not None and report["ai"]["model"] == "qwen3-vl:8b-instruct"
+    assert toolbars[-1].ai and toolbars[-1].button("ai").kind == "ai"            # the AI button is on the toolbar
+
+    code, config, shown = run_tool(draw_tool, tmp_path / "off", monkeypatch,
+                                   ["draw", "--seconds", "0.3", "--no-ai"], hover, ai_enabled=None)
+    report = json.loads(sorted(config.reports_dir.glob("draw-*.json"))[-1].read_text())
+    assert code == 0 and report["ai"] is None and len(made) == 1                # no assistant, no worker
+    assert not toolbars[-1].ai and all(b.name != "ai" for b in toolbars[-1].buttons)
 
 
 # -- §9.12 Stage 3 item 1: diagnostics in `draw` (observation only) ------------------------------------------

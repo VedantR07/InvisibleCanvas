@@ -72,9 +72,9 @@ reports = "data/reports"
 
 [ai]
 # Phase 3A (brain.md D51, D52, section 9.11): the AI reads the selected writing (an image of the strokes) and
-# summarizes / explains / simplifies / gives examples / asks questions. Off by default; `draw --ai` turns it
-# on for one session.
-enabled = false
+# summarizes / explains / simplifies / gives examples / asks questions / explores the topic. On by default
+# (D57, user request 2026-10-26): `draw` shows the AI button; `draw --no-ai` switches it off for one session.
+enabled = true
 # D52: "local" = free, offline: a vision model served by Ollama on this laptop (install Ollama, then
 # `ollama pull <local_model>`). "claude" = the Claude API, paid per request; credentials from the environment
 # (ANTHROPIC_API_KEY), never from this file.

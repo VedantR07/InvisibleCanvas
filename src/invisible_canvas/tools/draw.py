@@ -5,7 +5,8 @@
     cursor held on a toolbar button 1 s (CLEAR 2 s) -> press it
 
 `--light` lights the hand plain white with a ring cursor (D50; off by default since 2026-10-23, user decision).
-`--ai` (or `[ai] enabled = true`) adds the AI button: the AI reads the SELECT-ed writing (D51, §9.11); by default
+The AI button is on by default (`[ai] enabled = true`, D57; `--no-ai` switches it off for one session, `--ai`
+forces it on): the AI reads the SELECT-ed writing (D51, §9.11); by default
 a free local model through Ollama (D52), or Claude with `[ai] backend = "claude"`. Requests
 run in a background worker; the report records each answer and the frame rate while a request was running (S3).
 
@@ -57,6 +58,7 @@ def add_parser(subparsers) -> None:
     p.add_argument("--trace", action="store_true", help="per-frame JSONL trace: shape measures, mode, events")
     p.add_argument("--light", action="store_true", help="light the hand plain white, ring cursor (D50; off by default)")
     p.add_argument("--ai", action="store_true", help="switch the AI on for this session (the AI reads the selection, D51/D52)")
+    p.add_argument("--no-ai", action="store_true", help="switch the AI off for this session (on by default, D57)")
     p.set_defaults(func=run)
 
 
@@ -88,7 +90,7 @@ def save_canvas(config: Config, canvas: Canvas, renderer: CanvasRenderer) -> tup
 
 def run(config: Config, args) -> int:
     calibration = load_calibration(config.calibration_dir)
-    ai_on = bool(getattr(args, "ai", False) or config.ai.enabled)
+    ai_on = bool(getattr(args, "ai", False) or config.ai.enabled) and not getattr(args, "no_ai", False)
     worker = None
     if ai_on:
         try:
