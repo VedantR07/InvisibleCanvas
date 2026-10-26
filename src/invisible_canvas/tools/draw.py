@@ -38,6 +38,7 @@ from ..interaction.drawing import DrawingController
 from ..interaction.engine import IDLE, InteractionEngine
 from ..vision.hands import HandTracker, HandTrackingError
 from .common import add_device_args, current_seq, now_iso, open_session, save_report, stamp
+from .draw_diagnostics import DrawDiagnostics
 from .tracking_session import (
     TRACKER_OPTIONS, HandPoints, brightness_check, checked_mapper, draw_skeleton, projector_landmarks,
 )
@@ -57,6 +58,10 @@ def add_parser(subparsers) -> None:
     p.add_argument("--light", action="store_true", help="light the hand plain white, ring cursor (D50; off by default)")
     p.add_argument("--ai", action="store_true", help="switch the AI on for this session (the AI reads the selection, D51/D52)")
     p.set_defaults(func=run)
+
+
+def _round_point(p) -> list | None:
+    return None if p is None else [round(float(p[0]), 2), round(float(p[1]), 2)]
 
 
 def _percentiles(values) -> dict | None:
@@ -112,14 +117,16 @@ def run(config: Config, args) -> int:
         controller, engine, points = DrawingController(canvas, toolbar), InteractionEngine(), HandPoints(mapper)
         light = HandLight() if args.light else None
         brightness = brightness_check(s, mapper, renderer.render(canvas, controller, toolbar, mode=IDLE, cursor=None))
+        diag = DrawDiagnostics(size, toolbar.top)       # §9.12 item 1: observation only
         if args.trace:
             save_dir.mkdir(parents=True, exist_ok=True)
-            trace = open(save_dir / "trace.jsonl", "w", encoding="utf-8")
+            trace = open(save_dir / "trace.jsonl", "w", encoding="utf-8", buffering=1 << 20)   # ~1 write per s
         print(f"drawing: {HELP}. Keys: z undo, y redo, s save, c twice clear, ESC quit.")
         s.camera.reset_stats()
         start = time.perf_counter()
         seq, last_saved, clear_armed_until, last_t = current_seq(s), -1e9, 0.0, None
         saved_paths = []
+        last_t0 = None
         while True:
             frame = s.camera.wait_frame(seq, 2.0)
             if frame is None:
@@ -129,18 +136,24 @@ def run(config: Config, args) -> int:
             t0 = time.perf_counter()
             obs = tracker.process(frame.image, frame.timestamp)
             t1 = time.perf_counter()
+            prev_candidate = engine._candidate              # diagnostics: the engine's own state, read only
             shape, hand = points(frame.timestamp, obs)
+            th = time.perf_counter()
             step = engine.update(frame.timestamp, hand)
+            te = time.perf_counter()
             controller.handle(step.events)
             controller.update_pointer(frame.timestamp, step.cursor)
+            tc = time.perf_counter()
             if worker is not None:                         # D51: jobs to the background worker, answers back
                 for action, png in controller.take_ai_jobs():
                     if not worker.submit(action, png):
                         controller.ai_answer(AIAnswer(action, ok=False, error="Still busy with the previous request."))
                 for answer in worker.poll():
                     controller.ai_answer(answer)
+            ta = time.perf_counter()
             lit = None if light is None else light.update(frame.timestamp, projector_landmarks(mapper, obs))
             img = renderer.render(canvas, controller, toolbar, mode=step.mode, cursor=step.cursor, light=lit)
+            tr = time.perf_counter()
             s.projector.show(img)
             cv2.pollKey()
             t2 = time.perf_counter()
@@ -148,11 +161,34 @@ def run(config: Config, args) -> int:
             records.append({"t": frame.timestamp - start, "mode": step.mode, "hand": obs is not None,
                             "inference_ms": (t1 - t0) * 1000, "pipeline_ms": (t2 - frame.timestamp) * 1000,
                             "ai_busy": bool(worker is not None and worker.busy)})
+            td = time.perf_counter()
+            stage_ms = {"queue": (t0 - frame.timestamp) * 1000, "inference": (t1 - t0) * 1000,
+                        "hand": (th - t1) * 1000, "engine": (te - th) * 1000, "controller": (tc - te) * 1000,
+                        "ai": (ta - tc) * 1000, "render": (tr - ta) * 1000, "show": (t2 - tr) * 1000}
+            fields = diag.frame(t=frame.timestamp, action=tracker.action, status=points.status, cursor=step.cursor,
+                                step=step, prev_candidate=prev_candidate, candidate=engine._candidate,
+                                outcomes=controller.outcomes, stage_ms=stage_ms,
+                                loop_ms=None if last_t0 is None else (t0 - last_t0) * 1000)
+            last_t0 = t0
             if trace is not None:
+                kinds = [e.kind for e in step.events]
+                extra = {"action": tracker.action, "status": points.status,
+                         "tip_in_view": None if obs is None else obs.tip_in_view, "raw_proj": _round_point(points.raw),
+                         **fields, "stroke": controller.attempt if controller.stroke_open or controller.outcomes
+                         or "stroke_end" in kinds else None,
+                         "stroke_id": None if controller.active is None else controller.active.id,
+                         "candidate": engine._candidate, "buffered": len(engine._buffer),
+                         "queue_ms": round(stage_ms["queue"], 2), "inference_ms": round(stage_ms["inference"], 2),
+                         "pipeline_ms": round((t2 - frame.timestamp) * 1000, 2),
+                         "stage_ms": {k: round(v, 3) for k, v in stage_ms.items() if k not in ("queue", "inference")}}
+            diag.stages["diag"].add((time.perf_counter() - td) * 1000)
+            if trace is not None:
+                tw = time.perf_counter()
                 trace.write(json.dumps({"t": round(frame.timestamp - start, 4), "seq": frame.seq, "mode": step.mode,
                                         "pending": step.pending, "shape": shape.as_dict() if shape else None,
-                                        "cursor": step.cursor, "events": [e.kind for e in step.events],
-                                        "source": obs.source if obs else None, "lit": lit is not None}) + "\n")
+                                        "cursor": step.cursor, "events": kinds,
+                                        "source": obs.source if obs else None, "lit": lit is not None, **extra}) + "\n")
+                diag.stages["trace"].add((time.perf_counter() - tw) * 1000)
             if args.save_every and frame.timestamp - last_saved >= args.save_every:
                 last_saved = frame.timestamp
                 save_dir.mkdir(parents=True, exist_ok=True)
@@ -175,6 +211,7 @@ def run(config: Config, args) -> int:
                     "", HELP, "keys: z undo  y redo  s save  c c clear  ESC quit"])
             key = cv2.waitKey(1)
             now = time.perf_counter()
+            diag.stages["post"].add((now - t2) * 1000)
             if key == 27 or (args.seconds and now - start >= args.seconds):
                 break
             if key in (ord("z"), ord("Z")):
@@ -225,6 +262,8 @@ def run(config: Config, args) -> int:
         "trace": str(save_dir / "trace.jsonl") if args.trace else None,
         "light": bool(args.light),
         "selections": controller.selection_log,
+        # §9.12 item 1: why fingertips did or did not become ink, per band, and per-stage timing (observation only)
+        "diagnostics": diag.report(strokes_committed=controller.log["strokes"], attempts=controller.attempts),
         "ai": None if worker is None else {
             "backend": config.ai.backend, "warmed_up": worker.warmed_up,
             "model": config.ai.local_model if config.ai.backend == "local" else config.ai.model,
@@ -240,6 +279,15 @@ def run(config: Config, args) -> int:
           f"p95 {report['pipeline_ms']['p95']:.1f} ms" if records else "no frames")
     print(f"modes (frames): {dict(engine.mode_frames)}; entered: {dict(engine.entries)}")
     print(f"actions: {dict(controller.log)}; strokes on the canvas {len(canvas.strokes)}")
+    d = report["diagnostics"]
+    print(f"diagnostics: states {d['states']}")
+    print(f"  ink {d['ink']}")
+    print("  hand losses per 1000 hand frames: "
+          + ", ".join(f"{b} {v['losses_per_1000']}" for b, v in d["bands"].items() if v["losses_per_1000"] is not None))
+    print(f"  strokes {d['strokes']}")
+    if d["overhead"]["diag_ms"] is not None:
+        print(f"  diagnostics cost per frame: median {d['overhead']['diag_ms']['median']:.3f} ms, "
+              f"p95 {d['overhead']['diag_ms']['p95']:.3f} ms (target < {d['overhead']['target_ms']} ms)")
     if worker is not None:
         for a in worker.answers:
             print(f"AI {a.action}: {'ok' if a.ok else 'ERROR ' + a.error} in {a.latency_s:.1f} s"

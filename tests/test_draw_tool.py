@@ -4,6 +4,7 @@ tracker that returns synthetic hands of a scheduled shape, and the real engine, 
 import argparse
 import contextlib
 import copy
+import dataclasses
 import json
 import time
 import tomllib
@@ -88,8 +89,9 @@ def run_tool(tool, tmp_path, monkeypatch, argv, schedule):
             planned = schedule(t - state["t0"], mapper)
             if planned is None:
                 return None
-            shape, tip = planned
-            return observation(shape, mapper.projector_to_camera([tip])[0])
+            shape, tip, *in_view = planned                      # optional 3rd item: the fingertip in view
+            obs = observation(shape, mapper.projector_to_camera([tip])[0])
+            return obs if not in_view or in_view[0] else dataclasses.replace(obs, tip_in_view=False)
 
     @contextlib.contextmanager
     def fake_session(config, args, **kw):
@@ -429,3 +431,107 @@ def test_draw_without_ai_has_no_ai_report(tmp_path, monkeypatch):
                                    lambda s, mapper: (OTHER, (640.0, 360.0)))
     report = json.loads(sorted(config.reports_dir.glob("draw-*.json"))[-1].read_text())
     assert report["ai"] is None
+
+
+# -- §9.12 Stage 3 item 1: diagnostics in `draw` (observation only) ------------------------------------------
+
+OLD_TRACE_KEYS = {"t", "seq", "mode", "pending", "shape", "cursor", "events", "source", "lit"}
+OLD_REPORT_KEYS = {"created_at", "calibration_created_at", "setup_check", "brightness", "duration_s", "frames",
+                   "processing_fps", "camera_fps", "inference_ms", "pipeline_ms", "pipeline_ms_with_hand",
+                   "mode_frames", "mode_entries", "shape_frames", "actions", "tool_at_end", "strokes_on_canvas",
+                   "canvas", "trace", "light", "selections", "ai"}
+
+
+def draw_report(config):
+    report = json.loads(sorted(config.reports_dir.glob("draw-*.json"))[-1].read_text())
+    trace = [json.loads(line) for line in open(report["trace"])] if report["trace"] else []
+    return report, trace
+
+
+def test_diagnostics_record_the_toolbar_trap_without_changing_it(tmp_path, monkeypatch):
+    def schedule(s, mapper):
+        if s < 0.3:
+            return OTHER, (300.0, 690.0)                          # hovering over the toolbar strip
+        if s < 0.7:
+            return POINT, (300.0, 690.0)                          # pointing there: the stroke starts in the band
+        if s < 1.3:
+            return POINT, (300.0, 690.0 - 650 * (s - 0.7))        # still pointing, up onto the canvas
+        return OTHER, (600.0, 300.0)
+
+    code, config, _ = run_tool(draw_tool, tmp_path, monkeypatch, ["draw", "--seconds", "2.3", "--trace"], schedule)
+    report, trace = draw_report(config)
+    assert code == 0 and OLD_REPORT_KEYS <= set(report)
+    assert report["strokes_on_canvas"] == 0 and report["actions"].get("strokes_refused_on_toolbar") == 1
+    assert "strokes" not in report["actions"]                     # behaviour as before: nothing drawn
+    d = report["diagnostics"]
+    assert d["strokes"]["attempts"] == 1 and d["strokes"]["refused"] == {"refused_band": 1}
+    assert d["strokes"]["attempts_with_points_after_refusal"] == 1
+    assert d["ink"]["refused_band:toolbar"] == 1 and d["ink"]["after_refused_start:canvas"] > 10
+    assert all(OLD_TRACE_KEYS <= set(line) for line in trace)
+    start = next(line for line in trace if "stroke_start" in line["events"])
+    assert start["state"] == "start" and start["ink"]["refused_band:toolbar"] == 1 and start["stroke"] == 1
+    dead = [line for line in trace if line["ink"] and "after_refused_start:canvas" in line["ink"]]
+    assert dead and all(line["stroke"] == 1 and line["stroke_id"] is None for line in dead)
+    assert all(line["status"] in ("ok", "no-hand") and line["action"] == "fake" for line in trace)
+
+
+def test_diagnostics_record_the_bottom_strip_a_hand_loss_and_the_lift(tmp_path, monkeypatch):
+    def schedule(s, mapper):
+        if s < 0.2:
+            return OTHER, (200.0, 600.0)
+        if s < 1.0:                                               # along the bottom strip, dipping to y 690
+            x = 200.0 + 500 * (s - 0.2)
+            return POINT, (x, 600.0 + (90.0 if 0.45 < s < 0.65 else 0.0))
+        if s < 1.25:
+            return None                                           # hand lost 0.25 s (< the 0.6-s window)
+        if s < 1.7:
+            return POINT, (600.0 + 500 * (s - 1.25), 600.0)
+        if s < 2.6:
+            return None                                           # gone: the pen lifts
+        return OTHER, (640.0, 300.0)
+
+    code, config, _ = run_tool(draw_tool, tmp_path, monkeypatch, ["draw", "--seconds", "3.0", "--trace"], schedule)
+    report, trace = draw_report(config)
+    assert report["strokes_on_canvas"] == 1 and report["actions"]["strokes"] == 1     # bridged, as before
+    d = report["diagnostics"]
+    assert d["ink"]["dropped_band:toolbar"] > 0 and d["ink"]["added:canvas"] > 20
+    assert d["states"]["held"] > 0 and d["states"]["lifted"] == 1 and d["states"]["start"] == 1
+    assert d["bands"]["bottom"]["losses"] >= 1 and d["bands"]["bottom"]["hand_frames"] > 0
+    assert d["hand_status"]["no-hand"] > 0
+    held = [line for line in trace if line["state"] == "held"]
+    assert held and all(line["mode"] == "draw" and line["status"] == "no-hand" for line in held)
+
+
+def test_diagnostics_record_a_fingertip_outside_the_view_and_below_the_canvas(tmp_path, monkeypatch):
+    def schedule(s, mapper):
+        if s < 0.4:
+            return POINT, (640.0, 300.0), False                   # fingertip outside MediaPipe's view
+        if s < 0.6:
+            return OTHER, (640.0, 760.0)
+        if s < 1.2:
+            return POINT, (640.0, 760.0)                          # pointing below the canvas
+        return OTHER, (640.0, 300.0)
+
+    code, config, _ = run_tool(draw_tool, tmp_path, monkeypatch, ["draw", "--seconds", "1.8", "--trace"], schedule)
+    report, trace = draw_report(config)
+    d = report["diagnostics"]
+    assert d["hand_status"]["tip-outside-view"] > 0 and d["states"]["tip-outside-view"] > 0
+    assert d["ink"]["refused_band:below"] == 1 and report["strokes_on_canvas"] == 0
+    outside = [line for line in trace if line["status"] == "tip-outside-view"]
+    assert outside and all(line["tip_in_view"] is False and line["raw_proj"] is None for line in outside)
+    below = [line for line in trace if line["where"] == "below"]
+    assert below and all(line["raw_proj"][1] > 719 for line in below if line["raw_proj"])
+
+
+def test_diagnostics_timing_and_overhead_are_reported(tmp_path, monkeypatch):
+    code, config, _ = run_tool(draw_tool, tmp_path, monkeypatch, ["draw", "--seconds", "0.8", "--trace"],
+                               lambda s, mapper: (POINT, (300.0 + 300 * s, 300.0)))
+    report, trace = draw_report(config)
+    d = report["diagnostics"]
+    assert set(d["stage_ms"]) == {"queue", "inference", "hand", "engine", "controller", "ai", "render", "show",
+                                  "diag", "trace", "post"}
+    assert all(d["stage_ms"][s]["count"] >= len(trace) - 1 for s in ("hand", "engine", "render", "diag", "post"))
+    assert d["overhead"]["diag_ms"]["median"] is not None and d["loop_ms"]["count"] == len(trace) - 1
+    line = trace[-1]
+    assert set(line["stage_ms"]) == {"hand", "engine", "controller", "ai", "render", "show"}
+    assert line["pipeline_ms"] >= line["inference_ms"] and line["queue_ms"] >= 0

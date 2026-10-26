@@ -16,6 +16,7 @@ nothing is selected) to a PNG and queues it in `ai_jobs`; the drawing tool hands
 
 from __future__ import annotations
 
+import math
 from collections import Counter
 
 from ..canvas.history import AddStroke, History, MoveStrokes, ReplaceStrokes
@@ -45,6 +46,18 @@ class DrawingController:
         self.panel: dict | None = None                 # {"state": menu|thinking|answer|error, "since", "action", "answer"}
         self.ai_jobs: list[tuple[str, bytes]] = []
         self.now = 0.0
+        # Diagnostics only (brain.md §9.12, Stage 3 item 1): what each event's point became, noted inside the
+        # existing branches; kept apart from `log`, and never read by any decision here.
+        self.outcomes: list[tuple[str, tuple | None, int | None]] = []   # (outcome, point, attempt), last handle()
+        self.point_log: Counter = Counter()
+        self.attempts = 0                              # stroke attempts: every STROKE_START, refused ones too
+        self.attempt: int | None = None                # the current or most recent attempt
+        self.stroke_open = False
+        self._refused = False                          # the current attempt was refused at its start
+
+    def _note(self, outcome: str, point) -> None:
+        self.outcomes.append((outcome, point, self.attempt))
+        self.point_log[outcome] += 1
 
     @property
     def eraser_radius(self) -> float:
@@ -61,6 +74,7 @@ class DrawingController:
     # -- pointing strokes: the current tool --------------------------------------------------------------
 
     def handle(self, events) -> None:
+        self.outcomes = []
         for e in events:
             handler = getattr(self, "_" + e.kind, None)
             if handler is None:
@@ -71,39 +85,59 @@ class DrawingController:
         return self.panel is not None and self.panel_layout.contains(point)
 
     def _stroke_start(self, e) -> None:
+        self.attempts += 1
+        self.attempt, self.stroke_open, self._refused = self.attempts, True, False
         if e.point is None or self.toolbar.in_band(e.point) or self._on_panel(e.point):
             self.log["strokes_refused_on_toolbar" if not self._on_panel(e.point) else "strokes_refused_on_panel"] += 1
+            self._refused = True
+            self._note("refused_no_point" if e.point is None else "refused_band" if self.toolbar.in_band(e.point)
+                       else "refused_panel", e.point)
             self.active = self._drag = self.loop = None
             return
         if self.tool == "select":
             self.loop = [e.point]
+            self._note("select", e.point)
         elif self.tool == "pen":
             self.active = Stroke(self.canvas.new_id(), COLOURS[self.colour], WIDTHS[self.width])
             self.active.append(e.point)
+            self._note("added" if self.active.points else "not_appended", e.point)
         elif self.tool == "eraser":
             self._erase_group = {"removed": {}, "created": set()}
             self._erase_at(e.point)
+            self._note("eraser", e.point)
         else:
             sid = self.canvas.hit_test(e.point)
             self.selected = sid
             self._drag = None if sid is None else {"ids": [sid], "last": e.point, "dx": 0.0, "dy": 0.0}
+            self._note("move" if sid is not None else "move_nothing", e.point)
 
     def _stroke_point(self, e) -> None:
         if e.point is None or self.toolbar.in_band(e.point) or self._on_panel(e.point):
+            self._note("dropped_no_point" if e.point is None else "dropped_band" if self.toolbar.in_band(e.point)
+                       else "dropped_panel", e.point)
             return
         if self.tool == "select" and self.loop is not None:
             self.loop.append(e.point)
+            self._note("select", e.point)
         elif self.tool == "pen" and self.active is not None:
+            n = len(self.active.points)
             self.active.append(e.point)
+            self._note("added" if len(self.active.points) > n                  # Stroke.append skips a repeat
+                       else "duplicate" if all(math.isfinite(float(v)) for v in e.point) else "not_appended", e.point)
         elif self.tool == "eraser" and self._erase_group is not None:
             self._erase_at(e.point)
+            self._note("eraser", e.point)
         elif self.tool == "move" and self._drag is not None:
             d = self._drag
             dx, dy = e.point[0] - d["last"][0], e.point[1] - d["last"][1]
             self.canvas.move(d["ids"], dx, dy)
             d["dx"], d["dy"], d["last"] = d["dx"] + dx, d["dy"] + dy, e.point
+            self._note("move", e.point)
+        else:                                          # no branch took the point (diagnostics only)
+            self._note("after_refused_start" if self._refused else f"ignored_{self.tool}", e.point)
 
     def _stroke_end(self, e) -> None:
+        self.stroke_open = False
         if self.active is not None and self.active.points:
             self.history.do(AddStroke(self.active), self.canvas)
             self.log["strokes"] += 1

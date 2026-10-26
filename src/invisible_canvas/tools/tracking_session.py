@@ -103,6 +103,9 @@ class HandPoints:
         self.mapper = mapper
         self.shapes = ShapeReader()
         self._filters = {k: OneEuroFilter() for k in ("pointer", "pinch", "palm")}
+        # Diagnostics only (brain.md §9.12): how the last frame ended here, and its fingertip before smoothing
+        self.status = "no-hand"          # no-hand / tip-outside-view / mapping-failed / ok
+        self.raw: tuple[float, float] | None = None
 
     def reset(self) -> None:
         self.shapes.reset()
@@ -113,14 +116,17 @@ class HandPoints:
         """None (and reset) for no hand or an extrapolated fingertip (D37: never drawn)."""
         shape = self.shapes(obs)
         if shape is None:
+            self.status, self.raw = ("no-hand" if obs is None else "tip-outside-view"), None
             self.reset()
             return None, None
         cam = obs.landmarks
         proj = self.mapper.camera_to_projector(np.array([cam[INDEX_TIP], pinch_point(cam), palm_centre(cam),
                                                          cam[0], cam[9]]))
         if not np.all(np.isfinite(proj)):
+            self.status, self.raw = "mapping-failed", None
             self.reset()
             return shape, None
+        self.status, self.raw = "ok", (float(proj[0][0]), float(proj[0][1]))
         radius = float(np.clip(ERASER_SCALE * np.linalg.norm(proj[4] - proj[3]), ERASER_MIN, ERASER_MAX))
         pointer, pinch, palm = (tuple(float(v) for v in self._filters[k](t, p))
                                 for k, p in zip(("pointer", "pinch", "palm"), proj[:3]))
