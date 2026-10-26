@@ -926,6 +926,12 @@ Resolved on 2026-10-08: Python install (D12), surface orientation (D13), camera 
 
 ### 13.2 Test log
 
+**2026-10-26 (16:04–16:07): mission baseline B-2 round b ("2 cm hover") — 9 of 9 measured: mean 6.44, max 10.89 px; hover distance not verified (no ruler visible in the frames)**
+
+- Power: on battery 43 %. Setup unchanged (0.16 px).
+- `cursor --accuracy --aim finger …` (`cursor-20261026-160700.json`, frames `data/diagnostics/cursor-20261026-160457/`, sheet `b2b_captures_annotated.jpg`): TL 5.27 (+5.2, +0.9), TC 6.81 (+0.9, +6.8), TR 9.79 (+9.3, +3.1); ML 2.99 (+2.2, +2.0), MC 0.82 (−0.1, −0.8), MR 9.64 (+6.8, +6.8); BL 6.75 (+5.9, +3.2), BC 10.89 (−9.9, +4.6), BR 4.97 (+4.5, +2.2). **Mean 6.44, max 10.89 px**; mean signed (+2.75, +3.20) px, sd (5.27, 2.39); spread sd median 3.60 px; 39.2 s, 52.8 fps, inference median 9.3 ms, hand found 83.4 %, TL first detection 7.1 s (hand found 28 % there).
+- Capture frames: the cursor mean again on the visible fingertip end, the fingertip near the target centre; **no ruler visible in any of the 9 frames**, so the 2 cm was not physically set (asked the user). The mean shift (+2.8, +3.2) is of the size the geometry predicts for ~2 cm (≈ 1.1 px/cm horizontally, D35), but placement scatter (sd 5.3 px in x) is larger than that shift: not a parallax measurement until the distance is verified.
+
 **2026-10-26 (16:01–16:02): mission baseline B-2 round a (contact) — 9 of 9 measured: mean 9.62, max 26.93 projector px; the cursor sits on the visible fingertip end, the errors are fingertip placement**
 
 - Power: on battery 46 %. Setup unchanged (0.19 px; calibration 2026-10-26 15:54:09). Canvas region 103 at grey 128, unlit surround 54.
