@@ -433,6 +433,111 @@ def test_draw_with_ai_asks_through_the_panel_and_reports_the_answer(tmp_path, mo
     assert list((config.root / "data" / "ai").glob("*-summarize.json"))
 
 
+# -- D59: pages ---------------------------------------------------------------------------------------------------
+
+def test_pages_by_dwell_are_saved_and_resumed(tmp_path, monkeypatch):
+    from invisible_canvas.canvas.panel import BoardPanel
+    from invisible_canvas.canvas.toolbar import Toolbar
+    pages = Toolbar((1280, 720)).button("pages").centre
+    add = next(b for b in BoardPanel((1280, 720)).buttons if b.name == "board:add").centre
+
+    def schedule(s, mapper):
+        if s < 0.6:
+            return POINT, (200.0 + 300 * s, 300.0)                 # page 1
+        if s < 1.4:
+            return OTHER, (500.0, 400.0)                           # pen lifts
+        if s < 2.6:
+            return OTHER, pages                                    # PAGES: the board panel opens
+        if s < 2.7:
+            return OTHER, (500.0, 400.0)
+        if s < 3.9:
+            return OTHER, add                                      # + PAGE
+        if s < 4.0:
+            return OTHER, (300.0, 450.0)
+        if s < 4.6:
+            return POINT, (200.0 + 300 * (s - 4.0), 450.0)         # page 2
+        return OTHER, (500.0, 500.0)
+
+    code, config, _ = run_tool(draw_tool, tmp_path, monkeypatch, ["draw", "--seconds", "5.8"], schedule)
+    report = json.loads(sorted(config.reports_dir.glob("draw-*.json"))[-1].read_text())
+    board = report["board"]
+    assert code == 0 and report["actions"]["page:add"] == 1 and report["actions"]["press:pages"] == 1
+    assert board["pages"] == 2 and board["current"] == 2 and board["strokes_per_page"] == [1, 1]
+    assert report["strokes_on_canvas"] == 1                                        # the current page
+    saved = json.load(open(board["json"], encoding="utf-8"))
+    assert saved["format"] == "invisible-canvas/board" and len(saved["pages"]) == 2
+    assert len(list((config.root / "data" / "canvas").glob("board-*-p*.png"))) == 2
+
+    time.sleep(1.1)                                                                # a new report / board stamp
+    code, config, _ = run_tool(draw_tool, tmp_path, monkeypatch, ["draw", "--seconds", "0.4", "--resume"],
+                               lambda s, mapper: (OTHER, (640.0, 360.0)))
+    report = json.loads(sorted(config.reports_dir.glob("draw-*.json"))[-1].read_text())
+    assert code == 0 and report["board"]["pages"] == 2 and report["board"]["strokes_per_page"] == [1, 1]
+    assert report["board"]["current"] == 2
+
+
+# -- D60: documents --------------------------------------------------------------------------------------------------
+
+def open_file_schedule(after_open):
+    """PAGES, then OPEN FILE by dwell; then `after_open(s)` from 3.0 s."""
+    from invisible_canvas.canvas.panel import BoardPanel
+    from invisible_canvas.canvas.toolbar import Toolbar
+    pages = Toolbar((1280, 720)).button("pages").centre
+    open_ = next(b for b in BoardPanel((1280, 720)).buttons if b.name == "board:open").centre
+
+    def schedule(s, mapper):
+        if s < 1.2:
+            return OTHER, pages
+        if s < 1.3:
+            return OTHER, (500.0, 400.0)
+        if s < 2.5:
+            return OTHER, open_
+        if s < 3.0:
+            return OTHER, (400.0, 400.0)
+        return after_open(s)
+    return schedule
+
+
+def test_a_document_is_opened_by_dwell_annotated_and_reported(tmp_path, monkeypatch):
+    picture = np.zeros((400, 600, 3), np.uint8)
+    picture[:, :, 2] = 220
+    path = tmp_path / "diagram.png"
+    cv2.imencode(".png", picture)[1].tofile(str(path))
+    monkeypatch.setattr(draw_tool, "choose_file", lambda *a, **k: path)
+    after = lambda s: (POINT, (300.0 + 300 * (s - 3.0), 350.0)) if s < 3.6 else (OTHER, (500.0, 500.0))  # noqa: E731
+    code, config, shown = run_tool(draw_tool, tmp_path, monkeypatch, ["draw", "--seconds", "4.6", "--trace"],
+                                   open_file_schedule(after))
+    report, trace = draw_report(config)
+    ref = report["reference"]
+    assert code == 0 and report["actions"]["doc:open"] == 1 and ref["kind"] == "image" and ref["view"] == "doc"
+    assert ref["annotated_pages"] == [1] and report["board"]["strokes_per_page"] == [0]   # on the document only
+    assert any(line["view"] == "doc" for line in trace)
+    assert np.allclose(shown[-1][360, 640], [0, 0, 220], atol=3) or (shown[-1][360, 640] != 255).any()
+    saved = json.load(open(report["board"]["json"], encoding="utf-8"))
+    assert saved["reference"]["path"] == str(path) and saved["view"] == "doc"
+
+
+def test_a_damaged_document_shows_a_message_and_drawing_goes_on(tmp_path, monkeypatch):
+    path = tmp_path / "broken.pdf"
+    path.write_bytes(b"%PDF-1.4 not really a pdf")
+    calls = []
+    monkeypatch.setattr(draw_tool, "choose_file", lambda *a, **k: calls.append(1) or path)
+    after = lambda s: (POINT, (300.0 + 300 * (s - 3.0), 350.0)) if s < 3.6 else (OTHER, (500.0, 500.0))  # noqa: E731
+    code, config, shown = run_tool(draw_tool, tmp_path, monkeypatch, ["draw", "--seconds", "4.6"],
+                                   open_file_schedule(after))
+    report = json.loads(sorted(config.reports_dir.glob("draw-*.json"))[-1].read_text())
+    assert code == 0 and calls == [1] and report["actions"]["open_failed"] == 1 and report["reference"] is None
+    assert report["board"]["strokes_per_page"] == [1]                         # drawing went on, on the whiteboard
+
+
+def test_a_cancelled_open_dialog_changes_nothing(tmp_path, monkeypatch):
+    monkeypatch.setattr(draw_tool, "choose_file", lambda *a, **k: None)
+    code, config, shown = run_tool(draw_tool, tmp_path, monkeypatch, ["draw", "--seconds", "3.4"],
+                                   open_file_schedule(lambda s: (OTHER, (500.0, 500.0))))
+    report = json.loads(sorted(config.reports_dir.glob("draw-*.json"))[-1].read_text())
+    assert code == 0 and report["actions"]["open_cancelled"] == 1 and report["reference"] is None
+
+
 # -- D58: the projector or camera moved during the session ---------------------------------------------------------
 
 class MovedOnce:

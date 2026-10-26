@@ -56,6 +56,40 @@ def wrap(text: str, width_px: int, scale: float, thickness: int = 1) -> list[str
     return lines
 
 
+BOARD_LABELS = {"board:prev": "< PAGE", "board:next": "PAGE >", "board:add": "+ PAGE", "board:close": "CLOSE",
+                "board:open": "OPEN FILE", "board:view": "SHOW DOC", "board:closedoc": "CLOSE DOC"}   # D60: documents
+BOARD_ROWS = (("board:prev", "board:next"), ("board:add", "board:open"), ("board:view", "board:closedoc"),
+              (None, "board:close"))
+
+
+class BoardPanel:
+    """The board panel (D59): page buttons in two columns at the top right, compact so most of the canvas stays
+    free while it is open (it stays open while pages are flipped); the page label above the buttons."""
+
+    def __init__(self, size: tuple[int, int], rows=BOARD_ROWS, width: int = 300, margin: int = 16):
+        w, _ = size
+        x1 = w - margin
+        x0, y0 = x1 - width, margin
+        bw, bh, gap = (width - 3 * 12) // 2, 52, 10
+        top = y0 + 50                                    # below the label line
+        self.buttons = [Button(name, "panel", (x0 + 12 + c * (bw + 12), top + r * (bh + gap),
+                                               x0 + 12 + c * (bw + 12) + bw, top + r * (bh + gap) + bh))
+                        for r, row in enumerate(rows) for c, name in enumerate(row) if name]
+        self.rect = (x0, y0, x1, top + len(rows) * (bh + gap) + 2)
+        self.text_left, self.text_baseline = x0 + 14, y0 + 34
+
+    def contains(self, point) -> bool:
+        if point is None:
+            return False
+        x0, y0, x1, y1 = self.rect
+        return x0 <= point[0] < x1 and y0 <= point[1] < y1
+
+    def hit(self, point) -> Button | None:
+        if point is None:
+            return None
+        return next((b for b in self.buttons if b.contains(point)), None)
+
+
 class AIPanel:
     """Layout of the panel on a canvas of `size` whose toolbar starts at `toolbar_top`."""
 

@@ -10,9 +10,10 @@ forces it on): the AI reads the SELECT-ed writing (D51, §9.11); by default
 a free local model through Ollama (D52), or Claude with `[ai] backend = "claude"`. Requests
 run in a background worker; the report records each answer and the frame rate while a request was running (S3).
 
-Keyboard (laptop): z undo, y redo, s save, c twice clear, ESC quit. Before tracking, the setup check runs
-(a moved setup is recalibrated automatically and validated first, D39). On exit the canvas is saved to
-data/canvas/ (strokes JSON + PNG) and a report to data/reports/draw-*.json.
+Keyboard (laptop): o open a file, z undo, y redo, s save, c twice clear, ESC quit. Before tracking, the setup check runs
+(a moved setup is recalibrated automatically and validated first, D39). On exit the current page is saved to
+data/canvas/ (strokes JSON + PNG), every page to a board file (D59: board-*.json + a PNG per page), and a report
+to data/reports/draw-*.json. `--load FILE` continues a board (or a single canvas) file, `--resume` the newest board.
 """
 
 from __future__ import annotations
@@ -30,11 +31,14 @@ from ..ai.local import LocalAssistant
 from ..ai.worker import AIWorker
 from ..calibration.store import check_compatible, load_calibration
 from ..calibration.watch import SetupWatch, expected_corners
+from ..canvas.board import Board
 from ..canvas.model import Canvas
+from ..canvas.reference import Reference, ReferenceError, annotations_dict, annotations_from
 from ..canvas.render import CanvasRenderer
 from ..canvas.toolbar import Toolbar
 from ..config import Config
 from ..display import patterns
+from ..display.file_dialog import choose_file
 from ..display.handlight import HandLight
 from ..interaction.drawing import DrawingController
 from ..interaction.engine import IDLE, InteractionEngine
@@ -61,7 +65,8 @@ def add_parser(subparsers) -> None:
     p = subparsers.add_parser("draw", help="draw with the index finger and toolbar tools (Phase 2)")
     add_device_args(p)
     p.add_argument("--seconds", type=float, default=0.0, help="stop after N seconds (default: until ESC)")
-    p.add_argument("--load", type=Path, help="continue a saved canvas (data/canvas/*.json)")
+    p.add_argument("--load", type=Path, help="continue a saved board or canvas (data/canvas/board-*.json, canvas-*.json)")
+    p.add_argument("--resume", action="store_true", help="continue the newest saved board (D59)")
     p.add_argument("--no-recalibrate", action="store_true", help="stop instead of recalibrating a moved setup")
     p.add_argument("--save-every", type=float, default=0.0, help="save a camera frame every S seconds (diagnostic)")
     p.add_argument("--trace", action="store_true", help="per-frame JSONL trace: shape measures, mode, events")
@@ -115,6 +120,102 @@ def recheck(config: Config, s, calibration, canvas_image: np.ndarray):
     return checked_mapper(config, s, calibration, no_recalibrate=False, title=RECHECK_TITLE)
 
 
+def board_data(controller: DrawingController) -> dict:
+    """The board file's content. D59: every page; D60: the open document (its path, page and annotations; the
+    document itself is never copied or changed), what was shown, and the annotations of documents closed meanwhile."""
+    data = controller.board.to_dict()
+    if controller.reference is not None:
+        data["reference"], data["view"] = controller.reference.to_dict(), controller.view
+    if controller.kept_annotations:
+        data["closed_documents"] = [{"path": kept["path"], "annotations": annotations_dict(kept["annotations"])}
+                                    for kept in controller.kept_annotations.values()]
+    return data
+
+
+def save_board(config: Config, controller: DrawingController) -> Path:
+    """D59: the board file (`board_data`), and a PNG of each page next to it."""
+    folder = config.root / "data" / "canvas"
+    folder.mkdir(parents=True, exist_ok=True)
+    base = folder / f"board-{stamp()}"
+    path = base.with_suffix(".json")
+    path.write_text(json.dumps(board_data(controller)), encoding="utf-8")
+    board = controller.board
+    for k, page in enumerate(board.pages):
+        cv2.imwrite(str(folder / f"{base.name}-p{k + 1}.png"), CanvasRenderer(board.size)._strokes(page.canvas))
+    return path
+
+
+def load_board(config: Config, args, size: tuple[int, int]) -> tuple[Board, dict]:
+    """`--load FILE` (a board or a single canvas file), `--resume` (the newest board file), else one blank page.
+    Returns the board and the file's data (for the document it had open, D60)."""
+    path = args.load
+    if path is None and getattr(args, "resume", False):
+        boards = sorted((config.root / "data" / "canvas").glob("board-*.json"))
+        path = boards[-1] if boards else None
+        print(f"resuming {path}" if path else "no saved board to resume: starting with a blank page")
+    if path is None:
+        return Board(size), {}
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    return Board.from_dict(data), data
+
+
+def restore_reference(controller: DrawingController, data: dict) -> None:
+    """D60: reopen the document a saved board had open (if the file is still there), with its annotations; the
+    annotations of documents closed before the save come back when those files are opened."""
+    for closed in data.get("closed_documents", []):
+        controller.keep_annotations(closed["path"], annotations_from(closed["annotations"]))
+    if not data.get("reference"):
+        return
+    try:
+        controller.set_reference(Reference.from_dict(data["reference"]))
+        controller.view = data.get("view", "doc")
+    except ReferenceError as e:
+        controller.show_notice(f"The saved document was not reopened: {e}")
+
+
+def open_document(controller: DrawingController, engine: InteractionEngine, t: float) -> None:
+    """D60: OPEN FILE (or the o key): the pen lifts, the Open dialog on the laptop, then the document is shown, or a
+    message says why it could not be."""
+    controller.handle(engine.release(t))
+    path = choose_file()
+    if path is None:
+        controller.log["open_cancelled"] += 1
+        return
+    try:
+        controller.set_reference(Reference.open(path))
+        print(f"opened {path} ({controller.reference.label()})")
+    except ReferenceError as e:
+        controller.log["open_failed"] += 1
+        controller.show_notice(str(e))
+        print(f"could not open {path}: {e}")
+
+
+def handle_keys(keys, controller: DrawingController, now: float, clear_armed: dict, saved_paths: list, save) -> bool:
+    """The laptop keys of one frame (-1: no key); True means quit (ESC)."""
+    for key in keys:
+        if not 0 < key < 256:                          # no key, or an arrow / F-key
+            continue
+        if key == 27:
+            return True
+        elif key in (ord("o"), ord("O")):              # D60: open a document, as the OPEN FILE button
+            controller.open_requested = True
+        elif key in (ord("z"), ord("Z")):
+            controller.undo()
+        elif key in (ord("y"), ord("Y")):
+            controller.redo()
+        elif key in (ord("s"), ord("S")):
+            saved_paths.append(save())
+            print(f"saved: {saved_paths[-1][0]}")
+        elif key in (ord("c"), ord("C")):
+            if now < clear_armed["until"]:
+                controller.clear()
+                clear_armed["until"] = 0.0
+            else:
+                clear_armed["until"] = now + 2.0
+                print("press c again within 2 s to clear the canvas")
+    return False
+
+
 def save_canvas(config: Config, canvas: Canvas, renderer: CanvasRenderer) -> tuple[Path, Path]:
     folder = config.root / "data" / "canvas"
     folder.mkdir(parents=True, exist_ok=True)
@@ -150,23 +251,30 @@ def run(config: Config, args) -> int:
             return 1
         mapper, calibration, setup_info = checked
         size = s.canvas_size
-        canvas = Canvas.from_dict(json.loads(args.load.read_text(encoding="utf-8"))) if args.load else Canvas(size)
+        board, board_data = load_board(config, args, size)
         toolbar, renderer = Toolbar(size, ai=ai_on), CanvasRenderer(size)
-        controller, engine, points = DrawingController(canvas, toolbar), InteractionEngine(), HandPoints(mapper)
+        controller = DrawingController(board.page.canvas, toolbar, board=board)
+        restore_reference(controller, board_data)
+        engine, points = InteractionEngine(), HandPoints(mapper)
         light = HandLight() if args.light else None
-        brightness = brightness_check(s, mapper, renderer.render(canvas, controller, toolbar, mode=IDLE, cursor=None))
+        brightness = brightness_check(s, mapper, renderer.render(controller.canvas, controller, toolbar, mode=IDLE, cursor=None))
         diag = DrawDiagnostics(size, toolbar.top)       # §9.12 item 1: observation only
         watch = SetupWatch(expected_corners(mapper, size))   # D58: did the projector or camera move meanwhile?
         setup_events, warning, watch_from = [], None, 0.0
         if args.trace:
             save_dir.mkdir(parents=True, exist_ok=True)
             trace = open(save_dir / "trace.jsonl", "w", encoding="utf-8", buffering=1 << 20)   # ~1 write per s
-        print(f"drawing: {HELP}. Keys: z undo, y redo, s save, c twice clear, ESC quit.")
+        print(f"drawing: {HELP}. Keys: o open a file, z undo, y redo, s save, c twice clear, ESC quit.")
         s.camera.reset_stats()
         start = time.perf_counter()
-        seq, last_saved, clear_armed_until, last_t = current_seq(s), -1e9, 0.0, None
+        seq, last_saved, clear_armed, last_t = current_seq(s), -1e9, {"until": 0.0}, None
         saved_paths = []
         last_t0 = None
+
+        def save_all() -> list[str]:                   # the s key: this page's canvas and the whole board
+            return ([str(p) for p in save_canvas(config, controller.canvas, renderer)]
+                    + [str(save_board(config, controller))])
+
         while True:
             frame = s.camera.wait_frame(seq, 2.0)
             if frame is None:
@@ -183,6 +291,9 @@ def run(config: Config, args) -> int:
             te = time.perf_counter()
             controller.handle(step.events)
             controller.update_pointer(frame.timestamp, step.cursor)
+            if controller.take_open_request():          # D60: the Open dialog on the laptop (the loop waits)
+                open_document(controller, engine, frame.timestamp)
+                seq, last_t0 = current_seq(s), None
             tc = time.perf_counter()
             if worker is not None:                         # D51: jobs to the background worker, answers back
                 for action, png in controller.take_ai_jobs():
@@ -192,7 +303,7 @@ def run(config: Config, args) -> int:
                     controller.ai_answer(answer)
             ta = time.perf_counter()
             lit = None if light is None else light.update(frame.timestamp, projector_landmarks(mapper, obs))
-            img = renderer.render(canvas, controller, toolbar, mode=step.mode, cursor=step.cursor, light=lit)
+            img = renderer.render(controller.canvas, controller, toolbar, mode=step.mode, cursor=step.cursor, light=lit)
             if warning is not None:                        # D58: the setup moved and is not recalibrated (yet)
                 img = with_message(img, warning)
             tr = time.perf_counter()
@@ -222,6 +333,8 @@ def run(config: Config, args) -> int:
                          "stroke_id": None if controller.active is None else controller.active.id,
                          "blocked": controller.blocked,                  # D56: why the pointing draws nothing
                          "ai_busy": records[-1]["ai_busy"],              # an AI request was running (S3, §9.13)
+                         "page": controller.board.current + 1,           # D59
+                         "view": controller.view,                        # D60: board or doc
                          "candidate": engine._candidate, "buffered": len(engine._buffer),
                          "queue_ms": round(stage_ms["queue"], 2), "inference_ms": round(stage_ms["inference"], 2),
                          "pipeline_ms": round((t2 - frame.timestamp) * 1000, 2),
@@ -250,10 +363,10 @@ def run(config: Config, args) -> int:
                     f"processing {fps:.1f} fps, capture -> projector "
                     f"{np.median([r['pipeline_ms'] for r in recent]):.0f} ms (+ display path)",
                     f"tool {controller.tool.upper()} | colour {controller.colour} | width {controller.width} | "
-                    f"strokes {len(canvas.strokes)} | selected {len(controller.selection)}",
+                    f"{controller.board.label()} | strokes {len(controller.canvas.strokes)} | selected {len(controller.selection)}",
                     "AI: off" if worker is None else
                     f"AI: {'working' if worker.busy else 'ready'} ({len(worker.answers)} answers)",
-                    "", HELP, "keys: z undo  y redo  s save  c c clear  ESC quit"])
+                    "", HELP, "keys: o open a file  z undo  y redo  s save  c c clear  ESC quit"])
             moved = watch.update(frame.timestamp, frame.image) if time.perf_counter() >= watch_from else None
             if moved is not None:                          # D58: the projector or the camera moved
                 controller.handle(engine.release(frame.timestamp))     # a pen lift: nothing bridged across the pause
@@ -264,7 +377,7 @@ def run(config: Config, args) -> int:
                 else:
                     paused = time.perf_counter()
                     rechecked = recheck(config, s, calibration,
-                                        renderer.render(canvas, controller, toolbar, mode=IDLE, cursor=None))
+                                        renderer.render(controller.canvas, controller, toolbar, mode=IDLE, cursor=None))
                     event["pause_s"] = round(time.perf_counter() - paused, 1)
                     if rechecked is None:
                         event["status"], warning, watch_from = "failed", FAILED_WARNING, time.perf_counter() + RETRY_S
@@ -288,22 +401,10 @@ def run(config: Config, args) -> int:
             key = cv2.waitKey(1)
             now = time.perf_counter()
             diag.stages["post"].add((now - t2) * 1000)
-            if key == 27 or (args.seconds and now - start >= args.seconds):
+            if args.seconds and now - start >= args.seconds:
                 break
-            if key in (ord("z"), ord("Z")):
-                controller.undo()
-            elif key in (ord("y"), ord("Y")):
-                controller.redo()
-            elif key in (ord("s"), ord("S")):
-                saved_paths.append([str(p) for p in save_canvas(config, canvas, renderer)])
-                print(f"saved: {saved_paths[-1][0]}")
-            elif key in (ord("c"), ord("C")):
-                if now < clear_armed_until:
-                    controller.clear()
-                    clear_armed_until = 0.0
-                else:
-                    clear_armed_until = now + 2.0
-                    print("press c again within 2 s to clear the canvas")
+            if handle_keys([key], controller, now, clear_armed, saved_paths, save_all):
+                break
         if trace is not None:
             trace.close()
         if last_t is not None:          # end an open stroke / erase / pinch cleanly (no hand, after the hold)
@@ -313,7 +414,8 @@ def run(config: Config, args) -> int:
     if worker is not None:
         worker.close(timeout=0.2)                      # a request still running is abandoned (daemon thread)
 
-    json_path, png_path = save_canvas(config, canvas, renderer)
+    json_path, png_path = save_canvas(config, controller.canvas, renderer)
+    board_path = save_board(config, controller)
     duration = records[-1]["t"] - records[0]["t"] if len(records) > 1 else 0.0
     hand_frames = [r for r in records if r["hand"]]
     report = {
@@ -333,7 +435,14 @@ def run(config: Config, args) -> int:
         "shape_frames": {str(k): v for k, v in shapes.items()},
         "actions": dict(controller.log),
         "tool_at_end": controller.tool,
-        "strokes_on_canvas": len(canvas.strokes),
+        "strokes_on_canvas": len(controller.canvas.strokes),               # the current page
+        "board": {"json": str(board_path), "pages": controller.board.count, "current": controller.board.current + 1,
+                  "strokes_per_page": [len(p.canvas.strokes) for p in controller.board.pages]},   # D59
+        "reference": None if controller.reference is None else {                                    # D60
+            "path": str(controller.reference.path), "kind": controller.reference.kind,
+            "pages": controller.reference.count, "page": controller.reference.current + 1, "view": controller.view,
+            "annotated_pages": sorted(k + 1 for k, p in controller.reference.annotations.items() if p.canvas.strokes)},
+        "closed_documents_with_annotations": [kept["path"] for kept in controller.kept_annotations.values()],
         "canvas": {"json": str(json_path), "png": str(png_path), "saved_during_run": saved_paths},
         "trace": str(save_dir / "trace.jsonl") if args.trace else None,
         "light": bool(args.light),
@@ -356,7 +465,8 @@ def run(config: Config, args) -> int:
           f"(camera {camera_stats.mean_fps:.1f}); pipeline median {report['pipeline_ms']['median']:.1f} ms, "
           f"p95 {report['pipeline_ms']['p95']:.1f} ms" if records else "no frames")
     print(f"modes (frames): {dict(engine.mode_frames)}; entered: {dict(engine.entries)}")
-    print(f"actions: {dict(controller.log)}; strokes on the canvas {len(canvas.strokes)}")
+    print(f"actions: {dict(controller.log)}; strokes on the current page {len(controller.canvas.strokes)}")
+    print(f"board: {controller.board.count} pages (strokes per page {report['board']['strokes_per_page']}), current {controller.board.current + 1}: {board_path}")
     w = report["setup_watch"]
     print(f"setup watch: {w['checks']} checks (mean {w['check_ms_mean']} ms), {len(w['events'])} moves"
           + "".join(f"\n  at {e['t']} s moved {e['displacement_px']} camera px: {e['status']}"
@@ -381,4 +491,6 @@ def run(config: Config, args) -> int:
                   f"pipeline p95 {ai['busy_pipeline_ms']['p95']:.1f} ms")
     print(f"canvas: {json_path} (+ .png)")
     print(f"report: {save_report(config, 'draw', report)}")
+    if controller.reference is not None:               # D60: let go of the document file
+        controller.reference.close()
     return 0

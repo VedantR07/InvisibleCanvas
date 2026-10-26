@@ -12,6 +12,10 @@ the wall; a toolbar dwell fills the ring as a progress arc (the button itself is
 D56: while the hand points but nothing can be drawn (the stroke started on, or ran into, the toolbar or the AI
 panel: `controller.blocked`), the cursor is a grey ring with a slash, and over the canvas a hint at the top
 says how to draw again. The hint is kept away from the hand: projected text on the hand hinders tracking (R34).
+
+D59 / D60: the board panel (page buttons, grey when they cannot act) or else the page label at the top left; a
+document page under the ink (`controller.background`; the strokes cache is kept per page and background); messages
+on the wall (`controller.notice`).
 """
 
 from __future__ import annotations
@@ -52,22 +56,25 @@ class CanvasRenderer:
         self.size = (int(size[0]), int(size[1]))
         self.background = background
         self._cache: np.ndarray | None = None
+        self._canvas: Canvas | None = None             # D59: the cache is for one canvas (page) at one version
+        self._under: np.ndarray | None = None          # D60: ... over one background (a document page) or none
         self._version = -1
         self.redraws = 0
 
-    def _strokes(self, canvas: Canvas) -> np.ndarray:
-        if self._cache is None or canvas.version != self._version:
+    def _strokes(self, canvas: Canvas, under: np.ndarray | None = None) -> np.ndarray:
+        if (self._cache is None or canvas is not self._canvas or canvas.version != self._version
+                or under is not self._under):
             w, h = self.size
-            img = np.full((h, w, 3), self.background, dtype=np.uint8)
+            img = under.copy() if under is not None else np.full((h, w, 3), self.background, dtype=np.uint8)
             for s in canvas.strokes.values():
                 draw_stroke(img, s)
-            self._cache, self._version = img, canvas.version
+            self._cache, self._canvas, self._version, self._under = img, canvas, canvas.version, under
             self.redraws += 1
         return self._cache
 
     def render(self, canvas: Canvas, controller, toolbar: Toolbar, *, mode: str, cursor, status: str = "",
                light: np.ndarray | None = None) -> np.ndarray:
-        img = self._strokes(canvas).copy()
+        img = self._strokes(canvas, getattr(controller, "background", None)).copy()     # D60: a document page under it
         if controller.selected is not None and controller.selected in canvas.strokes:
             s = canvas.strokes[controller.selected]
             x0, y0, x1, y1 = (int(round(v)) for v in s.bounds())
@@ -84,6 +91,14 @@ class CanvasRenderer:
         self._toolbar(img, toolbar, controller)
         if getattr(controller, "panel", None) is not None and controller.panel_layout is not None:
             self._panel(img, controller)
+        board = getattr(controller, "board", None)
+        if getattr(controller, "board_open", False):
+            self._board_panel(img, controller)
+        elif board is not None:                        # D59 / D60: what is shown, small, top left
+            cv2.putText(img, controller.view_label(), (12, 28), FONT, 0.6, PANEL_MUTED, 2, cv2.LINE_AA)
+        notice = getattr(controller, "notice", None)
+        if notice is not None and controller.now < notice["until"]:    # D60: e.g. a file that could not be opened
+            self._notice(img, notice["text"])
         if status:
             cv2.putText(img, status, (12, 26), FONT, 0.6, (120, 120, 120), 1, cv2.LINE_AA)
         blocked = mode == DRAW and getattr(controller, "blocked", None) is not None
@@ -110,7 +125,8 @@ class CanvasRenderer:
             cv2.rectangle(img, (x0, y0), (x1 - 1, y1 - 1), (255, 255, 255), -1)
             current = ((b.kind == "tool" and controller.tool == b.name)
                        or (b.kind == "colour" and controller.colour == b.name and controller.tool == "pen")
-                       or (b.kind == "width" and controller.width == b.name))
+                       or (b.kind == "width" and controller.width == b.name)
+                       or (b.kind == "board" and getattr(controller, "board_open", False)))
             cv2.rectangle(img, (x0, y0), (x1 - 1, y1 - 1), HIGHLIGHT if current else (160, 160, 160), 4 if current else 1)
             if b.kind == "colour":
                 cv2.circle(img, (cx, cy), 18, COLOURS[b.name], -1, cv2.LINE_AA)
@@ -173,6 +189,40 @@ class CanvasRenderer:
                 break
             y += step
             cv2.putText(img, line, (left, y), FONT, scale, colour, thick, cv2.LINE_AA)
+
+    def _board_panel(self, img: np.ndarray, controller) -> None:
+        """D59: the page label and the page buttons; a button that cannot act now (first / last page) is grey."""
+        layout = controller.board_layout
+        x0, y0, x1, y1 = layout.rect
+        cv2.rectangle(img, (x0, y0), (x1, y1), (250, 250, 250), -1)
+        cv2.rectangle(img, (x0, y0), (x1, y1), (150, 150, 150), 2)
+        doc = controller.view == "doc" and controller.reference is not None
+        title = controller.reference.label() if doc else controller.board.label()
+        cv2.putText(img, title, (layout.text_left, layout.text_baseline), FONT, 0.7, PANEL_TEXT, 2, cv2.LINE_AA)
+        progress = controller.dwell_progress
+        for b in layout.buttons:
+            bx0, by0, bx1, by1 = b.rect
+            enabled = controller.board_enabled(b.name)
+            cv2.rectangle(img, (bx0, by0), (bx1 - 1, by1 - 1), (255, 255, 255), -1)
+            cv2.rectangle(img, (bx0, by0), (bx1 - 1, by1 - 1), (160, 160, 160) if enabled else (215, 215, 215), 1)
+            label = controller.board_label(b.name)
+            (tw, th), _ = cv2.getTextSize(label, FONT, 0.55, 2)
+            cv2.putText(img, label, ((bx0 + bx1 - tw) // 2, (by0 + by1 + th) // 2), FONT, 0.55,
+                        (60, 60, 60) if enabled else (190, 190, 190), 2, cv2.LINE_AA)
+            if enabled and progress is not None and progress[0] == b.name:
+                cv2.rectangle(img, (bx0, by1 - 9), (bx0 + int((bx1 - bx0) * progress[1]), by1 - 1), HIGHLIGHT, -1)
+
+    def _notice(self, img: np.ndarray, text: str) -> None:
+        """D60: a message box at the top centre (wrapped to two lines at most), framed red."""
+        lines = wrap(text, 760, 0.65, 2)[:2]
+        sizes = [cv2.getTextSize(line, FONT, 0.65, 2)[0] for line in lines]
+        w = max(sz[0] for sz in sizes) + 32
+        step = max(sz[1] for sz in sizes) + 14
+        x0, y0 = (self.size[0] - w) // 2, 60
+        cv2.rectangle(img, (x0, y0), (x0 + w, y0 + step * len(lines) + 16), (255, 255, 255), -1)
+        cv2.rectangle(img, (x0, y0), (x0 + w, y0 + step * len(lines) + 16), PANEL_ERROR, 2)
+        for k, line in enumerate(lines):
+            cv2.putText(img, line, (x0 + 16, y0 + 8 + step * (k + 1) - 4), FONT, 0.65, (30, 30, 30), 2, cv2.LINE_AA)
 
     def _hint(self, img: np.ndarray, controller) -> None:
         """D56: why nothing is drawn, at the top of the canvas (left of the AI panel when it is open)."""

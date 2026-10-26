@@ -4,6 +4,8 @@ A button is pressed by holding the cursor on it for `DWELL_S` (CLEAR: `CLEAR_DWE
 by accident); D46 replaced the pinch, which the camera cannot see from behind the user. Buttons are 56 px high
 and at most 80 px wide (about 8 x 6 cm on the 2026-10 wall), narrower when more buttons must fit.
 D51: the SELECT tool (loop selection) and, only when AI is switched on, the AI button in its own group.
+D59: the PAGES button (the board panel: pages, and documents D60) in that last group, always there; with the AI
+button the buttons are 65 px wide (the longest label, ERASER, is 61 px).
 """
 
 from __future__ import annotations
@@ -47,9 +49,10 @@ class Toolbar:
         self.size, self.height = (w, h), height
         self.top = h - height
         self.ai = ai
+        last = [("pages", "board")] + ([("ai", "ai")] if ai else [])
         names = ([(n, "tool") for n in TOOLS] + [(n, "colour") for n in COLOURS] + [(n, "width") for n in WIDTHS]
-                 + [(n, "action") for n in ACTIONS] + ([("ai", "ai")] if ai else []))
-        groups = [len(TOOLS), len(COLOURS), len(WIDTHS), len(ACTIONS)] + ([1] if ai else [])
+                 + [(n, "action") for n in ACTIONS] + last)
+        groups = [len(TOOLS), len(COLOURS), len(WIDTHS), len(ACTIONS), len(last)]
         spacing = (len(names) - len(groups)) * gap + (len(groups) - 1) * group_gap
         if button is None:                      # as wide as fits, at most 80 px
             button = min(80, (w - 2 * edge - spacing) // len(names))

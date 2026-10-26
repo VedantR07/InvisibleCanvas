@@ -8,7 +8,17 @@ D46: one gesture + toolbar tools. A pointing stroke (STROKE_START .. STROKE_END)
 A toolbar button is pressed by holding the cursor on it (`update_pointer`, every frame): 1 s, CLEAR 2 s.
 The button fires once; the cursor must leave it before it can fire again.
 
-D56: the toolbar band (and the open AI panel) is never drawn on. A pointing stroke that starts there is refused,
+D59: pages. The PAGES button opens the board panel (< PAGE, PAGE >, + PAGE, CLOSE; one panel at a time with the
+AI panel); everything acts on the current page's canvas and undo history (`canvas`, `history`), and a page change
+first finishes whatever was live on the old page.
+
+D60: documents. OPEN FILE asks the tool for the file picker (`open_requested`); an opened image or PDF
+(`set_reference`) is shown (view "doc") with its own annotation layer per page; the panel's arrows then turn its
+pages, SHOW BOARD / SHOW DOC switch the view (nothing is closed), CLOSE DOC closes it. The whiteboard pages are
+never touched by any of it, and closing a document (or opening another) keeps its annotations: by its file, given
+back when that file is opened again (`kept_annotations`; saved with the board).
+
+D56: the toolbar band (and an open panel) is never drawn on. A pointing stroke that starts there is refused,
 and a stroke that reaches it ends there, exactly as if the pen had lifted (the pen stroke is committed, an erase or
 a move becomes one undo step, a SELECT loop selects). Either way the rest of that pointing stroke draws nothing
 until the pen really lifts (STROKE_END), so a stroke is never joined across the toolbar; `blocked` says why
@@ -25,9 +35,11 @@ from __future__ import annotations
 import math
 from collections import Counter
 
+from ..canvas.board import Board
 from ..canvas.history import AddStroke, History, MoveStrokes, ReplaceStrokes
 from ..canvas.model import Canvas, Stroke
-from ..canvas.panel import AIPanel
+from ..canvas.panel import BOARD_LABELS, AIPanel, BoardPanel
+from ..canvas.reference import document_key
 from ..canvas.selection import close_loop, png_bytes, select_in_loop, selection_image
 from ..canvas.toolbar import COLOURS, WIDTHS, Toolbar
 
@@ -35,9 +47,18 @@ ERASER_RADIUS = {"thin": 12.0, "medium": 24.0, "thick": 42.0}     # px, by the s
 
 
 class DrawingController:
-    def __init__(self, canvas: Canvas, toolbar: Toolbar, history: History | None = None):
-        self.canvas, self.toolbar = canvas, toolbar
-        self.history = history or History()
+    def __init__(self, canvas: Canvas, toolbar: Toolbar, history: History | None = None, board: Board | None = None):
+        self.toolbar = toolbar
+        # D59: pages. `canvas` (and `history`) are always the current page's; the canvas given is page 1.
+        self.board = board or Board(canvas.size, canvas, history)
+        self.board_layout = BoardPanel(canvas.size)
+        self.board_open = False                        # the board panel (PAGES button) is shown
+        # D60: a reference document (image / PDF) with its own annotation layers; view "board" or "doc"
+        self.reference = None
+        self.view = "board"
+        self.open_requested = False                    # OPEN FILE pressed: the tool shows the file picker
+        self.kept_annotations: dict[str, dict] = {}    # closed documents' annotations: {key: {"path", "annotations"}}
+        self.notice: dict | None = None                # {"text", "until"}: a message on the wall (D60 errors)
         self.tool, self.colour, self.width = "pen", "black", "medium"
         self.active: Stroke | None = None              # pen stroke being drawn
         self.selected: int | None = None               # stroke being moved
@@ -66,6 +87,75 @@ class DrawingController:
         self.outcomes.append((outcome, point, self.attempt))
         self.point_log[outcome] += 1
 
+    def _layer(self):
+        """The page drawn on: the document's annotation layer of its current page while a document is shown (D60),
+        else the current whiteboard page (D59)."""
+        if self.view == "doc" and self.reference is not None:
+            return self.reference.annotation(self.board.size)
+        return self.board.page
+
+    @property
+    def canvas(self) -> Canvas:
+        """What is drawn on: the current whiteboard page (D59) or the shown document page's annotations (D60)."""
+        return self._layer().canvas
+
+    @property
+    def history(self) -> History:
+        """That page's own undo history: undo and redo never reach another page (D59, D60)."""
+        return self._layer().history
+
+    @property
+    def background(self):
+        """The shown document page fitted on white (D60), or None on the whiteboard."""
+        if self.view == "doc" and self.reference is not None:
+            return self.reference.display(self.board.size, self.toolbar.top)
+        return None
+
+    def view_label(self) -> str:
+        """What is shown, for the wall: 'Page 2 of 5', or the document page and file name."""
+        if self.view == "doc" and self.reference is not None:
+            name = self.reference.path.name
+            return f"{self.reference.label()} - {name if len(name) <= 32 else name[:29] + '...'}"
+        return self.board.label()
+
+    def show_notice(self, text: str, seconds: float = 6.0) -> None:
+        self.notice = {"text": text, "until": self.now + seconds}
+
+    def take_open_request(self) -> bool:
+        requested, self.open_requested = self.open_requested, False
+        return requested
+
+    def set_reference(self, reference) -> None:
+        """Show a newly opened document (D60); the one shown before, if any, is closed (its annotations kept). A file
+        opened again gets its annotations back."""
+        self._leave_layer()
+        if self.reference is not None:
+            self._close_reference()
+        kept = self.kept_annotations.pop(reference.key, None)
+        if kept is not None and not reference.annotations:
+            reference.annotations = {k: p for k, p in kept["annotations"].items() if k < reference.count}
+            self.log["doc:annotations_back"] += 1
+        self.reference, self.view = reference, "doc"
+        self.log["doc:open"] += 1
+
+    def keep_annotations(self, path, annotations: dict) -> None:
+        """A closed document's annotation layers, given back when that file is opened again."""
+        if any(p.canvas.strokes for p in annotations.values()):
+            self.kept_annotations[document_key(path)] = {"path": str(path), "annotations": annotations}
+
+    def _close_reference(self) -> None:
+        self.keep_annotations(self.reference.path, self.reference.annotations)
+        self.reference.close()
+        self.reference = None
+
+    def _leave_layer(self) -> None:
+        """Before the page drawn on changes: whatever is live ends where it was drawn, the selection is dropped, and
+        a pointing stroke still going on draws nothing on the new page."""
+        self._finish()
+        self.selection, self.selected = [], None
+        if self.stroke_open:
+            self.blocked = self.blocked or "panel"
+
     @property
     def eraser_radius(self) -> float:
         return ERASER_RADIUS[self.width]
@@ -89,7 +179,8 @@ class DrawingController:
             handler(e)
 
     def _on_panel(self, point) -> bool:
-        return self.panel is not None and self.panel_layout.contains(point)
+        return ((self.panel is not None and self.panel_layout.contains(point))
+                or (self.board_open and self.board_layout.contains(point)))
 
     def _ui_at(self, point) -> str | None:
         """The UI area a point lies on, where nothing is drawn: "toolbar" (the band, D46) or "panel" (D51)."""
@@ -206,7 +297,8 @@ class DrawingController:
         self.now = t
         button = None
         if cursor is not None:
-            button = (self.panel_layout.hit(cursor) if self.panel is not None else None) or self.toolbar.hit(cursor)
+            button = ((self.panel_layout.hit(cursor) if self.panel is not None else None)
+                      or (self.board_layout.hit(cursor) if self.board_open else None) or self.toolbar.hit(cursor))
         d = self.dwell
         if button is None:
             self.dwell = None
@@ -224,9 +316,16 @@ class DrawingController:
         if name.startswith("ai:"):
             self._panel_action(name[3:])
             return
+        if name.startswith("board:"):
+            self._board_action(name[6:])
+            return
         button = self.toolbar.button(name)
-        if button.kind == "ai":
+        if button.kind == "ai":                        # one panel at a time (D59)
             self.panel = None if self.panel is not None else {"state": "menu", "since": self.now}
+            self.board_open = self.board_open and self.panel is None
+        elif button.kind == "board":
+            self.board_open = not self.board_open
+            self.panel = None if self.board_open else self.panel
         elif button.kind == "tool":
             self.tool = name
         elif button.kind == "colour":
@@ -239,6 +338,48 @@ class DrawingController:
             self.redo()
         elif name == "clear":
             self.clear()
+
+    # -- pages (D59) ------------------------------------------------------------------------------------
+
+    def board_enabled(self, name: str) -> bool:
+        """Whether a board panel button can act now (the renderer greys out the others). The arrows act on what is
+        shown: whiteboard pages, or the document's pages (D60)."""
+        doc = self.view == "doc" and self.reference is not None
+        pages = self.reference if doc else self.board
+        return {"board:prev": pages.can_previous, "board:next": pages.can_next, "board:add": not doc,
+                "board:view": self.reference is not None, "board:closedoc": self.reference is not None}.get(name, True)
+
+    def board_label(self, name: str) -> str:
+        doc = self.view == "doc" and self.reference is not None
+        if name in ("board:prev", "board:next", "board:view") and doc:
+            return {"board:prev": "< DOC", "board:next": "DOC >", "board:view": "SHOW BOARD"}[name]
+        return BOARD_LABELS[name]
+
+    def _board_action(self, action: str) -> None:
+        if action == "close":
+            self.board_open = False
+            return
+        if action == "open":                           # D60: the tool shows the file picker (not the controller)
+            self.open_requested = True
+            return
+        if not self.board_enabled(f"board:{action}"):  # first / last page, or nothing open: greyed out
+            self.log["page_limit" if action in ("prev", "next") else "board_disabled"] += 1
+            return
+        doc = self.view == "doc" and self.reference is not None
+        self._leave_layer()                            # anything live ends on the page it was drawn on
+        if action in ("prev", "next"):
+            getattr(self.reference if doc else self.board, "previous" if action == "prev" else "next")()
+            self.log[f"{'doc' if doc else 'page'}:{action}"] += 1
+        elif action == "add":
+            self.board.add_page()
+            self.log["page:add"] += 1
+        elif action == "view":                         # board <-> document: neither is closed nor changed
+            self.view = "board" if doc else "doc"
+            self.log[f"view:{self.view}"] += 1
+        elif action == "closedoc":                     # its annotations are kept (given back if it is reopened)
+            self._close_reference()
+            self.view = "board"
+            self.log["doc:close"] += 1
 
     # -- actions (toolbar and keyboard) ------------------------------------------------------------------
 
