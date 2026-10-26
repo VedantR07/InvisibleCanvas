@@ -3,7 +3,8 @@ hold-to-press progress) and the cursor, whose look shows the mode and tool (brai
 committed strokes are cached and redrawn only when the canvas changes.
 
 D51: the SELECT loop while it is drawn, a halo around the selected strokes, and the AI panel (its buttons with
-the hold-to-press progress, then "thinking", the answer or an error).
+the hold-to-press progress, then "thinking", the answer or an error). D61: the panel's title says what the AI reads
+(the selection, the whole canvas, or the shown document page); ASK shows the question as it is typed.
 
 D50: with a light polygon (display.handlight) the hand is painted plain white last, so no ink, text or cursor
 falls on it, and the cursor becomes a ring around the fingertip, wider than the light's margin, so it lands on
@@ -26,7 +27,7 @@ import numpy as np
 from ..display.handlight import LightParams, paint
 from ..interaction.engine import DRAW, HOVER
 from .model import Canvas, Stroke
-from .panel import wrap
+from .panel import clip_lines, wrap
 from .toolbar import COLOURS, WIDTHS, Toolbar
 
 BACKGROUND = 255
@@ -39,6 +40,8 @@ FONT = cv2.FONT_HERSHEY_SIMPLEX
 RING_RADIUS = int(LightParams().margin_px) + 13   # D50 ring cursor: just outside the light around the fingertip
 BLOCKED = (90, 90, 90)                # D56: the "not drawing" cursor
 BLOCKED_HINT = "Not drawing: open your hand, then point to draw"
+ASK_PROMPT = "Type your question on the laptop keyboard. Enter sends it, Esc cancels."   # D61
+PAGE_LINES = 2                        # D61: lines of "what the AI read" shown for a document page
 
 
 def draw_stroke(img: np.ndarray, stroke: Stroke, colour=None, extra: int = 0) -> None:
@@ -147,8 +150,7 @@ class CanvasRenderer:
         x0, y0, x1, y1 = layout.rect
         cv2.rectangle(img, (x0, y0), (x1, y1), (250, 250, 250), -1)
         cv2.rectangle(img, (x0, y0), (x1, y1), (150, 150, 150), 2)
-        title = "AI on the selection" if controller.selection else "AI on the whole canvas"
-        cv2.putText(img, title, (x0 + 14, y0 + 32), FONT, 0.7, PANEL_TEXT, 2, cv2.LINE_AA)
+        cv2.putText(img, controller.ai_title(), (x0 + 14, y0 + 32), FONT, 0.7, PANEL_TEXT, 2, cv2.LINE_AA)   # D61
         progress = controller.dwell_progress
         for b in layout.buttons:
             bx0, by0, bx1, by1 = b.rect
@@ -166,8 +168,14 @@ class CanvasRenderer:
         width = right - left
         state = panel["state"]
         rows: list[tuple[str, float, tuple, int]] = []
+        document = panel.get("source", controller.ai_source()) == "document"
         if state == "menu":
-            rows = [(line, 0.6, PANEL_MUTED, 1) for line in wrap("Choose what the AI should do with it.", width, 0.6)]
+            text = "Choose what the AI should do with this page." if document else "Choose what the AI should do with it."
+            rows = [(line, 0.6, PANEL_MUTED, 1) for line in wrap(text, width, 0.6)]
+        elif state == "asking":                                         # D61: the question as it is typed
+            rows = [(line, 0.55, PANEL_MUTED, 1) for line in wrap(ASK_PROMPT, width, 0.55)]
+            rows += [("", 0.3, PANEL_TEXT, 1)]
+            rows += [(line, 0.62, PANEL_TEXT, 2) for line in wrap(panel["question"] + "_", width, 0.62, 2)]
         elif state == "thinking":
             seconds = max(controller.now - panel.get("since", controller.now), 0.0)
             rows = [(f"The AI is reading... {seconds:.0f} s", 0.65, PANEL_TEXT, 2)]
@@ -175,11 +183,16 @@ class CanvasRenderer:
             rows = [(line, 0.6, PANEL_ERROR, 2) for line in wrap(panel.get("message", "Error."), width, 0.6, 2)]
         else:
             answer = panel["answer"]
-            rows = [("READ:", 0.55, PANEL_TEXT, 2)]                  # what the AI read, as large as the answer
-            rows += [(line, 0.62, PANEL_TEXT, 1) for line in wrap(answer.transcription or "-", width, 0.62)]
+            rows = [("PAGE:" if document else "READ:", 0.55, PANEL_TEXT, 2)]   # what the AI read, as large as the answer
+            read = wrap(answer.transcription or "-", width, 0.62)
+            if document:                       # D61: the local model copied the page out in 5 of 9 answers
+                read = clip_lines(read, PAGE_LINES, width, 0.62)   # (2026-10-27): the answer stays in view
+            rows += [(line, 0.62, PANEL_TEXT, 1) for line in read]
             header = panel["action"].upper() + ":"
             if getattr(answer, "readable", None) and answer.topic:              # D54: EXPLORE names its topic
                 header += " " + answer.topic.upper()
+            if panel.get("question"):                                           # D61: ASK shows its question
+                header += " " + panel["question"]
             rows += [("", 0.3, PANEL_TEXT, 1)] + [(line, 0.55, PANEL_TEXT, 2) for line in wrap(header, width, 0.55, 2)]
             rows += [(line, 0.62, PANEL_TEXT, 1) for line in wrap(answer.result, width, 0.62)]
         for k, (line, scale, colour, thick) in enumerate(rows):

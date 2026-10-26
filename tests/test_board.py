@@ -101,8 +101,8 @@ def test_selection_and_the_ai_read_the_current_page():
     ctl.press("board:prev")
     ctl.press("ai")
     ctl.press("ai:summarize")
-    (action, png), = ctl.take_ai_jobs()                                    # page 1's writing
-    assert action == "summarize" and png[:4] == b"\x89PNG"
+    (action, png, context), = ctl.take_ai_jobs()                           # page 1's writing
+    assert action == "summarize" and png[:4] == b"\x89PNG" and context == {"source": "canvas"}
 
 
 def test_the_board_panel_buttons_and_their_limits():

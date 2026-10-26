@@ -18,7 +18,7 @@ import urllib.error
 import urllib.request
 
 from ..config import AIConfig
-from .client import ACTIONS, SYSTEM, AIAnswer, answer_from_json, no_topic, schema_for
+from .client import AIAnswer, answer_from_json, no_topic, schema_for, system_for, task_for
 
 KEEP_ALIVE = "30m"
 # A hard cap on the generated tokens: a transcription plus an answer of <= ~80 words needs ~300. Without it, the
@@ -30,10 +30,9 @@ LOCAL_MAX_TOKENS = 1024
 EXPLORE_MAX_TOKENS = 400
 
 
-def build_local_request(cfg: AIConfig, action: str, png: bytes) -> dict:
-    """The JSON body of Ollama's /api/chat for one action on one image. Pure."""
-    if action not in ACTIONS:
-        raise ValueError(f"unknown action {action!r}")
+def build_local_request(cfg: AIConfig, action: str, png: bytes, context: dict | None = None) -> dict:
+    """The JSON body of Ollama's /api/chat for one action on one image (D61: on writing or a document page). Pure."""
+    task = task_for(action, context)
     return {
         "model": cfg.local_model,
         "stream": False,
@@ -42,8 +41,8 @@ def build_local_request(cfg: AIConfig, action: str, png: bytes) -> dict:
         "options": {"temperature": 0,
                     "num_predict": EXPLORE_MAX_TOKENS if action == "explore" else LOCAL_MAX_TOKENS},
         "messages": [
-            {"role": "system", "content": SYSTEM},
-            {"role": "user", "content": f"Task: {ACTIONS[action]}",
+            {"role": "system", "content": system_for(context)},
+            {"role": "user", "content": f"Task: {task}",
              "images": [base64.standard_b64encode(png).decode("ascii")]},
         ],
     }
@@ -68,7 +67,7 @@ def parse_local_response(action: str, data: dict) -> AIAnswer:
 
 
 class LocalAssistant:
-    """`ask(action, png)` -> AIAnswer through Ollama. Blocking: run it in the AI worker thread."""
+    """`ask(action, png, context)` -> AIAnswer through Ollama. Blocking: run it in the AI worker thread."""
 
     def __init__(self, cfg: AIConfig, opener=urllib.request.urlopen):
         self.cfg = cfg
@@ -90,10 +89,10 @@ class LocalAssistant:
         except Exception:
             return False
 
-    def ask(self, action: str, png: bytes) -> AIAnswer:
+    def ask(self, action: str, png: bytes, context: dict | None = None) -> AIAnswer:
         t0 = time.perf_counter()
         try:
-            data = self._post("/api/chat", build_local_request(self.cfg, action, png), self.cfg.timeout_s)
+            data = self._post("/api/chat", build_local_request(self.cfg, action, png, context), self.cfg.timeout_s)
             answer = parse_local_response(action, data)
         except Exception as e:                           # every failure ends in the panel, never in the loop
             answer = AIAnswer(action=action, ok=False, error=local_error_message(e, self.cfg))

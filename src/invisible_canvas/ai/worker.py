@@ -2,7 +2,8 @@
 
 One request at a time: `submit` returns False while one is running (the panel shows it is busy). The frame loop
 calls `poll()` once per frame and gets the finished answers. Each request's image and answer are saved under
-`save_dir` (data/ai/<stamp>-<n>-<action>.png / .json).
+`save_dir` (data/ai/<stamp>-<n>-<action>.png / .json). A request's context (D61: writing or a document page, and
+ASK's question) goes to the assistant and is kept on its answer.
 """
 
 from __future__ import annotations
@@ -32,12 +33,12 @@ class AIWorker:
     def busy(self) -> bool:
         return self._busy.is_set()
 
-    def submit(self, action: str, png: bytes) -> bool:
+    def submit(self, action: str, png: bytes, context: dict | None = None) -> bool:
         if self._busy.is_set():
             return False
         self._busy.set()
         self._count += 1
-        self._jobs.put((self._count, action, png))
+        self._jobs.put((self._count, action, png, dict(context or {})))
         return True
 
     def poll(self) -> list:
@@ -55,8 +56,9 @@ class AIWorker:
             job = self._jobs.get()
             if job is None:
                 return
-            n, action, png = job
-            answer = self.assistant.ask(action, png)
+            n, action, png, context = job
+            answer = self.assistant.ask(action, png, context)
+            answer.context = context
             self._save(n, action, png, answer)
             self.answers.append(answer)
             self._busy.clear()

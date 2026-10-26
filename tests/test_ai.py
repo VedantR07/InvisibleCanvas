@@ -108,7 +108,7 @@ def test_the_worker_runs_one_request_at_a_time_in_the_background(tmp_path):
     release = threading.Event()
 
     class SlowAssistant:
-        def ask(self, action, png):
+        def ask(self, action, png, context=None):
             release.wait(5)
             return AIAnswer(action, ok=True, transcription="x", result="y", latency_s=0.1)
 
@@ -260,8 +260,9 @@ def test_select_then_ask_then_answer():
     ctl.press("ai")
     assert ctl.panel["state"] == "menu"
     ctl.press("ai:summarize")
-    (action, png), = ctl.take_ai_jobs()
+    (action, png, context), = ctl.take_ai_jobs()
     assert action == "summarize" and png[:4] == b"\x89PNG" and ctl.panel["state"] == "thinking"
+    assert context == {"source": "selection"}                               # D61: what the AI reads
     ctl.press("ai:explain")                                                  # one request at a time
     assert ctl.take_ai_jobs() == [] and ctl.log["ai_refused_busy"] == 1
     ctl.ai_answer(AIAnswer("summarize", ok=True, transcription="hello", result="A greeting."))
@@ -428,7 +429,7 @@ def test_the_worker_warms_the_local_model_up_first():
             self.order.append("warm")
             return True
 
-        def ask(self, action, png):
+        def ask(self, action, png, context=None):
             self.order.append(action)
             return AIAnswer(action, ok=True)
 
@@ -509,7 +510,7 @@ def test_explore_is_pressed_by_dwell_and_its_answer_shows_the_topic_or_the_note(
     target = next(b for b in ctl.panel_layout.buttons if b.name == "ai:explore").centre
     ctl.update_pointer(0.0, target)
     ctl.update_pointer(1.05, target)
-    (action, png), = ctl.take_ai_jobs()
+    (action, png, context), = ctl.take_ai_jobs()
     assert action == "explore" and png[:4] == b"\x89PNG" and ctl.panel["state"] == "thinking"
     texts, real = [], cv2.putText
     monkeypatch.setattr(cv2, "putText", lambda img, text, *a, **k: (texts.append(text), real(img, text, *a, **k))[1])

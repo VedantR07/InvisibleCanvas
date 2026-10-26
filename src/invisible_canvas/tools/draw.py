@@ -10,6 +10,10 @@ forces it on): the AI reads the SELECT-ed writing (D51, §9.11); by default
 a free local model through Ollama (D52), or Claude with `[ai] backend = "claude"`. Requests
 run in a background worker; the report records each answer and the frame rate while a request was running (S3).
 
+D61: with a document shown, the AI reads the shown page (the picture, or the PDF page rendered for it). ASK takes a
+question typed on the laptop keyboard (shown live in the panel; Enter sends, Esc cancels; while it is typed the keys
+below type text instead).
+
 Keyboard (laptop): o open a file, z undo, y redo, s save, c twice clear, ESC quit. Before tracking, the setup check runs
 (a moved setup is recalibrated automatically and validated first, D39). On exit the current page is saved to
 data/canvas/ (strokes JSON + PNG), every page to a board file (D59: board-*.json + a PNG per page), and a report
@@ -191,11 +195,14 @@ def open_document(controller: DrawingController, engine: InteractionEngine, t: f
 
 
 def handle_keys(keys, controller: DrawingController, now: float, clear_armed: dict, saved_paths: list, save) -> bool:
-    """The laptop keys of one frame (-1: no key); True means quit (ESC)."""
+    """The laptop keys of one frame (pollKey and waitKey: -1 when none); True means quit (ESC). While an ASK
+    question is typed (D61) every key is text for it, Esc included (it cancels the question, not the session)."""
     for key in keys:
-        if not 0 < key < 256:                          # no key, or an arrow / F-key
+        if not 0 < key < 256:                          # no key, or an arrow / F-key (only typed text is used)
             continue
-        if key == 27:
+        if controller.typing:
+            controller.type_key(key)
+        elif key == 27:
             return True
         elif key in (ord("o"), ord("O")):              # D60: open a document, as the OPEN FILE button
             controller.open_requested = True
@@ -264,7 +271,8 @@ def run(config: Config, args) -> int:
         if args.trace:
             save_dir.mkdir(parents=True, exist_ok=True)
             trace = open(save_dir / "trace.jsonl", "w", encoding="utf-8", buffering=1 << 20)   # ~1 write per s
-        print(f"drawing: {HELP}. Keys: o open a file, z undo, y redo, s save, c twice clear, ESC quit.")
+        print(f"drawing: {HELP}. Keys: o open a file, z undo, y redo, s save, c twice clear, ESC quit "
+              "(while an ASK question is typed, keys type it: Enter sends, Esc cancels).")
         s.camera.reset_stats()
         start = time.perf_counter()
         seq, last_saved, clear_armed, last_t = current_seq(s), -1e9, {"until": 0.0}, None
@@ -296,8 +304,8 @@ def run(config: Config, args) -> int:
                 seq, last_t0 = current_seq(s), None
             tc = time.perf_counter()
             if worker is not None:                         # D51: jobs to the background worker, answers back
-                for action, png in controller.take_ai_jobs():
-                    if not worker.submit(action, png):
+                for action, png, context in controller.take_ai_jobs():
+                    if not worker.submit(action, png, context):
                         controller.ai_answer(AIAnswer(action, ok=False, error="Still busy with the previous request."))
                 for answer in worker.poll():
                     controller.ai_answer(answer)
@@ -308,7 +316,7 @@ def run(config: Config, args) -> int:
                 img = with_message(img, warning)
             tr = time.perf_counter()
             s.projector.show(img)
-            cv2.pollKey()
+            keys = [cv2.pollKey()]                         # D61: kept (a question is typed key by key)
             t2 = time.perf_counter()
             shapes[shape.shape if shape else None] += 1
             records.append({"t": frame.timestamp - start, "mode": step.mode, "hand": obs is not None,
@@ -366,7 +374,9 @@ def run(config: Config, args) -> int:
                     f"{controller.board.label()} | strokes {len(controller.canvas.strokes)} | selected {len(controller.selection)}",
                     "AI: off" if worker is None else
                     f"AI: {'working' if worker.busy else 'ready'} ({len(worker.answers)} answers)",
-                    "", HELP, "keys: o open a file  z undo  y redo  s save  c c clear  ESC quit"])
+                    f"ASK - type the question, Enter sends, Esc cancels: {controller.panel['question']}_"
+                    if controller.typing else "",
+                    HELP, "keys: o open a file  z undo  y redo  s save  c c clear  ESC quit"])
             moved = watch.update(frame.timestamp, frame.image) if time.perf_counter() >= watch_from else None
             if moved is not None:                          # D58: the projector or the camera moved
                 controller.handle(engine.release(frame.timestamp))     # a pen lift: nothing bridged across the pause
@@ -398,12 +408,12 @@ def run(config: Config, args) -> int:
                         watch_from = float("inf")              # something keeps triggering it: stop watching
                     seq, last_t0 = current_seq(s), None
                 setup_events.append(event)
-            key = cv2.waitKey(1)
+            keys.append(cv2.waitKey(1))
             now = time.perf_counter()
             diag.stages["post"].add((now - t2) * 1000)
             if args.seconds and now - start >= args.seconds:
                 break
-            if handle_keys([key], controller, now, clear_armed, saved_paths, save_all):
+            if handle_keys(keys, controller, now, clear_armed, saved_paths, save_all):
                 break
         if trace is not None:
             trace.close()

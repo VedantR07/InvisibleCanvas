@@ -1,9 +1,10 @@
 """The projected AI panel (brain.md D51, §9.11). Pure layout and text fitting.
 
-The panel sits at the right of the canvas above the toolbar: seven buttons in three columns (six actions, then
-CLOSE alone at the bottom right; D54 added EXPLORE without shrinking the answer area), pressed by holding the
-cursor on them like the toolbar, then the answer: what the AI read and the result, wrapped to the panel. OpenCV
-draws ASCII only, so answers are reduced to ASCII first (typographic quotes and dashes mapped).
+The panel sits at the right of the canvas above the toolbar: eight buttons in three columns (seven actions, CLOSE
+at the bottom right; D54 added EXPLORE and D61 ASK without shrinking the answer area: CLOSE takes the last row's
+free cell), pressed by holding the cursor on them like the toolbar, then the answer: what the AI read and the
+result, wrapped to the panel. OpenCV draws ASCII only, so answers are reduced to ASCII first (typographic quotes and
+dashes mapped).
 """
 
 from __future__ import annotations
@@ -14,7 +15,8 @@ import cv2
 
 from .toolbar import Button
 
-PANEL_ACTIONS = ("summarize", "explain", "simplify", "examples", "questions", "explore")
+PANEL_ACTIONS = ("summarize", "explain", "simplify", "examples", "questions", "explore", "ask")
+QUESTION_MAX = 160     # characters of an ASK question typed on the laptop (D61)
 COLUMNS = 3
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 _ASCII = {"‘": "'", "’": "'", "“": '"', "”": '"', "–": "-", "—": "-", "…": "...",
@@ -54,6 +56,16 @@ def wrap(text: str, width_px: int, scale: float, thickness: int = 1) -> list[str
                 line = word
         lines.append(line)
     return lines
+
+
+def clip_lines(lines: list[str], n: int, width_px: int, scale: float, thickness: int = 1) -> list[str]:
+    """At most `n` of the wrapped `lines`; when some are left out, the last one kept ends with ' ...' (and still fits)."""
+    if len(lines) <= n:
+        return lines
+    last = lines[n - 1]
+    while last and cv2.getTextSize(last + " ...", FONT, scale, thickness)[0][0] > width_px:
+        last = last[:last.rfind(" ")] if " " in last else last[:-1]
+    return lines[:n - 1] + [last + " ..."]
 
 
 BOARD_LABELS = {"board:prev": "< PAGE", "board:next": "PAGE >", "board:add": "+ PAGE", "board:close": "CLOSE",
@@ -105,7 +117,7 @@ class AIPanel:
 
         self.buttons = [Button(f"ai:{a}", "panel", cell(k // COLUMNS, k % COLUMNS))
                         for k, a in enumerate(PANEL_ACTIONS)]
-        rows = -(-len(PANEL_ACTIONS) // COLUMNS)
+        rows = len(PANEL_ACTIONS) // COLUMNS            # CLOSE: in the last row if it has room, else below it
         self.buttons.append(Button("ai:close", "panel", cell(rows, COLUMNS - 1)))
         self.text_top = self.buttons[-1].rect[3] + 18
         self.text_left, self.text_right = x0 + 14, x1 - 14

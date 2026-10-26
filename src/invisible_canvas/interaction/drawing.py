@@ -25,9 +25,14 @@ until the pen really lifts (STROKE_END), so a stroke is never joined across the 
 (the renderer shows it).
 
 AI panel (D51, only with an AI toolbar): the AI button opens a panel whose buttons (summarize, explain, simplify,
-examples, questions, explore (D54), close) are pressed the same way. An action renders the selection (the whole canvas if
-nothing is selected) to a PNG and queues it in `ai_jobs`; the drawing tool hands jobs to the background worker
-(`take_ai_jobs`) and returns answers with `ai_answer`. The controller never talks to the network.
+examples, questions, explore (D54), ask (D61), close) are pressed the same way. An action renders the selection (the
+whole canvas if nothing is selected) to a PNG and queues it in `ai_jobs` with its context; the drawing tool hands
+jobs to the background worker (`take_ai_jobs`) and returns answers with `ai_answer`. The controller never talks to
+the network.
+
+D61: while a document is shown, the AI reads the shown page itself (the picture, or the PDF page rendered for the AI;
+not the annotations). ASK waits for a question typed on the laptop (`typing`, `type_key`: shown live in the panel,
+Enter sends, Esc cancels); the pointing gestures and the panel buttons work as before meanwhile.
 """
 
 from __future__ import annotations
@@ -38,8 +43,8 @@ from collections import Counter
 from ..canvas.board import Board
 from ..canvas.history import AddStroke, History, MoveStrokes, ReplaceStrokes
 from ..canvas.model import Canvas, Stroke
-from ..canvas.panel import BOARD_LABELS, AIPanel, BoardPanel
-from ..canvas.reference import document_key
+from ..canvas.panel import BOARD_LABELS, QUESTION_MAX, AIPanel, BoardPanel
+from ..canvas.reference import ReferenceError, document_key
 from ..canvas.selection import close_loop, png_bytes, select_in_loop, selection_image
 from ..canvas.toolbar import COLOURS, WIDTHS, Toolbar
 
@@ -70,8 +75,9 @@ class DrawingController:
         self.selection_log: list[dict] = []            # every loop: when, its points' bounds, what it selected (S1)
         self.loop: list | None = None                  # the loop being drawn
         self.panel_layout = AIPanel(canvas.size, toolbar.top) if getattr(toolbar, "ai", False) else None
-        self.panel: dict | None = None                 # {"state": menu|thinking|answer|error, "since", "action", "answer"}
-        self.ai_jobs: list[tuple[str, bytes]] = []
+        # {"state": menu|asking|thinking|answer|error, "since", "action", "answer", "source", "title", "question"}
+        self.panel: dict | None = None
+        self.ai_jobs: list[tuple[str, bytes, dict]] = []    # (action, PNG, context), D61
         self.now = 0.0
         self.blocked: str | None = None                # D56: "toolbar" / "panel" / "no-point": no ink until the lift
         # Diagnostics only (brain.md §9.12, Stage 3 item 1): what each event's point became, noted inside the
@@ -400,6 +406,43 @@ class DrawingController:
 
     # -- AI panel (D51) ----------------------------------------------------------------------------------
 
+    def ai_source(self) -> str:
+        """What an AI action reads now: "document" (the shown page, D61), "selection" or "canvas"."""
+        if self.view == "doc" and self.reference is not None:
+            return "document"
+        return "selection" if any(i in self.canvas.strokes for i in self.selection) else "canvas"
+
+    def ai_title(self) -> str:
+        """The panel's title: what the AI reads, or read for the request shown (the page may have changed since)."""
+        panel = self.panel or {}
+        if panel.get("title") and panel.get("state") in ("thinking", "answer", "error"):
+            return panel["title"]
+        source = self.ai_source()
+        if source == "document":
+            return "AI on the image" if self.reference.kind == "image" else f"AI on {self.reference.label()}"
+        return "AI on the selection" if source == "selection" else "AI on the whole canvas"
+
+    @property
+    def typing(self) -> bool:
+        """ASK is waiting for its question from the laptop keyboard (D61)."""
+        return self.panel is not None and self.panel["state"] == "asking"
+
+    def type_key(self, key: int) -> None:
+        """A key typed while `typing`: Enter sends the question, Esc cancels it, Backspace deletes a character."""
+        if not self.typing:
+            return
+        question = self.panel["question"]
+        if key in (13, 10):
+            if question.strip():
+                self._ask_ai("ask", question.strip())
+        elif key == 27:
+            self.panel = {"state": "menu", "since": self.now}
+            self.log["ask_cancelled"] += 1
+        elif key == 8:
+            self.panel["question"] = question[:-1]
+        elif 32 <= key < 127 and len(question) < QUESTION_MAX:
+            self.panel["question"] = question + chr(key)
+
     def _panel_action(self, action: str) -> None:
         if self.panel is None:
             return
@@ -409,23 +452,50 @@ class DrawingController:
         if self.panel["state"] == "thinking":
             self.log["ai_refused_busy"] += 1
             return
-        image = selection_image(self.canvas, [i for i in self.selection if i in self.canvas.strokes])
-        if image is None:
-            self.panel = {"state": "error", "since": self.now, "action": action,
-                          "message": "Nothing written to read yet."}
+        if action == "ask":                            # D61: the question comes from the laptop keyboard
+            if self.ai_source() != "document" and not self.canvas.strokes:
+                self.panel = {"state": "error", "since": self.now, "action": action,
+                              "message": "Nothing written to read yet."}
+            elif not self.typing:
+                self.panel = {"state": "asking", "since": self.now, "action": "ask", "question": ""}
             return
-        self.ai_jobs.append((action, png_bytes(image)))
-        self.panel = {"state": "thinking", "since": self.now, "action": action}
-        self.log["ai_requests"] += 1
+        self._ask_ai(action)
 
-    def take_ai_jobs(self) -> list[tuple[str, bytes]]:
+    def _ask_ai(self, action: str, question: str = "") -> None:
+        source, title = self.ai_source(), self.ai_title()
+        context = {"source": source}
+        if source == "document":                       # D61: the page itself, as the model's image
+            try:
+                png = self.reference.ai_png()
+            except ReferenceError as e:
+                self.panel = {"state": "error", "since": self.now, "action": action, "message": str(e)}
+                return
+            context["page"] = self.view_label()
+        else:
+            image = selection_image(self.canvas, [i for i in self.selection if i in self.canvas.strokes])
+            if image is None:
+                self.panel = {"state": "error", "since": self.now, "action": action,
+                              "message": "Nothing written to read yet."}
+                return
+            png = png_bytes(image)
+        if question:
+            context["question"] = question
+        self.ai_jobs.append((action, png, context))
+        self.panel = {"state": "thinking", "since": self.now, "action": action, "source": source, "title": title,
+                      "question": question}
+        self.log["ai_requests"] += 1
+        self.log[f"ai_on_{source}"] += 1
+
+    def take_ai_jobs(self) -> list[tuple[str, bytes, dict]]:
         jobs, self.ai_jobs = self.ai_jobs, []
         return jobs
 
     def ai_answer(self, answer) -> None:
-        """An answer from the AI worker (an AIAnswer). Shown if the panel is still open."""
+        """An answer from the AI worker (an AIAnswer). Shown if the panel is still open and not taking a question."""
         self.log["ai_answers" if answer.ok else "ai_errors"] += 1
-        if self.panel is None:
+        if self.panel is None or self.typing:
             return
+        asked = self.panel
         self.panel = {"state": "answer" if answer.ok else "error", "since": self.now, "action": answer.action,
-                      "answer": answer, "message": "" if answer.ok else answer.error}
+                      "answer": answer, "message": "" if answer.ok else answer.error,
+                      "source": asked.get("source"), "title": asked.get("title"), "question": asked.get("question", "")}

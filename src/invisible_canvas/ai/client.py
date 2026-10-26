@@ -11,6 +11,11 @@ EXPLORE (D54) goes beyond the writing (topic, background, key facts, a connected
 request; its answer format adds `readable` and `topic`, and an answer without a topic read with confidence is
 replaced by a fixed message (`UNREADABLE`), so no guessed topic reaches the panel. The other actions are unchanged.
 
+D61: a request has a context. On an opened document (`{"source": "document"}`) the image is the shown page itself
+(a picture, or a PDF page rendered by PDFium) and the system prompt and tasks speak of a page (`SYSTEM_DOCUMENT`,
+`DOCUMENT_ACTIONS`) instead of finger-writing; the answer format is the same. ASK carries a question typed on the
+laptop (`{"question": ...}`) and answers it about the writing or the page.
+
 Credentials come from the environment (`ANTHROPIC_API_KEY`); without them the SDK raises TypeError at request
 time ("Could not resolve authentication method"), mapped to a "no API key" message.
 """
@@ -42,6 +47,29 @@ ACTIONS = {
                 "with confidence, names no clear topic, or names something you do not know as a real subject "
                 "(for example a misspelled word or an unknown name), set readable to false and leave the topic "
                 "empty: never guess a topic or invent facts."),
+    # D61: a question typed on the laptop keyboard; {question} is filled in by task_for
+    "ask": ("Answer the question below about what is written, in at most about 80 words. Use what is written and "
+            "well-established facts only; if you cannot answer it, say so. Question: {question}"),
+}
+
+# D61: the same actions on a page of an opened document (an image, or a rendered PDF page)
+DOCUMENT_ACTIONS = {
+    "summarize": "Summarize what this page shows in one to three short sentences.",
+    "explain": "Explain what this page shows so that a student can understand it. Keep it short.",
+    "simplify": "Explain the content of this page in simpler words, keeping its meaning.",
+    "examples": "Give two or three short, concrete examples of what this page is about.",
+    "questions": "Write three short questions that check understanding of this page.",
+    "explore": ("Find the topic of this page and help the reader explore it beyond what the page says: 3 or 4 short "
+                "lines, each starting with '- ' and at most 12 words, giving background, key facts and one "
+                "connected concept worth exploring next. Do not repeat or summarize the page. Only state "
+                "well-established facts. Never state anything about a person named on the page (for example where "
+                "the name comes from or whether it is male or female): explore the general topic instead. Put the "
+                "topic itself (1 to 4 words) in the topic field. If the page cannot be read with confidence or "
+                "shows no clear topic, set readable to false and leave the topic empty: never guess a topic or "
+                "invent facts."),
+    "ask": ("Answer the question below about this page, in at most about 80 words. Use what the page shows and "
+            "well-established facts only; say whether the answer is on the page, and if you cannot answer it, say "
+            "so. Question: {question}"),
 }
 
 SYSTEM = (
@@ -50,6 +78,17 @@ SYSTEM = (
     "disconnected. First transcribe exactly what is written (keep the line breaks; write [?] for anything you "
     "cannot read). Then do the task on that content. The result is shown on the wall in a small panel: plain "
     "text, no markdown, at most about 80 words. If nothing readable is written, say so in the result."
+)
+
+# D61: an opened document's page. The transcription is only a short line (the panel shows it above the answer, and a
+# whole page copied out would use up the answer's tokens).
+SYSTEM_DOCUMENT = (
+    "You read a page shown on a projected interactive whiteboard: a picture or a page of a PDF document chosen by "
+    "the teacher (printed text, diagrams, tables or photos). In the transcription, do not copy the page: write its "
+    "title or first line, or for a picture one short line saying what it shows (at most 15 words; write [?] for "
+    "anything you cannot read). Then do the task on the page's content. The result is shown on the wall in a "
+    "small panel: plain text, no markdown, at most about 80 words. If the page shows nothing you can read or "
+    "recognise, say so in the result."
 )
 
 SCHEMA = {
@@ -86,6 +125,27 @@ def schema_for(action: str) -> dict:
     return EXPLORE_SCHEMA if action == "explore" else SCHEMA
 
 
+def is_document(context: dict | None) -> bool:
+    return (context or {}).get("source") == "document"
+
+
+def system_for(context: dict | None) -> str:
+    return SYSTEM_DOCUMENT if is_document(context) else SYSTEM
+
+
+def task_for(action: str, context: dict | None = None) -> str:
+    """The task of one request (D61): the action on writing or on a document page; ASK with its typed question."""
+    if action not in ACTIONS:
+        raise ValueError(f"unknown action {action!r}")
+    task = (DOCUMENT_ACTIONS if is_document(context) else ACTIONS)[action]
+    if action != "ask":
+        return task
+    question = " ".join(str((context or {}).get("question", "")).split())
+    if not question:
+        raise ValueError("ASK needs a question")
+    return task.format(question=question)
+
+
 def legible(text: str) -> bool:
     """At least two letters or digits outside the [?] marks the model writes for what it cannot read."""
     return sum(ch.isalnum() for ch in text.replace("[?]", "")) >= 2
@@ -111,6 +171,7 @@ class AIAnswer:
     request_id: str = ""
     topic: str = ""                       # EXPLORE only (D54)
     readable: bool | None = None          # EXPLORE only: False = no topic read with confidence; None = not asked
+    context: dict = field(default_factory=dict)   # D61: what was asked about (source, page, question); set by the worker
 
     def to_dict(self) -> dict:
         return dict(self.__dict__)
@@ -139,21 +200,20 @@ def no_topic(transcription: str = "", **base) -> AIAnswer:
     return AIAnswer(ok=True, transcription=transcription, result=UNREADABLE, readable=False, **base)
 
 
-def build_request(cfg: AIConfig, action: str, png: bytes) -> dict:
+def build_request(cfg: AIConfig, action: str, png: bytes, context: dict | None = None) -> dict:
     """The keyword arguments of `client.beta.messages.create` for one action on one image. Pure."""
-    if action not in ACTIONS:
-        raise ValueError(f"unknown action {action!r}")
+    task = task_for(action, context)
     request = {
         "model": cfg.model,
         "max_tokens": cfg.max_tokens,
-        "system": SYSTEM,
+        "system": system_for(context),
         "output_config": {"effort": cfg.effort, "format": {"type": "json_schema", "schema": schema_for(action)}},
         "messages": [{
             "role": "user",
             "content": [
                 {"type": "image", "source": {"type": "base64", "media_type": "image/png",
                                              "data": base64.standard_b64encode(png).decode("ascii")}},
-                {"type": "text", "text": f"Task: {ACTIONS[action]}"},
+                {"type": "text", "text": f"Task: {task}"},
             ],
         }],
     }
@@ -186,7 +246,7 @@ def parse_response(action: str, response) -> AIAnswer:
 
 
 class ClaudeAssistant:
-    """`ask(action, png)` -> AIAnswer. Blocking: run it in the AI worker thread, never in the frame loop."""
+    """`ask(action, png, context)` -> AIAnswer. Blocking: run it in the AI worker thread, never in the frame loop."""
 
     def __init__(self, cfg: AIConfig, client=None):
         self.cfg = cfg
@@ -195,10 +255,10 @@ class ClaudeAssistant:
             client = anthropic.Anthropic(timeout=cfg.timeout_s, max_retries=1)
         self.client = client
 
-    def ask(self, action: str, png: bytes) -> AIAnswer:
+    def ask(self, action: str, png: bytes, context: dict | None = None) -> AIAnswer:
         t0 = time.perf_counter()
         try:
-            response = self.client.beta.messages.create(**build_request(self.cfg, action, png))
+            response = self.client.beta.messages.create(**build_request(self.cfg, action, png, context))
             answer = parse_response(action, response)
         except Exception as e:                          # every failure ends in the panel, never in the loop
             answer = AIAnswer(action=action, ok=False, error=error_message(e, self.cfg))

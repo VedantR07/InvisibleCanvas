@@ -17,6 +17,7 @@ from synthetic_camera import CAMERA, FakeSession, SyntheticScene
 from synthetic_hand import CURLED, EXTENDED, hand, to_image
 from test_auto import auto_calibration
 
+from invisible_canvas.ai.client import AIAnswer
 from invisible_canvas.calibration.store import save_calibration
 from invisible_canvas.config import DEFAULT_CONFIG_PATH, config_from_dict
 from invisible_canvas.interaction.engine import EngineParams
@@ -42,10 +43,11 @@ def observation(shape, tip_camera):
     return HandObservation((float(lm[8, 0]), float(lm[8, 1])), lm, "Right", 0.9, world=world)
 
 
-def run_tool(tool, tmp_path, monkeypatch, argv, schedule, ai_enabled=False):
+def run_tool(tool, tmp_path, monkeypatch, argv, schedule, ai_enabled=False, keys=None):
     """schedule(seconds since the first tracked frame, mapper) -> (shape, tip in projector px) or None.
     ai_enabled: `[ai] enabled` for the run (default False: no test reaches a real Ollama unless it asks with
-    `--ai` and a fake assistant); None keeps the shipped config's value (D57: on)."""
+    `--ai` and a fake assistant); None keeps the shipped config's value (D57: on).
+    keys(seconds) -> a key code or -1: what cv2.pollKey and cv2.waitKey return (default: no key)."""
     with open(DEFAULT_CONFIG_PATH, "rb") as f:
         data = copy.deepcopy(tomllib.load(f))
     if ai_enabled is not None:
@@ -108,8 +110,9 @@ def run_tool(tool, tmp_path, monkeypatch, argv, schedule, ai_enabled=False):
     monkeypatch.setattr(tool, "open_session", fake_session)
     monkeypatch.setattr(tool, "HandTracker", FakeTracker)
     monkeypatch.setattr(tracking_session, "CameraMeasure", lambda s, title, **k: scene)
-    monkeypatch.setattr(cv2, "waitKey", lambda *a: -1)
-    monkeypatch.setattr(cv2, "pollKey", lambda *a: -1)
+    key = (lambda *a: -1) if keys is None else (lambda *a: keys(time.perf_counter() - state["t0"]) if state else -1)
+    monkeypatch.setattr(cv2, "waitKey", key)
+    monkeypatch.setattr(cv2, "pollKey", key)
     parser = argparse.ArgumentParser()
     tool.add_parser(parser.add_subparsers())
     code = tool.run(config, parser.parse_args(argv))
@@ -400,7 +403,7 @@ def test_draw_with_ai_asks_through_the_panel_and_reports_the_answer(tmp_path, mo
         def __init__(self, cfg, client=None):
             pass
 
-        def ask(self, action, png):
+        def ask(self, action, png, context=None):
             asked.append((action, png))
             time.sleep(0.3)                                       # the frame loop keeps running meanwhile
             return AIAnswer(action, ok=True, transcription="hi", result="A greeting.", latency_s=0.3)
@@ -478,11 +481,11 @@ def test_pages_by_dwell_are_saved_and_resumed(tmp_path, monkeypatch):
 
 # -- D60: documents --------------------------------------------------------------------------------------------------
 
-def open_file_schedule(after_open):
-    """PAGES, then OPEN FILE by dwell; then `after_open(s)` from 3.0 s."""
+def open_file_schedule(after_open, ai=False):
+    """PAGES, then OPEN FILE by dwell; then `after_open(s)` from 3.0 s (`ai`: the toolbar has the AI button)."""
     from invisible_canvas.canvas.panel import BoardPanel
     from invisible_canvas.canvas.toolbar import Toolbar
-    pages = Toolbar((1280, 720)).button("pages").centre
+    pages = Toolbar((1280, 720), ai=ai).button("pages").centre
     open_ = next(b for b in BoardPanel((1280, 720)).buttons if b.name == "board:open").centre
 
     def schedule(s, mapper):
@@ -536,6 +539,101 @@ def test_a_cancelled_open_dialog_changes_nothing(tmp_path, monkeypatch):
                                    open_file_schedule(lambda s: (OTHER, (500.0, 500.0))))
     report = json.loads(sorted(config.reports_dir.glob("draw-*.json"))[-1].read_text())
     assert code == 0 and report["actions"]["open_cancelled"] == 1 and report["reference"] is None
+
+
+# -- D61: the AI on documents, and ASK -------------------------------------------------------------------------------
+
+class RecordingAssistant:
+    """A fake AI backend that records what it was asked (no network)."""
+    asked = []
+
+    def __init__(self, cfg, client=None):
+        pass
+
+    def ask(self, action, png, context=None):
+        RecordingAssistant.asked.append((action, png, context))
+        time.sleep(0.2)
+        return AIAnswer(action, ok=True, transcription="Red page", result="It is red.", latency_s=0.2)
+
+
+def test_the_ai_reads_an_opened_document_page_by_dwell(tmp_path, monkeypatch):
+    from invisible_canvas.canvas.panel import AIPanel
+    from invisible_canvas.canvas.toolbar import Toolbar
+    tb = Toolbar((1280, 720), ai=True)
+    ai_button = tb.button("ai").centre
+    summarize = next(b for b in AIPanel((1280, 720), tb.top).buttons if b.name == "ai:summarize").centre
+    picture = np.zeros((400, 600, 3), np.uint8)
+    picture[:, :, 2] = 220
+    path = tmp_path / "diagram.png"
+    cv2.imencode(".png", picture)[1].tofile(str(path))
+    monkeypatch.setattr(draw_tool, "choose_file", lambda *a, **k: path)
+    RecordingAssistant.asked = []
+    monkeypatch.setattr(draw_tool, "LocalAssistant", RecordingAssistant)
+    monkeypatch.setattr(draw_tool, "ClaudeAssistant", RecordingAssistant)
+
+    def after_open(s):
+        if s < 4.3:
+            return OTHER, ai_button                                # AI: the panel opens over the document
+        if s < 4.4:
+            return OTHER, (400.0, 400.0)
+        if s < 5.6:
+            return OTHER, summarize
+        return OTHER, (400.0, 400.0)
+
+    code, config, shown = run_tool(draw_tool, tmp_path, monkeypatch, ["draw", "--seconds", "6.4", "--ai"],
+                                   open_file_schedule(after_open, ai=True))
+    report = json.loads(sorted(config.reports_dir.glob("draw-*.json"))[-1].read_text())
+    assert code == 0 and report["actions"]["doc:open"] == 1 and report["actions"]["ai_on_document"] == 1
+    (action, png, context), = RecordingAssistant.asked
+    assert action == "summarize" and context == {"source": "document", "page": "Image - diagram.png"}
+    sent = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_COLOR)
+    assert sent.shape == picture.shape and np.array_equal(sent, picture)        # the picture itself
+    answer, = report["ai"]["answers"]
+    assert answer["ok"] and answer["context"]["source"] == "document"
+
+
+def test_ask_is_typed_on_the_laptop_keyboard_and_letters_do_not_trigger_the_keys(tmp_path, monkeypatch):
+    from invisible_canvas.canvas.panel import AIPanel
+    from invisible_canvas.canvas.toolbar import Toolbar
+    tb = Toolbar((1280, 720), ai=True)
+    ai_button = tb.button("ai").centre
+    ask = next(b for b in AIPanel((1280, 720), tb.top).buttons if b.name == "ai:ask").centre
+    RecordingAssistant.asked = []
+    monkeypatch.setattr(draw_tool, "LocalAssistant", RecordingAssistant)
+    monkeypatch.setattr(draw_tool, "ClaudeAssistant", RecordingAssistant)
+
+    def schedule(s, mapper):
+        if s < 0.5:
+            return POINT, (300.0 + 400 * s, 300.0)                # a stroke
+        if s < 1.4:
+            return OTHER, (500.0, 400.0)
+        if s < 2.7:
+            return OTHER, ai_button
+        if s < 2.8:
+            return OTHER, (500.0, 400.0)
+        if s < 4.1:
+            return OTHER, ask                                     # ASK: the panel waits for the question
+        if s < 4.5:
+            return OTHER, (500.0, 400.0)                          # (Esc at 4.3 s cancels it)
+        if s < 5.8:
+            return OTHER, ask                                     # ASK again
+        return OTHER, (500.0, 400.0)
+
+    queue = [(4.3, 27)] + [(5.9, k) for k in (*map(ord, "z?"), 8, 8, *map(ord, "Why z s?"), 13)]
+
+    def keys(s):                                                  # one key per poll, each from its time on
+        return queue.pop(0)[1] if queue and s >= queue[0][0] else -1
+
+    code, config, shown = run_tool(draw_tool, tmp_path, monkeypatch, ["draw", "--seconds", "7.0", "--ai"], schedule,
+                                   keys=keys)
+    report = json.loads(sorted(config.reports_dir.glob("draw-*.json"))[-1].read_text())
+    assert code == 0 and report["actions"]["ask_cancelled"] == 1 and report["actions"]["press:ai:ask"] == 2
+    (action, png, context), = RecordingAssistant.asked
+    assert action == "ask" and context == {"source": "canvas", "question": "Why z s?"}
+    assert report["strokes_on_canvas"] == 1 and report["actions"].get("undo") is None     # z was text, not undo
+    assert len(list((config.root / "data" / "canvas").glob("canvas-*.json"))) == 1      # s was text: the exit save only
+    assert report["ai"]["answers"][0]["context"]["question"] == "Why z s?" and queue == []
+    assert report["duration_s"] > 6.5                                                   # Esc did not end the session
 
 
 # -- D58: the projector or camera moved during the session ---------------------------------------------------------
@@ -646,7 +744,7 @@ def test_the_ai_is_on_by_default_and_no_ai_switches_it_off(tmp_path, monkeypatch
         def __init__(self, cfg, client=None):
             made.append(cfg)
 
-        def ask(self, action, png):
+        def ask(self, action, png, context=None):
             raise AssertionError("no request is made in this test")
 
     toolbars = []
