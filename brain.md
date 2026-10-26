@@ -927,6 +927,13 @@ Resolved on 2026-10-08: Python install (D12), surface orientation (D13), camera 
 
 ### 13.2 Test log
 
+**2026-10-26 (16:19–16:22): mission baseline B-3 repeated (contact) — free writing instead of tracing; the bottom-band loss reproduced (5× the middle); 269 points dropped in the toolbar band; 51.6 fps**
+
+- On the charger (34 %). Setup unchanged (0.53 px). `draw --seconds 300 --trace --save-every 1 --load data/canvas/guides-b3.json` (`draw-20261026-162233.json`, trace `data/diagnostics/draw-20261026-161931/`): 166.5 s, 22 strokes, ERASER then PEN pressed once each (no erasing), 2 strokes refused on the toolbar.
+- The user wrote freely (hearts, letters, arrows, scribbles across the guides) instead of tracing them: **no tracing-accuracy number** from this run.
+- Per band (hand frames / losses per 1000 / time to re-find): top 1067 / 12.2 / 0.39 s; middle 2707 / 6.3 / 0.38 s; lower (432–560) 2557 / 1.6 / 2.30 s; **just above the toolbar (560–648) 574 / 33.1 / 0.45 s**; toolbar band 325 / 21.5; below the canvas 24 / 125. **269 stroke points emitted with the fingertip in the toolbar band were dropped** (the stroke continued above it).
+- Timing (no AI request, no long search): **51.6 fps** (camera 60.2), pipeline median 20.0 / p95 36.1 ms over all frames, **18.7 / 27.2 ms with the hand**, inference median 8.6 / p95 21.8 ms.
+
 **2026-10-26 (16:11–16:16): mission baseline B-3 (trace guides, contact) — no ink at all: every stroke started on the toolbar and stayed dead (a confirmed usability failure); not a writing measurement**
 
 - First attempt 16:11: the setup check stopped (1 of 4 corners not seen steadily: the user was in front of the projection); nothing ran.
