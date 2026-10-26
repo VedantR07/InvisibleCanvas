@@ -8,6 +8,10 @@ the hold-to-press progress, then "thinking", the answer or an error).
 D50: with a light polygon (display.handlight) the hand is painted plain white last, so no ink, text or cursor
 falls on it, and the cursor becomes a ring around the fingertip, wider than the light's margin, so it lands on
 the wall; a toolbar dwell fills the ring as a progress arc (the button itself is often under the hand).
+
+D56: while the hand points but nothing can be drawn (the stroke started on, or ran into, the toolbar or the AI
+panel: `controller.blocked`), the cursor is a grey ring with a slash, and over the canvas a hint at the top
+says how to draw again. The hint is kept away from the hand: projected text on the hand hinders tracking (R34).
 """
 
 from __future__ import annotations
@@ -29,6 +33,8 @@ SELECTION_HALO = (245, 200, 245)      # light magenta behind selected strokes
 PANEL_TEXT, PANEL_MUTED, PANEL_ERROR = (30, 30, 30), (110, 110, 110), (40, 40, 200)
 FONT = cv2.FONT_HERSHEY_SIMPLEX
 RING_RADIUS = int(LightParams().margin_px) + 13   # D50 ring cursor: just outside the light around the fingertip
+BLOCKED = (90, 90, 90)                # D56: the "not drawing" cursor
+BLOCKED_HINT = "Not drawing: open your hand, then point to draw"
 
 
 def draw_stroke(img: np.ndarray, stroke: Stroke, colour=None, extra: int = 0) -> None:
@@ -80,8 +86,15 @@ class CanvasRenderer:
             self._panel(img, controller)
         if status:
             cv2.putText(img, status, (12, 26), FONT, 0.6, (120, 120, 120), 1, cv2.LINE_AA)
+        blocked = mode == DRAW and getattr(controller, "blocked", None) is not None
+        if blocked and cursor is not None and not toolbar.in_band(cursor):     # not while pressing a button
+            self._hint(img, controller)
         if cursor is not None:
-            if light is None:
+            if blocked:
+                self._blocked_cursor(img, cursor, RING_RADIUS if light is not None else 16)
+                if light is not None:
+                    self._dwell_arc(img, cursor, controller)
+            elif light is None:
                 self._cursor(img, mode, cursor, controller)
             else:
                 self._ring_cursor(img, mode, cursor, controller)
@@ -161,6 +174,29 @@ class CanvasRenderer:
             y += step
             cv2.putText(img, line, (left, y), FONT, scale, colour, thick, cv2.LINE_AA)
 
+    def _hint(self, img: np.ndarray, controller) -> None:
+        """D56: why nothing is drawn, at the top of the canvas (left of the AI panel when it is open)."""
+        right = self.size[0]
+        if getattr(controller, "panel", None) is not None and controller.panel_layout is not None:
+            right = controller.panel_layout.rect[0]
+        scale = 0.7
+        (tw, th), _ = cv2.getTextSize(BLOCKED_HINT, FONT, scale, 2)
+        if tw + 40 > right:
+            scale *= (right - 40) / (tw + 40)
+            (tw, th), _ = cv2.getTextSize(BLOCKED_HINT, FONT, scale, 2)
+        x0 = max((right - tw) // 2 - 16, 0)
+        cv2.rectangle(img, (x0, 8), (x0 + tw + 32, 8 + th + 24), (255, 255, 255), -1)
+        cv2.rectangle(img, (x0, 8), (x0 + tw + 32, 8 + th + 24), BLOCKED, 2)
+        cv2.putText(img, BLOCKED_HINT, (x0 + 16, 8 + 12 + th), FONT, scale, (40, 40, 40), 2, cv2.LINE_AA)
+
+    @staticmethod
+    def _blocked_cursor(img: np.ndarray, cursor, radius: int) -> None:
+        """D56: a ring with a slash at the fingertip: pointing, but nothing is drawn."""
+        x, y = int(round(cursor[0])), int(round(cursor[1]))
+        d = int(round(radius * 0.7071))
+        cv2.circle(img, (x, y), radius, BLOCKED, 3, cv2.LINE_AA)
+        cv2.line(img, (x - d, y + d), (x + d, y - d), BLOCKED, 3, cv2.LINE_AA)
+
     def _cursor(self, img: np.ndarray, mode: str, cursor, controller) -> None:
         x, y = int(round(cursor[0])), int(round(cursor[1]))
         tool = controller.tool
@@ -187,6 +223,11 @@ class CanvasRenderer:
         else:
             cv2.circle(img, (x, y), RING_RADIUS, (110, 110, 110), 2, cv2.LINE_AA)
             cv2.circle(img, (x, y), RING_RADIUS + 4, colour, 2, cv2.LINE_AA)       # the tool's colour
+        self._dwell_arc(img, cursor, controller)
+
+    @staticmethod
+    def _dwell_arc(img: np.ndarray, cursor, controller) -> None:
+        x, y = int(round(cursor[0])), int(round(cursor[1]))
         progress = controller.dwell_progress
         if progress is not None and progress[1] > 0:                          # hold-to-press on the ring
             cv2.ellipse(img, (x, y), (RING_RADIUS, RING_RADIUS), -90, 0, 360 * progress[1],

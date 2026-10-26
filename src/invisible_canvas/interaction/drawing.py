@@ -8,6 +8,12 @@ D46: one gesture + toolbar tools. A pointing stroke (STROKE_START .. STROKE_END)
 A toolbar button is pressed by holding the cursor on it (`update_pointer`, every frame): 1 s, CLEAR 2 s.
 The button fires once; the cursor must leave it before it can fire again.
 
+D56: the toolbar band (and the open AI panel) is never drawn on. A pointing stroke that starts there is refused,
+and a stroke that reaches it ends there, exactly as if the pen had lifted (the pen stroke is committed, an erase or
+a move becomes one undo step, a SELECT loop selects). Either way the rest of that pointing stroke draws nothing
+until the pen really lifts (STROKE_END), so a stroke is never joined across the toolbar; `blocked` says why
+(the renderer shows it).
+
 AI panel (D51, only with an AI toolbar): the AI button opens a panel whose buttons (summarize, explain, simplify,
 examples, questions, explore (D54), close) are pressed the same way. An action renders the selection (the whole canvas if
 nothing is selected) to a PNG and queues it in `ai_jobs`; the drawing tool hands jobs to the background worker
@@ -46,6 +52,7 @@ class DrawingController:
         self.panel: dict | None = None                 # {"state": menu|thinking|answer|error, "since", "action", "answer"}
         self.ai_jobs: list[tuple[str, bytes]] = []
         self.now = 0.0
+        self.blocked: str | None = None                # D56: "toolbar" / "panel" / "no-point": no ink until the lift
         # Diagnostics only (brain.md §9.12, Stage 3 item 1): what each event's point became, noted inside the
         # existing branches; kept apart from `log`, and never read by any decision here.
         self.outcomes: list[tuple[str, tuple | None, int | None]] = []   # (outcome, point, attempt), last handle()
@@ -84,13 +91,21 @@ class DrawingController:
     def _on_panel(self, point) -> bool:
         return self.panel is not None and self.panel_layout.contains(point)
 
+    def _ui_at(self, point) -> str | None:
+        """The UI area a point lies on, where nothing is drawn: "toolbar" (the band, D46) or "panel" (D51)."""
+        if self.toolbar.in_band(point):
+            return "toolbar"
+        return "panel" if self._on_panel(point) else None
+
     def _stroke_start(self, e) -> None:
         self.attempts += 1
         self.attempt, self.stroke_open, self._refused = self.attempts, True, False
-        if e.point is None or self.toolbar.in_band(e.point) or self._on_panel(e.point):
-            self.log["strokes_refused_on_toolbar" if not self._on_panel(e.point) else "strokes_refused_on_panel"] += 1
-            self._refused = True
-            self._note("refused_no_point" if e.point is None else "refused_band" if self.toolbar.in_band(e.point)
+        self.blocked = None
+        ui = "no-point" if e.point is None else self._ui_at(e.point)
+        if ui is not None:
+            self.log["strokes_refused_on_panel" if ui == "panel" else "strokes_refused_on_toolbar"] += 1
+            self._refused, self.blocked = True, ui
+            self._note("refused_no_point" if e.point is None else "refused_band" if ui == "toolbar"
                        else "refused_panel", e.point)
             self.active = self._drag = self.loop = None
             return
@@ -112,9 +127,18 @@ class DrawingController:
             self._note("move" if sid is not None else "move_nothing", e.point)
 
     def _stroke_point(self, e) -> None:
-        if e.point is None or self.toolbar.in_band(e.point) or self._on_panel(e.point):
-            self._note("dropped_no_point" if e.point is None else "dropped_band" if self.toolbar.in_band(e.point)
-                       else "dropped_panel", e.point)
+        if self.blocked is not None:                   # D56: refused, or ended on the toolbar/panel: until the lift
+            self._note("after_refused_start" if self._refused else "after_ui_end", e.point)
+            return
+        if e.point is None:
+            self._note("dropped_no_point", e.point)
+            return
+        ui = self._ui_at(e.point)
+        if ui is not None:                             # D56: the stroke ends here, as if the pen had lifted
+            self._note("ended_band" if ui == "toolbar" else "ended_panel", e.point)
+            self._finish()
+            self.blocked = ui
+            self.log[f"strokes_ended_on_{ui}"] += 1
             return
         if self.tool == "select" and self.loop is not None:
             self.loop.append(e.point)
@@ -134,10 +158,15 @@ class DrawingController:
             d["dx"], d["dy"], d["last"] = d["dx"] + dx, d["dy"] + dy, e.point
             self._note("move", e.point)
         else:                                          # no branch took the point (diagnostics only)
-            self._note("after_refused_start" if self._refused else f"ignored_{self.tool}", e.point)
+            self._note(f"ignored_{self.tool}", e.point)
 
     def _stroke_end(self, e) -> None:
         self.stroke_open = False
+        self._finish()
+        self.blocked = None
+
+    def _finish(self) -> None:
+        """What the pen lift does with the current tool: commit the stroke, record the erase or move, select."""
         if self.active is not None and self.active.points:
             self.history.do(AddStroke(self.active), self.canvas)
             self.log["strokes"] += 1

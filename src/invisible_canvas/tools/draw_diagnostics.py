@@ -91,15 +91,16 @@ class Histogram:
         return {"median": self.percentile(50), "p95": self.percentile(95), "max": self.max, "count": self.count}
 
 
-def frame_state(status: str, mode: str, events, prev_candidate, candidate) -> str:
+def frame_state(status: str, mode: str, events, prev_candidate, candidate, blocked: bool = False) -> str:
     """Why this frame did or did not draw, from the engine's own state (its candidate before and after the
-    update), not from a later frame.
+    update) and the controller's (`blocked`, D56), not from a later frame.
 
-    start / lifted: a stroke began / ended in this frame. In DRAW: drawing (points went to the controller),
-    held (no usable hand: the engine bridges), gap (a hand outside the keep band: no point, bridged or lifted
-    later). Otherwise: start-unconfirmed (the engine discarded its buffered POINT frames in this frame),
-    pending-start (POINT frames still being confirmed, also while a short dropout is held), the hand status
-    (no-hand / tip-outside-view / mapping-failed), or the mode (hover, ...)."""
+    start / lifted: a stroke began / ended in this frame. In DRAW: held (no usable hand: the engine bridges),
+    blocked (the controller draws nothing until the lift: the stroke started on, or ran into, the toolbar or the
+    panel, D56), drawing (points went to the controller), gap (a hand outside the keep band: no point, bridged
+    or lifted later). Otherwise: start-unconfirmed (the engine discarded its buffered POINT frames in this
+    frame), pending-start (POINT frames still being confirmed, also while a short dropout is held), the hand
+    status (no-hand / tip-outside-view / mapping-failed), or the mode (hover, ...)."""
     kinds = [e if isinstance(e, str) else e.kind for e in events]
     if STROKE_START in kinds:
         return "start"
@@ -108,6 +109,8 @@ def frame_state(status: str, mode: str, events, prev_candidate, candidate) -> st
     if mode == DRAW:
         if status != "ok":
             return "held"
+        if blocked:
+            return "blocked"
         return "drawing" if STROKE_POINT in kinds else "gap"
     if prev_candidate == DRAW and candidate != DRAW:
         return "start-unconfirmed"
@@ -135,11 +138,11 @@ class DrawDiagnostics:
         self._last_hand_band, self._lost_at = None, None
 
     def frame(self, *, t: float, action: str, status: str, cursor, step, prev_candidate, candidate,
-              outcomes, stage_ms: dict, loop_ms: float | None = None) -> dict:
+              outcomes, stage_ms: dict, loop_ms: float | None = None, blocked: bool = False) -> dict:
         self.frames += 1
         self.actions[action] += 1
         self.status[status] += 1
-        state = frame_state(status, step.mode, step.events, prev_candidate, candidate)
+        state = frame_state(status, step.mode, step.events, prev_candidate, candidate, blocked)
         self.states[state] += 1
         # hand frames and losses per band, as the baseline analysis counted them (shape present, cursor shown)
         if status == "ok" and cursor is not None:
@@ -189,7 +192,10 @@ class DrawDiagnostics:
             "strokes": {"attempts": attempts, "committed": strokes_committed, "refused": refused,
                         "attempts_with_points_after_refusal": len(self.attempts_after_refusal),
                         "points_after_refused_start": sum(n for k, n in self.ink.items()
-                                                          if k.startswith("after_refused_start"))},
+                                                          if k.startswith("after_refused_start")),
+                        # D56: strokes ended where they reached the toolbar / panel, and the points not drawn after
+                        "ended_on_ui": sum(n for k, n in self.ink.items() if k.startswith("ended_")),
+                        "points_after_ui_end": sum(n for k, n in self.ink.items() if k.startswith("after_ui_end"))},
             "stage_ms": {s: h.summary() for s, h in self.stages.items()},
             "loop_ms": self.loop.summary(),
             "overhead": {"diag_ms": diag, "target_ms": TARGET_DIAG_MS,

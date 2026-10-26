@@ -472,6 +472,7 @@ def test_diagnostics_record_the_toolbar_trap_without_changing_it(tmp_path, monke
     assert start["state"] == "start" and start["ink"]["refused_band:toolbar"] == 1 and start["stroke"] == 1
     dead = [line for line in trace if line["ink"] and "after_refused_start:canvas" in line["ink"]]
     assert dead and all(line["stroke"] == 1 and line["stroke_id"] is None for line in dead)
+    assert all(line["state"] == "blocked" and line["blocked"] == "toolbar" for line in dead)     # D56: shown
     assert all(line["status"] in ("ok", "no-hand") and line["action"] == "fake" for line in trace)
 
 
@@ -492,9 +493,16 @@ def test_diagnostics_record_the_bottom_strip_a_hand_loss_and_the_lift(tmp_path, 
 
     code, config, _ = run_tool(draw_tool, tmp_path, monkeypatch, ["draw", "--seconds", "3.0", "--trace"], schedule)
     report, trace = draw_report(config)
-    assert report["strokes_on_canvas"] == 1 and report["actions"]["strokes"] == 1     # bridged, as before
+    # D56: the stroke ends at the dip into the toolbar; the writing after it (and after the dropout) is not drawn
+    assert report["strokes_on_canvas"] == 1 and report["actions"]["strokes"] == 1
+    assert report["actions"]["strokes_ended_on_toolbar"] == 1
     d = report["diagnostics"]
-    assert d["ink"]["dropped_band:toolbar"] > 0 and d["ink"]["added:canvas"] > 20
+    assert d["ink"]["ended_band:toolbar"] == 1 and d["ink"]["added:canvas"] > 20
+    assert d["strokes"]["ended_on_ui"] == 1 and d["strokes"]["points_after_ui_end"] > 20
+    (stroke,) = json.load(open(report["canvas"]["json"], encoding="utf-8"))["strokes"]
+    assert max(p[0] for p in stroke["points"]) < 200 + 500 * 0.45 and all(p[1] < 648 for p in stroke["points"])
+    blocked = [line for line in trace if line["state"] == "blocked"]
+    assert blocked and all(line["blocked"] == "toolbar" and line["mode"] == "draw" for line in blocked)
     assert d["states"]["held"] > 0 and d["states"]["lifted"] == 1 and d["states"]["start"] == 1
     assert d["bands"]["bottom"]["losses"] >= 1 and d["bands"]["bottom"]["hand_frames"] > 0
     assert d["hand_status"]["no-hand"] > 0

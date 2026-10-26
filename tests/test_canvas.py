@@ -187,6 +187,72 @@ def test_no_stroke_starts_on_the_toolbar():
     assert c.strokes == {} and ctl.log["strokes_refused_on_toolbar"] == 1
 
 
+# D56: a stroke that reaches the toolbar ends there, as if the pen had lifted; nothing is drawn until it really lifts
+
+def test_a_pen_stroke_that_reaches_the_toolbar_ends_there_and_is_never_joined_across_it():
+    c, tb, ctl = controller()
+    ctl.handle([ev(STROKE_START, 0, (100, 500)), ev(STROKE_POINT, 0, (200, 600)),
+                ev(STROKE_POINT, 0, (300, tb.top + 20)), ev(STROKE_POINT, 0, (400, tb.top + 30)),
+                ev(STROKE_POINT, 0, (500, 600)), ev(STROKE_POINT, 0, (600, 500))])     # back up, still pointing
+    (s,) = c.strokes.values()                                      # committed when the band was reached
+    assert s.points[-1] == (200.0, 600.0) and max(p[0] for p in s.points) == 200.0
+    assert ctl.active is None and ctl.blocked == "toolbar" and ctl.log["strokes"] == 1
+    ctl.handle([ev(STROKE_END, 0)])                                # the pen lifts: nothing added, no second stroke
+    assert len(c.strokes) == 1 and c.strokes[s.id].points == s.points and ctl.blocked is None
+    stroke(ctl, [(700, 300), (800, 300)])                          # the next stroke draws normally
+    assert len(c.strokes) == 2 and ctl.log["strokes"] == 2
+    ctl.undo()
+    ctl.undo()
+    assert c.strokes == {}                                         # each one undo step
+
+
+def test_a_stroke_refused_on_the_toolbar_draws_nothing_until_the_pen_lifts():
+    c, tb, ctl = controller()
+    ctl.handle([ev(STROKE_START, 0, (300, tb.top + 20)), ev(STROKE_POINT, 0, (300, 500)),
+                ev(STROKE_POINT, 0, (350, 400))])                  # pressed a button by pointing, then wrote
+    assert c.strokes == {} and ctl.active is None and ctl.blocked == "toolbar"
+    ctl.handle([ev(STROKE_END, 0)])
+    assert ctl.blocked is None
+    stroke(ctl, [(300, 400), (350, 400)])
+    assert len(c.strokes) == 1 and ctl.log["strokes"] == 1 and ctl.log["strokes_refused_on_toolbar"] == 1
+
+
+def test_the_eraser_stops_at_the_toolbar_as_one_undo_step():
+    c, tb, ctl = controller()
+    a, b = line(c, 100, 500, 300), line(c, 100, 500, 500)
+    ctl.press("eraser")
+    ctl.handle([ev(STROKE_START, 0, (200, 300)), ev(STROKE_POINT, 0, (200, tb.top + 10)),
+                ev(STROKE_POINT, 0, (300, 500)), ev(STROKE_POINT, 0, (400, 500)), ev(STROKE_END, 0)])
+    assert a.id not in c.strokes and c.strokes[b.id].points == b.points   # the way back over b erased nothing
+    assert ctl.log["erase_strokes"] == 1 and ctl.log["strokes_ended_on_toolbar"] == 1
+    ctl.undo()
+    assert a.id in c.strokes and b.id in c.strokes
+
+
+def test_a_move_stops_at_the_toolbar_as_one_undo_step():
+    c, tb, ctl = controller()
+    s = line(c, 100, 500, 300)
+    ctl.press("move")
+    ctl.handle([ev(STROKE_START, 0, (300, 300)), ev(STROKE_POINT, 0, (310, 320)),
+                ev(STROKE_POINT, 0, (310, tb.top + 5)), ev(STROKE_POINT, 0, (600, 100)), ev(STROKE_END, 0)])
+    assert c.strokes[s.id].points[0] == (110.0, 320.0)              # moved by (10, 20) only
+    assert ctl.log["moves"] == 1
+    ctl.undo()
+    assert c.strokes[s.id].points[0] == (100.0, 300.0)
+
+
+def test_a_select_loop_that_reaches_the_toolbar_selects_as_if_lifted():
+    c, tb, ctl = controller()
+    s = line(c, 300, 340, 200)
+    ctl.press("select")
+    loop = [(250, 150), (400, 150), (400, 250), (250, 250), (250, 160)]
+    ctl.handle([ev(STROKE_START, 0, loop[0])] + [ev(STROKE_POINT, 0, p) for p in loop[1:]]
+               + [ev(STROKE_POINT, 0, (250, tb.top + 10))])
+    assert ctl.selection == [s.id] and ctl.log["selections"] == 1 and ctl.loop is None   # selected at the band
+    ctl.handle([ev(STROKE_POINT, 0, (600, 400)), ev(STROKE_END, 0)])
+    assert ctl.selection == [s.id] and ctl.log["selections"] == 1                         # not a second loop
+
+
 def test_holding_the_cursor_on_a_button_presses_it_once():
     c, tb, ctl = controller()
     red = tb.button("red").centre
@@ -334,3 +400,44 @@ def test_render_with_the_light_on_the_hand():
     ctl.update_pointer(0.5, tb.button("undo").centre)
     arc = r.render(c, ctl, tb, mode=HOVER, cursor=(640, 280), light=light)
     assert (arc != img).any()                                           # the dwell arc is drawn on the ring
+
+
+def is_colour(img, colour):
+    return (img == np.array(colour, np.uint8)).all(axis=2)
+
+
+def test_pointing_that_draws_nothing_shows_the_no_draw_cursor_and_a_hint():
+    # D56: refused on the toolbar (pressed a button by pointing), then pointing on the canvas
+    from invisible_canvas.canvas.render import BLOCKED
+    c, tb, ctl = controller()
+    r = CanvasRenderer(SIZE)
+    normal = r.render(c, ctl, tb, mode=DRAW, cursor=(640, 360))
+    assert tuple(normal[360, 640]) == COLOURS["black"] and (normal[0:60, 200:1080] == 255).all()   # no hint
+    ctl.handle([ev(STROKE_START, 0, (640, tb.top + 20)), ev(STROKE_POINT, 0, (640, 360))])
+    img = r.render(c, ctl, tb, mode=DRAW, cursor=(640, 360))
+    assert tuple(img[360, 640]) != COLOURS["black"]                    # not the ink-coloured draw cursor
+    assert is_colour(img[330:360, 625:656], BLOCKED).any()             # the ring with the slash
+    assert (img[10:50, 200:1080] < 100).all(axis=2).any()              # the hint's text at the top
+    on_toolbar = r.render(c, ctl, tb, mode=DRAW, cursor=(640, tb.top + 20))
+    assert (on_toolbar[0:60, 200:1080] == 255).all()                   # no hint while pointing at the buttons
+    ctl.handle([ev(STROKE_END, 0)])
+    lifted = r.render(c, ctl, tb, mode=HOVER, cursor=(640, 360))
+    assert (lifted[0:60, 200:1080] == 255).all() and not is_colour(lifted[330:360, 625:656], BLOCKED).any()
+
+
+def test_the_hint_stays_left_of_an_open_ai_panel_and_the_ring_cursor_shows_it_too():
+    from invisible_canvas.canvas.render import BLOCKED, RING_RADIUS
+    from invisible_canvas.display.handlight import grown_hull
+    c = Canvas(SIZE)
+    tb = Toolbar(SIZE, ai=True)
+    ctl = DrawingController(c, tb)
+    ctl.press("ai")
+    x0 = ctl.panel_layout.rect[0]
+    ctl.handle([ev(STROKE_START, 0, (300, 400)), ev(STROKE_POINT, 0, (x0 + 50, 400))])   # into the panel: ends
+    assert ctl.blocked == "panel"
+    img = CanvasRenderer(SIZE).render(c, ctl, tb, mode=DRAW, cursor=(300, 400))
+    border = np.nonzero(is_colour(img[8:10], BLOCKED).any(axis=0))[0]   # the hint box's top edge
+    assert border.size and border.max() < x0
+    light = grown_hull(np.array([[280, 400], [320, 400], [320, 500], [280, 500]]), 25)   # the hand below the tip
+    ring = CanvasRenderer(SIZE).render(c, ctl, tb, mode=DRAW, cursor=(300, 400), light=light)
+    assert is_colour(ring[400 - RING_RADIUS - 2:400 - RING_RADIUS + 3, 295:306], BLOCKED).any()

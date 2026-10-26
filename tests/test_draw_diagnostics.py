@@ -74,6 +74,8 @@ def test_frame_state_cases():
     assert frame_state("ok", DRAW, step(DRAW, STROKE_POINT).events, DRAW, DRAW) == "drawing"
     assert frame_state("ok", DRAW, (), DRAW, HOVER) == "gap"
     assert frame_state("no-hand", DRAW, (), DRAW, DRAW) == "held"
+    assert frame_state("ok", DRAW, step(DRAW, STROKE_POINT).events, DRAW, DRAW, blocked=True) == "blocked"   # D56
+    assert frame_state("no-hand", DRAW, (), DRAW, DRAW, blocked=True) == "held"       # the hand comes first
     assert frame_state("ok", HOVER, (), DRAW, HOVER) == "start-unconfirmed"
     assert frame_state("no-hand", HOVER, (), DRAW, None) == "start-unconfirmed"
     assert frame_state("ok", HOVER, (), HOVER, DRAW) == "pending-start"
@@ -139,17 +141,31 @@ def test_toolbar_trap_records_the_refusal_and_the_ignored_points():
     assert ctl.attempts == 1 and not ctl.stroke_open
 
 
-def test_points_in_the_band_below_and_off_canvas_are_recorded_as_the_code_treats_them():
+def test_a_stroke_that_reaches_the_band_ends_there_and_the_rest_is_recorded_as_not_drawn():
+    # D56 (was: band points dropped and the stroke joined across the band when the finger came back)
     canvas = Canvas(SIZE)
     ctl = DrawingController(canvas, Toolbar(SIZE))
     seen = drive(ctl, ev(STROKE_START, 300, 600), ev(STROKE_POINT, 300, 640), ev(STROKE_POINT, 300, 660),
-                 ev(STROKE_POINT, 300, 760), ev(STROKE_POINT, 300, 630), ev(STROKE_POINT, 300, 630),
-                 ev(STROKE_POINT, -30, 300), ev(STROKE_POINT, 300, -20), ev(STROKE_END))
-    assert seen == [("added", "canvas"), ("added", "canvas"), ("dropped_band", "toolbar"), ("dropped_band", "below"),
-                    ("added", "canvas"), ("duplicate", "canvas"), ("added", "left"), ("added", "above")]
-    (stroke,) = canvas.strokes.values()            # the same stroke the code always made: band points left out
-    assert all(p[1] < 648 for p in stroke.points) and min(p[0] for p in stroke.points) == -30
-    assert ctl.log["strokes"] == 1
+                 ev(STROKE_POINT, 300, 760), ev(STROKE_POINT, 300, 630), ev(STROKE_POINT, 310, 630))
+    assert seen == [("added", "canvas"), ("added", "canvas"), ("ended_band", "toolbar"), ("after_ui_end", "below"),
+                    ("after_ui_end", "canvas"), ("after_ui_end", "canvas")]
+    assert ctl.blocked == "toolbar" and ctl.log["strokes"] == 1 and ctl.log["strokes_ended_on_toolbar"] == 1
+    (stroke,) = canvas.strokes.values()            # committed when the band was reached: nothing from after it
+    assert stroke.points[-1] == (300.0, 640.0) and all(p[1] < TOP for p in stroke.points)
+    drive(ctl, ev(STROKE_END))
+    assert ctl.blocked is None and len(canvas.strokes) == 1 and ctl.log["strokes"] == 1
+
+
+def test_points_off_the_left_and_top_are_still_drawn_as_before():
+    # unchanged by D56: only the toolbar band (y >= 648, below the canvas too) and the open panel are excluded
+    canvas = Canvas(SIZE)
+    ctl = DrawingController(canvas, Toolbar(SIZE))
+    seen = drive(ctl, ev(STROKE_START, 300, 300), ev(STROKE_POINT, 300, 300), ev(STROKE_POINT, -30, 300),
+                 ev(STROKE_POINT, 300, -20), ev(STROKE_POINT, 1300, 300), ev(STROKE_END))
+    assert seen == [("added", "canvas"), ("duplicate", "canvas"), ("added", "left"), ("added", "above"),
+                    ("added", "right")]
+    (stroke,) = canvas.strokes.values()
+    assert min(p[0] for p in stroke.points) == -30 and max(p[0] for p in stroke.points) == 1300
 
 
 def test_panel_exclusions_are_recorded():
@@ -159,8 +175,9 @@ def test_panel_exclusions_are_recorded():
     ctl.press("ai")                                # the panel opens at x 824..1264, y 16..632
     seen = drive(ctl, ev(STROKE_START, 900, 300), ev(STROKE_POINT, 700, 300), ev(STROKE_END),
                  ev(STROKE_START, 700, 300), ev(STROKE_POINT, 900, 300), ev(STROKE_POINT, 710, 300), ev(STROKE_END))
-    assert [o for o, _ in seen] == ["refused_panel", "after_refused_start", "added", "dropped_panel", "added"]
+    assert [o for o, _ in seen] == ["refused_panel", "after_refused_start", "added", "ended_panel", "after_ui_end"]
     assert ctl.log["strokes_refused_on_panel"] == 1 and ctl.log["strokes"] == 1
+    assert ctl.log["strokes_ended_on_panel"] == 1 and ctl.blocked is None
 
 
 def test_other_tools_are_recorded_as_such():

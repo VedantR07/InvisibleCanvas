@@ -168,7 +168,8 @@ def run(config: Config, args) -> int:
             fields = diag.frame(t=frame.timestamp, action=tracker.action, status=points.status, cursor=step.cursor,
                                 step=step, prev_candidate=prev_candidate, candidate=engine._candidate,
                                 outcomes=controller.outcomes, stage_ms=stage_ms,
-                                loop_ms=None if last_t0 is None else (t0 - last_t0) * 1000)
+                                loop_ms=None if last_t0 is None else (t0 - last_t0) * 1000,
+                                blocked=controller.blocked is not None)
             last_t0 = t0
             if trace is not None:
                 kinds = [e.kind for e in step.events]
@@ -177,6 +178,7 @@ def run(config: Config, args) -> int:
                          **fields, "stroke": controller.attempt if controller.stroke_open or controller.outcomes
                          or "stroke_end" in kinds else None,
                          "stroke_id": None if controller.active is None else controller.active.id,
+                         "blocked": controller.blocked,                  # D56: why the pointing draws nothing
                          "candidate": engine._candidate, "buffered": len(engine._buffer),
                          "queue_ms": round(stage_ms["queue"], 2), "inference_ms": round(stage_ms["inference"], 2),
                          "pipeline_ms": round((t2 - frame.timestamp) * 1000, 2),
