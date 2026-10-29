@@ -5,9 +5,10 @@
     cursor held on a toolbar button 1 s (CLEAR 2 s) -> press it
 
 The hand is lit plain white with a ring cursor (D50): on by default (D69, user decision 2026-10-29: essential for
-writing over existing content; it was off from 2026-10-23); `--no-light` switches it off for a session. D68:
-the `l` key switches it on or off during a session; the report compares the frames of the two states (`light_ab`:
-hand found and lost, frame rate, pipeline, ink), the trace marks each frame (`light_on`, `lit`).
+writing over existing content; it was off from 2026-10-23); `--no-light` switches it off for a session. D70: the
+light fits the hand's own shape (display/handlight.py); `[` / `]` change its margin live (report `light_margin_px`).
+D68: the `l` key switches it on or off during a session; the report compares the frames of the two states
+(`light_ab`: hand found and lost, frame rate, pipeline, ink), the trace marks each frame (`light_on`, `lit`).
 The AI button is on by default (`[ai] enabled = true`, D57; `--no-ai` switches it off for one session, `--ai`
 forces it on): the AI reads the SELECT-ed writing (D51, §9.11); by default
 a free local model through Ollama (D52), or Claude with `[ai] backend = "claude"`. Requests
@@ -28,15 +29,16 @@ frame rate while lines were read (`line_recognition`). D67: the reader warms up 
 background, with a small image made by the app (never the user's content); the report has the warm-up and the
 first line's reading time against the later ones.
 
-Keyboard (laptop): o open a file, z undo, y redo, s save, c twice clear, l light on the hand, ESC quit. Before
-tracking, the setup check runs (a moved setup is recalibrated automatically and validated first, D39). On exit the
-current page is saved to data/canvas/ (strokes JSON + PNG), every page to a board file (D59: board-*.json + a PNG per
-page), and a report to data/reports/draw-*.json. `--load FILE` continues a board (or a single canvas) file,
-`--resume` the newest board.
+Keyboard (laptop): o open a file, z undo, y redo, s save, c twice clear, l light on the hand, [ / ] the light
+tighter / looser (D70), ESC quit. Before tracking, the setup check runs (a moved setup is recalibrated automatically
+and validated first, D39). On exit the current page is saved to data/canvas/ (strokes JSON + PNG), every page to a
+board file (D59: board-*.json + a PNG per page), and a report to data/reports/draw-*.json. `--load FILE` continues a
+board (or a single canvas) file, `--resume` the newest board.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import time
 from collections import Counter
@@ -61,7 +63,7 @@ from ..canvas.toolbar import Toolbar
 from ..config import Config
 from ..display import patterns
 from ..display.file_dialog import choose_file
-from ..display.handlight import HandLight
+from ..display.handlight import HandLight, LightParams
 from ..interaction.drawing import DrawingController
 from ..interaction.engine import IDLE, InteractionEngine
 from ..vision.hands import HandTracker, HandTrackingError
@@ -80,6 +82,7 @@ MOVED_WARNING = ("The projector or camera moved: the cursor may be off.", "Resta
 FAILED_WARNING = ("The projector or camera moved and recalibration failed.", "Keep the projection clear: retrying.")
 COUNTDOWN_S = 3.0      # the message is shown this long before the setup check starts
 RETRY_S = 15.0         # after a failed recalibration, the watch waits this long before it may trigger again
+LIGHT_MARGIN_STEP, LIGHT_MARGIN_MAX = 4.0, 32.0    # D70: [ / ] change the light's margin by this (px)
 MAX_SETUP_EVENTS = 5   # after this many events that did not end in a recalibration, the watch stops
 
 
@@ -247,10 +250,11 @@ def open_document(controller: DrawingController, engine: InteractionEngine, t: f
 
 
 def handle_keys(keys, controller: DrawingController, now: float, clear_armed: dict, saved_paths: list, save,
-                toggle_light=None) -> bool:
+                toggle_light=None, size_light=None) -> bool:
     """The laptop keys of one frame (pollKey and waitKey: -1 when none); True means quit (ESC). While an ASK
     question is typed (D61) every key is text for it, Esc included (it cancels the question, not the session).
-    D68: `l` switches the light on the hand on or off (`toggle_light`)."""
+    D68: `l` switches the light on the hand on or off (`toggle_light`); D70: `[` makes it tighter, `]` looser
+    (`size_light(-1 / +1)`)."""
     for key in keys:
         if not 0 < key < 256:                          # no key, or an arrow / F-key (only typed text is used)
             continue
@@ -260,6 +264,8 @@ def handle_keys(keys, controller: DrawingController, now: float, clear_armed: di
             return True
         elif key in (ord("l"), ord("L")) and toggle_light is not None:
             toggle_light()
+        elif key in (ord("["), ord("]")) and size_light is not None:
+            size_light(-1 if key == ord("[") else 1)
         elif key in (ord("o"), ord("O")):              # D60: open a document, as the OPEN FILE button
             controller.open_requested = True
         elif key in (ord("z"), ord("Z")):
@@ -333,7 +339,8 @@ def run(config: Config, args) -> int:
         controller.recognition = line_worker is not None
         restore_reference(controller, board_data)
         engine, points = InteractionEngine(), HandPoints(mapper)
-        light = None if getattr(args, "no_light", False) else HandLight()   # D69: on by default (user, 2026-10-29)
+        light_params = LightParams()                   # D70: its margin changed live with [ and ]
+        light = None if getattr(args, "no_light", False) else HandLight(light_params)   # D69: on by default
         brightness = brightness_check(s, mapper, renderer.render(controller.canvas, controller, toolbar, mode=IDLE, cursor=None))
         diag = DrawDiagnostics(size, toolbar.top)       # §9.12 item 1: observation only
         watch = SetupWatch(expected_corners(mapper, size))   # D58: did the projector or camera move meanwhile?
@@ -342,20 +349,29 @@ def run(config: Config, args) -> int:
             save_dir.mkdir(parents=True, exist_ok=True)
             trace = open(save_dir / "trace.jsonl", "w", encoding="utf-8", buffering=1 << 20)   # ~1 write per s
         print(f"drawing: {HELP}. Keys: o open a file, z undo, y redo, s save, c twice clear, l light on the hand "
-              f"(now {'on' if light is not None else 'off'}), ESC quit "
+              f"(now {'on' if light is not None else 'off'}), [ / ] light tighter / looser, ESC quit "
               "(while an ASK question is typed, keys type it: Enter sends, Esc cancels).")
         s.camera.reset_stats()
         start = time.perf_counter()
         seq, last_saved, clear_armed, last_t = current_seq(s), -1e9, {"until": 0.0}, None
         saved_paths = []
         last_t0 = None
-        light_toggles = []
+        light_toggles, light_sizes = [], []
 
         def toggle_light() -> None:                    # D68: the `l` key; a fresh light holds nothing from before
             nonlocal light
-            light = None if light is not None else HandLight()
+            light = None if light is not None else HandLight(light_params)
             light_toggles.append({"t": round(time.perf_counter() - start, 2), "on": light is not None})
             print(f"light on the hand: {'on' if light is not None else 'off'} at {light_toggles[-1]['t']} s")
+
+        def size_light(step: int) -> None:             # D70: [ tighter, ] looser: the margin around the hand
+            nonlocal light_params
+            margin = min(max(light_params.margin_px + LIGHT_MARGIN_STEP * step, 0.0), LIGHT_MARGIN_MAX)
+            light_params = dataclasses.replace(light_params, margin_px=margin)
+            if light is not None:
+                light.params = light_params
+            light_sizes.append({"t": round(time.perf_counter() - start, 2), "margin_px": margin})
+            print(f"light on the hand: margin {margin:g} px at {light_sizes[-1]['t']} s")
 
         def save_all() -> list[str]:                   # the s key: this page's canvas and the whole board
             return ([str(p) for p in save_canvas(config, controller.canvas, renderer)]
@@ -475,7 +491,7 @@ def run(config: Config, args) -> int:
                     f"EDIT the line - type it, Enter saves, Esc cancels: {controller.line_edit['text']}_"
                     if controller.line_edit is not None else "",
                     HELP, "keys: o open a file  z undo  y redo  s save  c c clear  "
-                    f"l light {'on' if light is not None else 'off'}  ESC quit"])
+                    f"l light {'on' if light is not None else 'off'} ([ ] margin {light_params.margin_px:g} px)  ESC quit"])
             moved = watch.update(frame.timestamp, frame.image) if time.perf_counter() >= watch_from else None
             if moved is not None:                          # D58: the projector or the camera moved
                 controller.handle(engine.release(frame.timestamp))     # a pen lift: nothing bridged across the pause
@@ -512,7 +528,7 @@ def run(config: Config, args) -> int:
             diag.stages["post"].add((now - t2) * 1000)
             if args.seconds and now - start >= args.seconds:
                 break
-            if handle_keys(keys, controller, now, clear_armed, saved_paths, save_all, toggle_light):
+            if handle_keys(keys, controller, now, clear_armed, saved_paths, save_all, toggle_light, size_light):
                 break
         if trace is not None:
             trace.close()
@@ -584,6 +600,7 @@ def run(config: Config, args) -> int:
         "trace": str(save_dir / "trace.jsonl") if args.trace else None,
         "light": not getattr(args, "no_light", False),                        # at the start (D69: on by default)
         # D68: the light switched with the `l` key, and the frames of each state (an A/B in one session)
+        "light_margin_px": {"start": LightParams().margin_px, "end": light_params.margin_px, "changes": light_sizes},   # D70
         "light_ab": {"toggles": light_toggles, "off": light_state([r for r in records if not r["light_on"]]),
                      "on": light_state([r for r in records if r["light_on"]])},
         "selections": controller.selection_log,

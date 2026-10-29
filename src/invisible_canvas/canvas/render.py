@@ -30,7 +30,7 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from ..display.handlight import LightParams, paint
+from ..display.handlight import paint
 from ..interaction.engine import DRAW, HOVER
 from .lines import render_controls
 from .model import Canvas, Stroke
@@ -44,7 +44,8 @@ ERASER = (0, 140, 255)                # orange
 SELECTION_HALO = (245, 200, 245)      # light magenta behind selected strokes
 PANEL_TEXT, PANEL_MUTED, PANEL_ERROR = (30, 30, 30), (110, 110, 110), (40, 40, 200)
 FONT = cv2.FONT_HERSHEY_SIMPLEX
-RING_RADIUS = int(LightParams().margin_px) + 13   # D50 ring cursor: just outside the light around the fingertip
+RING_RADIUS = 38                      # D50 ring cursor: just outside the light around the fingertip (D70: a
+                                      # finger's half-width ~18 px + the 8-px margin, so the ring is kept)
 BLOCKED = (90, 90, 90)                # D56: the "not drawing" cursor
 BLOCKED_HINT = "Not drawing: open your hand, then point to draw"
 ZONE_HINT = "Not drawing here: move your fingertip into the writing area to write"  # D62, D66

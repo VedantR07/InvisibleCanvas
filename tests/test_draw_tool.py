@@ -441,20 +441,40 @@ def test_the_l_key_switches_the_light_on_the_hand_and_both_states_are_reported(t
     assert shown[-2][360, 650].tolist() != [255, 255, 255]     # ... and the stroke back after it was switched off
 
 
-def test_the_l_key_is_text_while_a_question_or_a_line_is_typed():
+def test_the_bracket_keys_make_the_light_tighter_or_looser(tmp_path, monkeypatch):
+    # D70: [ tighter, ] looser (4 px a step, 0 .. 32 px): recorded, and the light drawn with it
+    def schedule(s, mapper):
+        return OTHER, (640.0, 360.0)
+
+    queue = [(0.5, ord("[")), (0.7, ord("[")), (0.9, ord("[")), (1.1, ord("]"))]
+
+    def keys(s):
+        return queue.pop(0)[1] if queue and s >= queue[0][0] else -1
+
+    code, config, shown = run_tool(draw_tool, tmp_path, monkeypatch, ["draw", "--seconds", "1.6"], schedule, keys=keys)
+    report = json.loads(sorted(config.reports_dir.glob("draw-*.json"))[-1].read_text())
+    m = report["light_margin_px"]
+    assert code == 0 and queue == [] and m["start"] == 8.0 and m["end"] == 4.0
+    assert [c["margin_px"] for c in m["changes"]] == [4.0, 0.0, 0.0, 4.0]                 # never below 0
+    assert report["light"] is True and report["light_ab"]["on"]["lit_frames"] > 0
+
+
+def test_the_light_keys_are_text_while_a_question_or_a_line_is_typed():
     from invisible_canvas.canvas.model import Canvas
     from invisible_canvas.canvas.toolbar import Toolbar
     from invisible_canvas.interaction.drawing import DrawingController
     from invisible_canvas.interaction.engine import STROKE_END, STROKE_POINT, STROKE_START, Event
     ctl = DrawingController(Canvas((1280, 720)), Toolbar((1280, 720), ai=True))
     ctl.handle([Event(STROKE_START, 0.0, (300, 150)), Event(STROKE_POINT, 0.0, (400, 150)), Event(STROKE_END, 0.0)])
-    toggled = []
-    draw_tool.handle_keys([ord("l")], ctl, 0.0, {"until": 0.0}, [], lambda: None, lambda: toggled.append(1))
-    assert toggled == [1]
+    toggled, sized = [], []
+    draw_tool.handle_keys([ord("l"), ord("["), ord("]")], ctl, 0.0, {"until": 0.0}, [], lambda: None,
+                          lambda: toggled.append(1), sized.append)
+    assert toggled == [1] and sized == [-1, 1]
     ctl.press("ai")
     ctl.press("ai:ask")
-    draw_tool.handle_keys([ord("l")], ctl, 0.0, {"until": 0.0}, [], lambda: None, lambda: toggled.append(1))
-    assert toggled == [1] and ctl.panel["question"] == "l"                 # typed, not a switch
+    draw_tool.handle_keys([ord("l"), ord("["), ord("]")], ctl, 0.0, {"until": 0.0}, [], lambda: None,
+                          lambda: toggled.append(1), sized.append)
+    assert toggled == [1] and sized == [-1, 1] and ctl.panel["question"] == "l[]"   # typed, not the light
 
 
 def test_draw_with_ai_asks_through_the_panel_and_reports_the_answer(tmp_path, monkeypatch):

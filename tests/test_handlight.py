@@ -1,8 +1,10 @@
+"""Light on the hand (D50; D70: fitted to the hand's own shape). Pure tests, no camera or projector."""
+
 import cv2
 import numpy as np
 import pytest
 
-from invisible_canvas.display.handlight import HandLight, LightParams, grown_hull, paint
+from invisible_canvas.display.handlight import HandLight, LightParams, contains, finger_radius, grown_hull, paint
 
 P = LightParams()
 
@@ -13,39 +15,64 @@ def hand_at(x, y):
     return np.column_stack([x + rng.uniform(-30, 30, 21), y + rng.uniform(-60, 60, 21)])
 
 
-def inside(poly, pt):
-    return cv2.pointPolygonTest(poly.astype(np.float32), (float(pt[0]), float(pt[1])), True)
+def pointing_hand(x, y):
+    """MediaPipe's 21 landmarks of a hand pointing up, the index fingertip at (x, y), in projector px: the other
+    fingers curled, the thumb out to the side."""
+    return np.array([(x + 10, y + 140),                                                          # 0 wrist
+                     (x - 25, y + 115), (x - 40, y + 95), (x - 45, y + 75), (x - 42, y + 60),   # thumb 1-4
+                     (x, y + 70), (x, y + 45), (x, y + 20), (x, y),                             # index 5-8
+                     (x + 20, y + 72), (x + 22, y + 55), (x + 18, y + 65), (x + 15, y + 78),   # middle 9-12
+                     (x + 38, y + 78), (x + 40, y + 63), (x + 35, y + 72), (x + 31, y + 84),   # ring 13-16
+                     (x + 52, y + 88), (x + 54, y + 76), (x + 50, y + 83), (x + 46, y + 92)],  # little 17-20
+                    dtype=np.float64)
 
 
-def test_the_light_covers_every_landmark_with_the_margin():
+def lit_area(shape, size=(1280, 720)):
+    mask = np.zeros(size[::-1], np.uint8)
+    paint(mask, shape, 1)
+    return int(mask.sum())
+
+
+def test_the_light_fits_the_hand_and_covers_every_landmark():
+    # D70: the hand's own shape (finger capsules and the palm) + 8 px, not D50's convex outline + 25 px
+    hand = pointing_hand(640, 300)
+    shape = HandLight().update(0.0, hand)
+    r = finger_radius(hand, P) + P.margin_px
+    assert all(contains(shape, q) for q in hand)                              # every landmark lit
+    assert contains(shape, (640, 300 - r + 2)) and not contains(shape, (640, 300 - r - 4))    # above the fingertip
+    gap = (610, 320)                                     # between the pointing finger and the thumb: not the hand
+    old = grown_hull(hand, 25.0)
+    assert contains(old, gap) and not contains(shape, gap)                    # D50 lit it, D70 does not
+    assert lit_area(shape) < 0.75 * lit_area(old)                              # (62 % here, still)
+
+
+def test_the_light_moves_ahead_with_the_hand_and_covers_back_only_part_of_the_way():
     light = HandLight()
-    pts = hand_at(640, 360)
-    poly = light.update(0.0, pts)
-    assert all(inside(poly, p) >= P.margin_px - 1.5 for p in pts)
-    assert inside(poly, (640, 360 - 60 - P.margin_px - 5)) < 0          # not much beyond the margin
-
-
-def test_the_light_looks_ahead_along_the_motion_and_is_capped():
-    light = HandLight()
-    for k in range(7):                                                  # 500 px/s to the right
-        poly = light.update(k * 0.02, hand_at(400 + 10 * k, 360))
-    lead = 400 + 10 * 6 + 30
-    assert inside(poly, (lead + 0.9 * 500 * P.lookahead_s, 360)) > 0   # ~0.26 s ahead of the leading edge
-    assert inside(poly, (400 + 60 - 30 - P.margin_px - 10, 360)) < 0   # behind: only the margin
+    for k in range(7):                                                        # 500 px/s to the right
+        shape = light.update(k * 0.02, pointing_hand(400 + 10 * k, 300))
+    tip, ahead = np.array([460.0, 300.0]), min(500 * P.lookahead_s, P.max_shift_px)
+    r = finger_radius(pointing_hand(0, 0), P) + P.margin_px
+    assert contains(shape, tip + (ahead, 0)) and contains(shape, tip + (P.sweep_from * ahead, 0))   # where it goes
+    assert not contains(shape, tip - (P.sweep_from * ahead - r - 4, 0) + (0, -r + 2))   # not the whole way back
+    assert not contains(shape, tip + (ahead + r + 4, 0))                      # nor beyond
+    still = HandLight()
+    for k in range(7):                                                        # 40 px/s: as good as still
+        shape = still.update(k * 0.02, pointing_hand(400 + 0.8 * k, 300))
+    assert contains(shape, (404.8, 300)) and not contains(shape, (404.8 + r + 6, 300 - r + 2))
     fast = HandLight()
-    for k in range(7):                                                  # 5000 px/s: the cap holds
-        poly = fast.update(k * 0.02, hand_at(100 + 100 * k, 360))
-    assert inside(poly, (100 + 600 + 30 + P.max_shift_px + P.margin_px + 5, 360)) < 0
+    for k in range(7):                                                        # 5000 px/s: the cap holds
+        shape = fast.update(k * 0.02, pointing_hand(100 + 100 * k, 300))
+    assert not contains(shape, (700 + P.max_shift_px + r + 4, 300))
 
 
-def test_the_light_is_held_after_a_loss_then_removed():
+def test_the_light_is_held_briefly_after_a_loss_then_removed():
     light = HandLight()
-    pts = hand_at(640, 360)
-    light.update(0.0, pts)
-    held = light.update(0.5, None)
-    right = pts[np.argmax(pts[:, 0])]
-    assert held is not None and inside(held, (right[0] + P.lost_margin_px - 3, right[1])) > 0   # wider margin
-    assert light.update(0.5 + P.hold_s + 0.01, None) is None
+    hand = pointing_hand(640, 300)
+    light.update(0.0, hand)
+    held = light.update(0.3, None)
+    r = finger_radius(hand, P) + P.margin_px
+    assert held is not None and contains(held, (640, 300 - r - P.lost_extra_px + 2))      # a little wider
+    assert light.update(P.hold_s + 0.05, None) is None
     assert light.update(2.0, None) is None
 
 
@@ -53,9 +80,12 @@ def test_bad_points_count_as_no_hand_and_paint_fills_white():
     light = HandLight()
     assert light.update(0.0, np.full((21, 2), np.nan)) is None
     img = np.zeros((720, 1280, 3), np.uint8)
-    paint(img, grown_hull(hand_at(640, 360), 10))
+    paint(img, grown_hull(hand_at(640, 360), 10))                             # one polygon (D50's form) ...
     assert img[360, 640].tolist() == [255, 255, 255] and img[10, 10].tolist() == [0, 0, 0]
-    paint(img, None)                                                    # no light: nothing changes
+    img[:] = 0
+    paint(img, HandLight().update(0.0, pointing_hand(640, 300)))              # ... or the hand's shape (D70)
+    assert img[300, 640].tolist() == [255, 255, 255] and img[320, 610].tolist() == [0, 0, 0]
+    paint(img, None)                                                          # no light: nothing changes
 
 
 # -- D68: the light over everything drawn since D50, the board itself untouched ------------------------------------
