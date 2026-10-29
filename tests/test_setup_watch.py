@@ -100,6 +100,27 @@ def test_someone_in_front_of_the_projection_is_never_a_move(screen):
     assert watch.moved_checks == 0
 
 
+
+def test_a_light_on_the_hand_over_busy_writing_never_looks_like_a_move(screen):
+    # D68: the D50 light (a white patch over the hand, painted on the projected image) over dense writing, with the
+    # dark hand in it, in the middle and near three corners: the canvas corners stay where the calibration puts them
+    from invisible_canvas.display.handlight import grown_hull, paint
+    busy = screen.copy()
+    for y in range(60, 620, 24):                                          # dense writing over the whole canvas
+        busy[y:y + 6, 40:1240] = 30
+    e, watch = expected(), SetupWatch(expected())
+    for k, (x, y) in enumerate([(640, 360), (150, 560), (1130, 140), (180, 150)]):
+        lit = busy.copy()
+        hand = np.array([[x - 40, y - 80], [x + 40, y - 80], [x + 40, y + 60], [x - 40, y + 60]], dtype=np.float64)
+        paint(lit, grown_hull(hand, 25.0))
+        box = truth(H_REAL, hand)                                         # the hand itself, in camera px
+        dark = [(int(box[:, 0].min()), int(box[:, 1].min()), int(box[:, 0].max()), int(box[:, 1].max()))]
+        frame = camera_frame(lit, dark=dark, seed=20 + k)
+        q = canvas_quad(frame)
+        assert q is not None and np.abs(q - e).max() < 4.5, (x, y)
+        assert watch.update(float(k), frame) is None
+    assert watch.moved_checks == 0
+
 # -- the recorded 2026-10-27 session (local data) ----------------------------------------------------------------
 
 DATA = REPO_ROOT / "data"

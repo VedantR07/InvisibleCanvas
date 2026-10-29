@@ -407,6 +407,50 @@ def test_draw_light_is_off_by_default_and_can_be_turned_on(tmp_path, monkeypatch
         assert (frame[360, 640].tolist() == [255, 255, 255]) or not lit
 
 
+def test_the_l_key_switches_the_light_on_the_hand_and_both_states_are_reported(tmp_path, monkeypatch):
+    # D68: a stroke, then the hand hovering over it; `l` at 1.5 s (on) and 3.0 s (off). The light covers the stroke
+    # under the hand only while on, the stroke is stored unchanged, the key makes no ink, both states are reported.
+    def schedule(s, mapper):
+        if s < 0.6:
+            return POINT, (560.0 + 300 * s, 360.0)                # a stroke along y = 360
+        return OTHER, (650.0, 360.0)                              # then hovering over it
+
+    queue = [(1.5, ord("l")), (3.0, ord("L"))]
+
+    def keys(s):
+        return queue.pop(0)[1] if queue and s >= queue[0][0] else -1
+
+    code, config, shown = run_tool(draw_tool, tmp_path, monkeypatch, ["draw", "--seconds", "4.0", "--trace"], schedule,
+                                   keys=keys)
+    report, trace = draw_report(config)
+    ab = report["light_ab"]
+    assert code == 0 and report["light"] is False and queue == []
+    assert [t["on"] for t in ab["toggles"]] == [True, False] and 1.4 < ab["toggles"][0]["t"] < ab["toggles"][1]["t"]
+    assert ab["on"]["frames"] > 20 and ab["on"]["lit_frames"] > 20 and ab["on"]["ink_points"] == 0
+    assert ab["off"]["lit_frames"] == 0 and ab["off"]["ink_points"] > 0 and ab["off"]["hand_found"] > 0.9
+    assert sum(line["light_on"] for line in trace) == ab["on"]["frames"]
+    assert report["actions"]["strokes"] == 1 and report["strokes_on_canvas"] == 1          # no ink from the key
+    stroke_pixel = [f[360, 650].tolist() for f in shown if f.shape[:2] == (720, 1280)]
+    assert [255, 255, 255] in stroke_pixel                     # under the hand while the light was on ...
+    assert shown[-2][360, 650].tolist() != [255, 255, 255]     # ... and the stroke back after it was switched off
+
+
+def test_the_l_key_is_text_while_a_question_or_a_line_is_typed():
+    from invisible_canvas.canvas.model import Canvas
+    from invisible_canvas.canvas.toolbar import Toolbar
+    from invisible_canvas.interaction.drawing import DrawingController
+    from invisible_canvas.interaction.engine import STROKE_END, STROKE_POINT, STROKE_START, Event
+    ctl = DrawingController(Canvas((1280, 720)), Toolbar((1280, 720), ai=True))
+    ctl.handle([Event(STROKE_START, 0.0, (300, 150)), Event(STROKE_POINT, 0.0, (400, 150)), Event(STROKE_END, 0.0)])
+    toggled = []
+    draw_tool.handle_keys([ord("l")], ctl, 0.0, {"until": 0.0}, [], lambda: None, lambda: toggled.append(1))
+    assert toggled == [1]
+    ctl.press("ai")
+    ctl.press("ai:ask")
+    draw_tool.handle_keys([ord("l")], ctl, 0.0, {"until": 0.0}, [], lambda: None, lambda: toggled.append(1))
+    assert toggled == [1] and ctl.panel["question"] == "l"                 # typed, not a switch
+
+
 def test_draw_with_ai_asks_through_the_panel_and_reports_the_answer(tmp_path, monkeypatch):
     # D51 end to end with a fake Claude: a stroke, AI button by dwell, SUMMARIZE by dwell, the answer back.
     from invisible_canvas.ai.client import AIAnswer

@@ -56,3 +56,46 @@ def test_bad_points_count_as_no_hand_and_paint_fills_white():
     paint(img, grown_hull(hand_at(640, 360), 10))
     assert img[360, 640].tolist() == [255, 255, 255] and img[10, 10].tolist() == [0, 0, 0]
     paint(img, None)                                                    # no light: nothing changes
+
+
+# -- D68: the light over everything drawn since D50, the board itself untouched ------------------------------------
+
+def test_the_light_covers_whatever_lies_under_the_hand_and_the_board_is_unchanged():
+    # Smart Lines (notes, review bar), the AI panel and a notice are all under the light; the stored strokes, the
+    # Smart Lines and the page are unchanged, and the same frame without a light shows them again
+    from invisible_canvas.canvas.model import Canvas
+    from invisible_canvas.canvas.render import CanvasRenderer
+    from invisible_canvas.canvas.toolbar import Toolbar
+    from invisible_canvas.interaction.drawing import DrawingController
+    from invisible_canvas.interaction.engine import HOVER, STROKE_END, STROKE_POINT, STROKE_START, Event
+    size = (1280, 720)
+    ctl = DrawingController(Canvas(size), Toolbar(size, ai=True))
+    ctl.recognition = True
+    for y in (200, 230, 260):                                            # freehand ink
+        ctl.handle([Event(STROKE_START, 0.0, (100, y)), Event(STROKE_POINT, 0.0, (1200, y)), Event(STROKE_END, 0.0)])
+    ctl.press("lines")
+    ctl.handle([Event(STROKE_START, 0.0, (300, 450)), Event(STROKE_POINT, 0.0, (330, 520)), Event(STROKE_END, 0.0)])
+    ctl.press("lines:complete")
+    (n, _, _), = ctl.take_line_jobs()
+    ctl.line_result(n, {"ok": True, "written": "CAT", "text": "CAT", "error": "", "latency_s": 1.0})   # review bar
+    ctl.press("ai")
+    ctl.show_notice("A notice on the wall.")
+    before = ([(s.id, list(s.points), s.color, s.width) for s in ctl.canvas.strokes.values()],
+              ctl.sheet().version, [(s.id, list(s.points)) for s in ctl.sheet().lines[0].strokes])
+    r = CanvasRenderer(size)
+    plain = r.render(ctl.canvas, ctl, ctl.toolbar, mode=HOVER, cursor=None)
+    hand = np.array([[300, 120], [900, 120], [900, 520], [300, 520]], dtype=np.float64)   # over all of them
+    poly = grown_hull(hand, P.margin_px)
+    lit = r.render(ctl.canvas, ctl, ctl.toolbar, mode=HOVER, cursor=(600, 300), light=poly)
+    mask = np.zeros(size[::-1], np.uint8)
+    cv2.fillConvexPoly(mask, poly, 1)
+    inner = cv2.erode(mask, np.ones((5, 5), np.uint8)).astype(bool)     # away from the anti-aliased edge
+    assert (plain[inner] < 200).any()                                  # ink, notes, bar, panel, notice there ...
+    assert (lit[inner] == 255).all()                                   # ... all white under the light
+    outside = ~cv2.dilate(mask, np.ones((5, 5), np.uint8)).astype(bool)
+    assert (lit[outside] == plain[outside]).all()                      # the rest of the board unchanged
+    after = ([(s.id, list(s.points), s.color, s.width) for s in ctl.canvas.strokes.values()],
+             ctl.sheet().version, [(s.id, list(s.points)) for s in ctl.sheet().lines[0].strokes])
+    assert after == before                                             # nothing stored was touched
+    again = r.render(ctl.canvas, ctl, ctl.toolbar, mode=HOVER, cursor=None)
+    assert (again == plain).all()                                      # the hand gone: all of it back

@@ -4,7 +4,9 @@
     anything else (open hand, fist) -> cursor only
     cursor held on a toolbar button 1 s (CLEAR 2 s) -> press it
 
-`--light` lights the hand plain white with a ring cursor (D50; off by default since 2026-10-23, user decision).
+`--light` lights the hand plain white with a ring cursor (D50; off by default since 2026-10-23, user decision). D68:
+the `l` key switches it on or off during a session; the report compares the frames of the two states (`light_ab`:
+hand found and lost, frame rate, pipeline, ink), the trace marks each frame (`light_on`, `lit`).
 The AI button is on by default (`[ai] enabled = true`, D57; `--no-ai` switches it off for one session, `--ai`
 forces it on): the AI reads the SELECT-ed writing (D51, §9.11); by default
 a free local model through Ollama (D52), or Claude with `[ai] backend = "claude"`. Requests
@@ -25,10 +27,11 @@ frame rate while lines were read (`line_recognition`). D67: the reader warms up 
 background, with a small image made by the app (never the user's content); the report has the warm-up and the
 first line's reading time against the later ones.
 
-Keyboard (laptop): o open a file, z undo, y redo, s save, c twice clear, ESC quit. Before tracking, the setup check runs
-(a moved setup is recalibrated automatically and validated first, D39). On exit the current page is saved to
-data/canvas/ (strokes JSON + PNG), every page to a board file (D59: board-*.json + a PNG per page), and a report
-to data/reports/draw-*.json. `--load FILE` continues a board (or a single canvas) file, `--resume` the newest board.
+Keyboard (laptop): o open a file, z undo, y redo, s save, c twice clear, l light on the hand, ESC quit. Before
+tracking, the setup check runs (a moved setup is recalibrated automatically and validated first, D39). On exit the
+current page is saved to data/canvas/ (strokes JSON + PNG), every page to a board file (D59: board-*.json + a PNG per
+page), and a report to data/reports/draw-*.json. `--load FILE` continues a board (or a single canvas) file,
+`--resume` the newest board.
 """
 
 from __future__ import annotations
@@ -103,6 +106,28 @@ def _percentiles(values) -> dict | None:
         return None
     a = np.asarray(values, dtype=np.float64)
     return {"median": float(np.median(a)), "p95": float(np.percentile(a, 95)), "max": float(a.max())}
+
+
+def light_state(rows: list[dict]) -> dict | None:
+    """D68: the frames of one light state (on or off) for the A/B: how often a hand was found and lost, how fast,
+    how much ink. Losses: a frame with a hand followed by one without (frames < 0.5 s apart); while drawing: the
+    frame before was in DRAW."""
+    if not rows:
+        return None
+    hand = [r for r in rows if r["hand"]]
+    pairs = [(a, b) for a, b in zip(rows, rows[1:]) if 0 < b["t"] - a["t"] < 0.5]
+    losses = [(a, b) for a, b in pairs if a["hand"] and not b["hand"]]
+    return {"frames": len(rows), "seconds": round(sum(b["t"] - a["t"] for a, b in pairs), 1),
+            "processing_fps": segment_fps([r["t"] for r in rows]),
+            "hand_frames": len(hand), "hand_found": round(len(hand) / len(rows), 4),
+            "hand_losses": len(losses), "losses_per_1000_hand_frames": round(1000 * len(losses) / max(len(hand), 1), 1),
+            "losses_while_drawing": sum(1 for a, _ in losses if a["mode"] == "draw"),
+            "draw_frames": sum(r["mode"] == "draw" for r in rows), "lit_frames": sum(r["lit"] for r in rows),
+            "ink_points": sum(r["ink_points"] for r in rows),
+            "inference_ms": _percentiles([r["inference_ms"] for r in rows]),
+            "inference_ms_with_hand": _percentiles([r["inference_ms"] for r in hand]),
+            "pipeline_ms": _percentiles([r["pipeline_ms"] for r in rows]),
+            "pipeline_ms_with_hand": _percentiles([r["pipeline_ms"] for r in hand])}
 
 
 def segment_fps(times: list[float], gap: float = 0.5) -> float:
@@ -219,9 +244,11 @@ def open_document(controller: DrawingController, engine: InteractionEngine, t: f
         print(f"could not open {path}: {e}")
 
 
-def handle_keys(keys, controller: DrawingController, now: float, clear_armed: dict, saved_paths: list, save) -> bool:
+def handle_keys(keys, controller: DrawingController, now: float, clear_armed: dict, saved_paths: list, save,
+                toggle_light=None) -> bool:
     """The laptop keys of one frame (pollKey and waitKey: -1 when none); True means quit (ESC). While an ASK
-    question is typed (D61) every key is text for it, Esc included (it cancels the question, not the session)."""
+    question is typed (D61) every key is text for it, Esc included (it cancels the question, not the session).
+    D68: `l` switches the light on the hand on or off (`toggle_light`)."""
     for key in keys:
         if not 0 < key < 256:                          # no key, or an arrow / F-key (only typed text is used)
             continue
@@ -229,6 +256,8 @@ def handle_keys(keys, controller: DrawingController, now: float, clear_armed: di
             controller.type_key(key)
         elif key == 27:
             return True
+        elif key in (ord("l"), ord("L")) and toggle_light is not None:
+            toggle_light()
         elif key in (ord("o"), ord("O")):              # D60: open a document, as the OPEN FILE button
             controller.open_requested = True
         elif key in (ord("z"), ord("Z")):
@@ -310,13 +339,21 @@ def run(config: Config, args) -> int:
         if args.trace:
             save_dir.mkdir(parents=True, exist_ok=True)
             trace = open(save_dir / "trace.jsonl", "w", encoding="utf-8", buffering=1 << 20)   # ~1 write per s
-        print(f"drawing: {HELP}. Keys: o open a file, z undo, y redo, s save, c twice clear, ESC quit "
+        print(f"drawing: {HELP}. Keys: o open a file, z undo, y redo, s save, c twice clear, l light on the hand "
+              f"(now {'on' if light is not None else 'off'}), ESC quit "
               "(while an ASK question is typed, keys type it: Enter sends, Esc cancels).")
         s.camera.reset_stats()
         start = time.perf_counter()
         seq, last_saved, clear_armed, last_t = current_seq(s), -1e9, {"until": 0.0}, None
         saved_paths = []
         last_t0 = None
+        light_toggles = []
+
+        def toggle_light() -> None:                    # D68: the `l` key; a fresh light holds nothing from before
+            nonlocal light
+            light = None if light is not None else HandLight()
+            light_toggles.append({"t": round(time.perf_counter() - start, 2), "on": light is not None})
+            print(f"light on the hand: {'on' if light is not None else 'off'} at {light_toggles[-1]['t']} s")
 
         def save_all() -> list[str]:                   # the s key: this page's canvas and the whole board
             return ([str(p) for p in save_canvas(config, controller.canvas, renderer)]
@@ -371,7 +408,10 @@ def run(config: Config, args) -> int:
                             "inference_ms": (t1 - t0) * 1000, "pipeline_ms": (t2 - frame.timestamp) * 1000,
                             "ai_busy": bool(worker is not None and worker.busy),
                             "lines_busy": bool(line_worker is not None and line_worker.busy),
-                            "lines_warming": bool(line_worker is not None and line_worker.warming_up)})
+                            "lines_warming": bool(line_worker is not None and line_worker.warming_up),
+                            # D68: the light switched on, a light painted this frame, ink points added this frame
+                            "light_on": light is not None, "lit": lit is not None,
+                            "ink_points": sum(1 for o in controller.outcomes if o[0] == "added")})
             td = time.perf_counter()
             stage_ms = {"queue": (t0 - frame.timestamp) * 1000, "inference": (t1 - t0) * 1000,
                         "hand": (th - t1) * 1000, "engine": (te - th) * 1000, "controller": (tc - te) * 1000,
@@ -393,6 +433,7 @@ def run(config: Config, args) -> int:
                          "ai_busy": records[-1]["ai_busy"],              # an AI request was running (S3, §9.13)
                          "lines_busy": records[-1]["lines_busy"],        # D64: a Smart Line was being read
                          "lines_warming": records[-1]["lines_warming"],  # D67: the reader's warm-up was running
+                         "light_on": records[-1]["light_on"],            # D68: the light on the hand switched on
                          "page": controller.board.current + 1,           # D59
                          "view": controller.view,                        # D60: board or doc
                          "tool": controller.tool,                        # D62: lines (Smart Lines) or another
@@ -431,7 +472,8 @@ def run(config: Config, args) -> int:
                     if controller.asking else
                     f"EDIT the line - type it, Enter saves, Esc cancels: {controller.line_edit['text']}_"
                     if controller.line_edit is not None else "",
-                    HELP, "keys: o open a file  z undo  y redo  s save  c c clear  ESC quit"])
+                    HELP, "keys: o open a file  z undo  y redo  s save  c c clear  "
+                    f"l light {'on' if light is not None else 'off'}  ESC quit"])
             moved = watch.update(frame.timestamp, frame.image) if time.perf_counter() >= watch_from else None
             if moved is not None:                          # D58: the projector or the camera moved
                 controller.handle(engine.release(frame.timestamp))     # a pen lift: nothing bridged across the pause
@@ -468,7 +510,7 @@ def run(config: Config, args) -> int:
             diag.stages["post"].add((now - t2) * 1000)
             if args.seconds and now - start >= args.seconds:
                 break
-            if handle_keys(keys, controller, now, clear_armed, saved_paths, save_all):
+            if handle_keys(keys, controller, now, clear_armed, saved_paths, save_all, toggle_light):
                 break
         if trace is not None:
             trace.close()
@@ -538,7 +580,10 @@ def run(config: Config, args) -> int:
         },
         "canvas": {"json": str(json_path), "png": str(png_path), "saved_during_run": saved_paths},
         "trace": str(save_dir / "trace.jsonl") if args.trace else None,
-        "light": bool(args.light),
+        "light": bool(args.light),                                             # at the start
+        # D68: the light switched with the `l` key, and the frames of each state (an A/B in one session)
+        "light_ab": {"toggles": light_toggles, "off": light_state([r for r in records if not r["light_on"]]),
+                     "on": light_state([r for r in records if r["light_on"]])},
         "selections": controller.selection_log,
         # §9.12 item 1: why fingertips did or did not become ink, per band, and per-stage timing (observation only)
         "diagnostics": diag.report(strokes_committed=controller.log["strokes"], attempts=controller.attempts),
@@ -598,6 +643,15 @@ def run(config: Config, args) -> int:
             print(f"  first line read in {rec['first_reading_latency_s']:.1f} s (after {rec['first_reading_waited_s']:.1f} s "
                   f"in the queue)" + (f"; later lines median {later['median']:.1f} s, max {later['max']:.1f} s"
                                       if later else ""))
+    ab = report["light_ab"]
+    if ab["toggles"]:                                  # D68: the A/B of the light on the hand
+        for state in ("off", "on"):
+            st = ab[state]
+            if st is not None:
+                print(f"light {state}: {st['frames']} frames ({st['seconds']} s), {st['processing_fps']:.1f} fps, "
+                      f"hand found {st['hand_found']:.0%}, {st['losses_per_1000_hand_frames']} losses per 1000 hand "
+                      f"frames ({st['losses_while_drawing']} while drawing), pipeline median "
+                      f"{st['pipeline_ms']['median']:.1f} ms, p95 {st['pipeline_ms']['p95']:.1f} ms")
     print(f"canvas: {json_path} (+ .png)")
     print(f"report: {save_report(config, 'draw', report)}")
     if controller.reference is not None:               # D60: let go of the document file
