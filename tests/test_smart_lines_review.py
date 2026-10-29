@@ -19,7 +19,8 @@ from invisible_canvas.ai.recognize import (
 )
 from invisible_canvas.canvas import text as typeset
 from invisible_canvas.canvas.board import Board
-from invisible_canvas.canvas.lines import INK, OFF_FILL, READING_INK, SUGGESTION, render_controls, render_sheet
+from invisible_canvas.canvas.lines import (EDGE_OFF, INK, LABEL_OFF, READING_INK, SECONDARY, SUGGESTION,
+                                          render_controls, render_sheet)
 from invisible_canvas.canvas.model import Canvas
 from invisible_canvas.canvas.render import PAGE_FILL, TOOL_SELECTED, CanvasRenderer
 from invisible_canvas.canvas.toolbar import Toolbar
@@ -811,7 +812,7 @@ def test_write_here_stands_in_the_zone_until_something_is_written():
     assert ctl.background[caption].min() <= 130
 
 
-def test_ok_and_done_are_filled_blue_when_they_can_act_and_grey_when_not():
+def test_ok_and_done_are_filled_blue_when_they_can_act_and_greyed_white_when_not():
     ctl = controller()
     line = write_line(ctl)
     (n, _, _), = ctl.take_line_jobs()
@@ -823,15 +824,23 @@ def test_ok_and_done_are_filled_blue_when_they_can_act_and_grey_when_not():
     def inside(name):
         x0, y0, x1, y1 = layout.button(name).rect
         return img[y0 + 4:y1 - 4, x0 + 4:x1 - 4]
-    assert ctl.lines_enabled("lines:ok") and near(inside("lines:ok"), SUGGESTION) > 0.6 * inside("lines:ok")[..., 0].size
+    ok_area = inside("lines:ok")[..., 0].size
+    assert ctl.lines_enabled("lines:ok") and near(inside("lines:ok"), SUGGESTION) > 0.6 * ok_area   # filled blue
     assert near(inside("lines:edit"), SUGGESTION) == 0 and (inside("lines:edit") == 255).mean() > 0.6   # white
-    assert not ctl.lines_enabled("lines:complete") and near(inside("lines:complete"), OFF_FILL, 6) > 1000
+    bx0, by0, bx1, by1 = layout.bar                                           # D71 wall check: dark enough
+    assert near(img[by0:by1, bx0:bx0 + 100], SECONDARY, 40) > 20              # "Line 1:"
+    cx0, cy0, cx1, cy1 = layout.controls.column
+    assert near(img[cy0 + 80:cy1 - 80, cx0 + 20:cx1], SECONDARY, 40) > 20     # the counter "1 / 1"
+    assert not ctl.lines_enabled("lines:complete") and (inside("lines:complete") == 255).mean() > 0.8   # white
+    assert near(inside("lines:complete"), LABEL_OFF, 6) > 30                  # its grey label (D71 wall check)
+    x0, y0, x1, y1 = layout.button("lines:complete").rect
+    assert near(img[y0:y0 + 2, x0 + 20:x1 - 20], EDGE_OFF, 20) > 50           # and grey edge
     stroke(ctl, [(600, Y - 30), (605, Y), (600, Y + 30)])
     dwell(ctl, "lines:ok", 5.0)
     dwell(ctl, "lines:row:0", 10.0)                                           # the line in the review bar again
     img = r.render(ctl.canvas, ctl, ctl.toolbar, mode=HOVER, cursor=None)
     assert line.status == "confirmed" and ctl.review_line() is line and not ctl.lines_enabled("lines:ok")
-    assert near(inside("lines:ok"), SUGGESTION) == 0 and near(inside("lines:ok"), OFF_FILL, 6) > 500   # grey
+    assert near(inside("lines:ok"), SUGGESTION) == 0 and (inside("lines:ok") == 255).mean() > 0.6   # greyed
     assert ctl.lines_enabled("lines:complete") and near(inside("lines:complete"), SUGGESTION) > 3000   # DONE blue
     assert (inside("lines:complete") > 245).all(axis=2).sum() > 50            # its white label
 

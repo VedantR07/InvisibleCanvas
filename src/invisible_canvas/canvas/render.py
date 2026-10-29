@@ -45,11 +45,12 @@ from .toolbar import COLOURS, WIDTHS, Toolbar
 BACKGROUND = 255
 TOOLBAR_BG = (242, 238, 235)          # D71: a light grey-blue band
 HIGHLIGHT = (200, 60, 200)            # magenta: selection, pinch cursor, hold-to-press progress
-TOOL_SELECTED = (220, 90, 125)        # D71: purple (RGB 125, 90, 220): the tool, colour and width in use
+TOOL_SELECTED = (190, 50, 105)        # D71: purple (RGB 105, 50, 190; the wall check: darker and 4 px): the tool,
+                                      # colour and width in use
 TOOL_EDGE, TOOL_LABEL = (200, 192, 184), (80, 50, 30)        # D71: a button's edge, its label (navy)
 GROUP_FILL, GROUP_EDGE = (250, 247, 245), (215, 208, 200)    # D71: behind the colours, behind the widths
 LABEL_FONT, LABEL_SIZE = "seguisb.ttf", 17                   # the toolbar's labels (smaller if one does not fit)
-PAGE_FILL, PAGE_TEXT = (236, 232, 228), (75, 65, 58)         # D71: the page label's pill
+PAGE_FILL, PAGE_TEXT = (236, 232, 228), (60, 38, 22)         # D71: the page label's pill (text navy, 20 px)
 ERASER = (0, 140, 255)                # orange
 SELECTION_HALO = (245, 200, 245)      # light magenta behind selected strokes
 PANEL_TEXT, PANEL_MUTED, PANEL_ERROR = (30, 30, 30), (110, 110, 110), (40, 40, 200)
@@ -183,7 +184,7 @@ class CanvasRenderer:
                        or (b.kind == "width" and controller.width == b.name)
                        or (b.kind == "board" and getattr(controller, "board_open", False)))
             ops.append(("rrect", (x0, y0, x1 - 1, y1 - 1), 10, (255, 255, 255), TOOL_SELECTED if current else TOOL_EDGE,
-                        3 if current else 2))
+                        4 if current else 2))
             if b.kind not in ("colour", "width"):
                 ops.append(("text", ((x0 + x1) / 2, (y0 + y1) / 2), b.name.upper(), font, TOOL_LABEL, "mm"))
         typeset.draw(band, ops)
@@ -200,12 +201,12 @@ class CanvasRenderer:
     def _view_label(self, img: np.ndarray, label: str) -> None:
         """D71: what is shown ('Page 1 of 1') in a rounded pill at the top left, typeset once per label."""
         if self._label is None or self._label[0] != label:
-            f = typeset.font(LABEL_FONT, 18)
+            f = typeset.font(LABEL_FONT, 20)
             w = int(typeset.width(label, f)) + 28
-            patch, shape = np.full((34, w, 3), 255, np.uint8), np.zeros((34, w, 3), np.uint8)
-            typeset.draw(patch, [("rrect", (0, 0, w - 1, 33), 12, PAGE_FILL, None),
-                                 ("text", (14, 17), label, f, PAGE_TEXT, "lm")])
-            typeset.draw(shape, [("rrect", (0, 0, w - 1, 33), 12, (255, 255, 255), None)])
+            patch, shape = np.full((36, w, 3), 255, np.uint8), np.zeros((36, w, 3), np.uint8)
+            typeset.draw(patch, [("rrect", (0, 0, w - 1, 35), 12, PAGE_FILL, None),
+                                 ("text", (14, 18), label, f, PAGE_TEXT, "lm")])
+            typeset.draw(shape, [("rrect", (0, 0, w - 1, 35), 12, (255, 255, 255), None)])
             self._label = (label, patch, shape[:, :, 0] > 127)
         _, patch, shape = self._label
         region = img[8:8 + patch.shape[0], 12:12 + patch.shape[1]]

@@ -79,7 +79,8 @@ COUNTER_FILL = (247, 242, 238)
 EDIT_FILL, EDIT_EDGE = (240, 250, 252), (150, 210, 230)
 TRACK, THUMB = (200, 196, 192), SUGGESTION
 EDGE, EDGE_OFF, LABEL, LABEL_OFF = (90, 60, 40), (170, 170, 170), (80, 50, 30), (160, 160, 160)   # navy
-OFF_FILL, PRIMARY_LABEL = (228, 228, 228), (255, 255, 255)   # D71: DONE / OK greyed (filled), and on blue
+PRIMARY_LABEL = (255, 255, 255)            # D71: DONE / OK on blue
+SECONDARY = (75, 60, 50)                   # D71 wall check: the counter and "Line n:" (MUTED was faint)
 BUTTON_EDGE_PX = 2
 
 
@@ -564,10 +565,11 @@ def _notes_image(sheet: LineSheet, layout: LinesLayout, review: int | None, righ
 
 def _button_ops(rect, origin, label: str, on: bool, f, primary: bool = False) -> list:
     """A rounded button (D71): white with a navy edge and label, or (`primary`: DONE, OK) filled blue with a white
-    label; greyed when it cannot act (DONE and OK then filled grey)."""
+    label; greyed when it cannot act: white with a grey edge and label (the wall check: a grey fill hid the grey
+    label)."""
     x0, y0, x1, y1 = (v - o for v, o in zip(rect, origin + origin))
-    if primary:
-        fill, edge, colour = (SUGGESTION, SUGGESTION, PRIMARY_LABEL) if on else (OFF_FILL, EDGE_OFF, LABEL_OFF)
+    if primary and on:
+        fill, edge, colour = SUGGESTION, SUGGESTION, PRIMARY_LABEL
     else:
         fill, edge, colour = (255, 255, 255), EDGE if on else EDGE_OFF, LABEL if on else LABEL_OFF
     ops = [("rrect", (x0, y0, x1 - 1, y1 - 1), RADIUS, fill, edge, BUTTON_EDGE_PX)]
@@ -621,9 +623,9 @@ def render_controls(layout: LinesLayout, view, controls: Controls | None = None)
         px0, px1, my = tx1 + 6, cx1 - cx0 - 9, (cy1 - cy0) / 2
         mx = (px0 + px1) / 2
         ops += [("rrect", (px0, my - 42, px1, my + 42), 10, COUNTER_FILL, PANEL_EDGE),
-                ("text", (mx, my - 22), str(last), f["label"], MUTED, "mm"),
-                ("text", (mx, my), "/", f["label"], MUTED, "mm"),
-                ("text", (mx, my + 22), str(total), f["label"], MUTED, "mm")]
+                ("text", (mx, my - 22), str(last), f["label"], SECONDARY, "mm"),
+                ("text", (mx, my), "/", f["label"], SECONDARY, "mm"),
+                ("text", (mx, my + 22), str(total), f["label"], SECONDARY, "mm")]
     patches.append(_patch(controls.column, ops))
     if bar is not None:
         number, status, main, note, typed = bar
@@ -640,13 +642,14 @@ def render_controls(layout: LinesLayout, view, controls: Controls | None = None)
                    ("text", (bw - 20, cy), keys, f["small"], MUTED, "rm")]
         else:
             head = f"Line {number}:"
-            x, right = 20 + typeset.width(head, f["small"]) + 12, controls.bar_text_right - bx0
+            x, right = 20 + typeset.width(head, f["label"]) + 12, controls.bar_text_right - bx0
             big = status in ("check", "confirmed")
             main_font = f["bar"] if big else f["number"]
             colour = {"check": SUGGESTION, "failed": WARN, "recognizing": MUTED}.get(status, INK)
             main = typeset.fit(main, main_font, right - x)
             ops = [("rrect", (0, 0, bw - 1, bh - 1), 12, BAR_FILL, BAR_EDGE, 2),
-                   ("text", (20, cy), head, f["small"], MUTED, "lm"), ("text", (x, cy), main, main_font, colour, "lm")]
+                   ("text", (20, cy), head, f["label"], SECONDARY, "lm"),
+                   ("text", (x, cy), main, main_font, colour, "lm")]
             x2 = x + typeset.width(main, main_font) + 12
             if note and right - x2 > 80:
                 ops.append(("text", (x2, cy), typeset.fit(note, f["small"], right - x2), f["small"], MUTED, "lm"))
