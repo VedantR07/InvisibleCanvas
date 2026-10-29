@@ -182,7 +182,22 @@ class DrawingController:
             return None
         sheet, review = self.sheet(), self.review_line()
         return render_sheet(sheet, self.lines_layout, self.lines_active or bool(sheet.canvas.strokes),
-                            self.lines_active, None if review is None else review.id)
+                            self.lines_active, None if review is None else review.id, self._notes_right())
+
+    def _notes_right(self) -> int | None:
+        """D71: where the notes end while an open panel lies over their right part: left of the panel, and of the
+        scroll column moved beside it (D65); None: their own width."""
+        if self.panel is not None and self.panel_layout is not None:
+            covering = self.panel_layout.rect
+        elif self.board_open:
+            covering = self.board_layout.rect
+        else:
+            return None
+        nx0, ny0, nx1, ny1 = self.lines_layout.notes
+        if not (covering[0] < nx1 and covering[1] < ny1 and ny0 < covering[3]):
+            return None
+        left = min(covering[0], self.lines_controls.column[0]) if self.lines_active else covering[0]
+        return int(left) - 12
 
     def view_label(self) -> str:
         """What is shown, for the wall: 'Page 2 of 5', or the document page and file name."""

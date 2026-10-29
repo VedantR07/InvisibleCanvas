@@ -5,7 +5,7 @@ import pytest
 
 from invisible_canvas.canvas.history import AddStroke, History, MoveStrokes, ReplaceStrokes
 from invisible_canvas.canvas.model import MAX_STEP, Canvas, Stroke
-from invisible_canvas.canvas.render import CanvasRenderer
+from invisible_canvas.canvas.render import TOOLBAR_BG, CanvasRenderer
 from invisible_canvas.canvas.toolbar import CLEAR_DWELL_S, COLOURS, DWELL_S, TOOLS, WIDTHS, Toolbar
 from invisible_canvas.interaction.drawing import ERASER_RADIUS, DrawingController
 from invisible_canvas.interaction.engine import (
@@ -377,7 +377,7 @@ def test_render_shows_strokes_toolbar_and_cursor():
     img = r.render(c, ctl, tb, mode=DRAW, cursor=(640, 360))
     assert img.shape == (720, 1280, 3)
     assert img[100, 200].tolist() == list(COLOURS["black"])         # the stroke
-    assert img[tb.top + 2, 5].tolist() == [232, 232, 232]           # toolbar band
+    assert tuple(img[tb.top + 2, 5]) == TOOLBAR_BG                   # toolbar band
     assert tuple(img[360, 640]) == COLOURS["black"]                 # draw cursor in the pen colour
     r.render(c, ctl, tb, mode=DRAW, cursor=None)
     assert r.redraws == 1                                           # cached until the canvas changes

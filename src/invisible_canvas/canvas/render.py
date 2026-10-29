@@ -23,6 +23,10 @@ by `canvas/lines.py`, cached until they change); while LINES is in use the rende
 (D64) the review bar, typeset with Pillow only when what they show changes and copied over each frame, with their
 hold-to-press progress (grey when they cannot act). A stroke refused outside the zone gets its own hint. D65: where
 an open panel would cover them, they are drawn beside it (`controller.lines_controls`).
+
+D71 (the user's mockup): the toolbar's rounded buttons with Segoe UI Semibold labels, the colours and the widths each
+in a rounded group, the tool, colour and width in use outlined purple; the band is typeset once per state and copied
+over each frame. The page label in a rounded pill. The buttons' places are unchanged.
 """
 
 from __future__ import annotations
@@ -32,14 +36,20 @@ import numpy as np
 
 from ..display.handlight import paint
 from ..interaction.engine import DRAW, HOVER
+from . import text as typeset
 from .lines import render_controls
 from .model import Canvas, Stroke
 from .panel import clip_lines, wrap
 from .toolbar import COLOURS, WIDTHS, Toolbar
 
 BACKGROUND = 255
-TOOLBAR_BG = (232, 232, 232)
-HIGHLIGHT = (200, 60, 200)            # magenta: selection, pinch cursor, current tool
+TOOLBAR_BG = (242, 238, 235)          # D71: a light grey-blue band
+HIGHLIGHT = (200, 60, 200)            # magenta: selection, pinch cursor, hold-to-press progress
+TOOL_SELECTED = (220, 90, 125)        # D71: purple (RGB 125, 90, 220): the tool, colour and width in use
+TOOL_EDGE, TOOL_LABEL = (200, 192, 184), (80, 50, 30)        # D71: a button's edge, its label (navy)
+GROUP_FILL, GROUP_EDGE = (250, 247, 245), (215, 208, 200)    # D71: behind the colours, behind the widths
+LABEL_FONT, LABEL_SIZE = "seguisb.ttf", 17                   # the toolbar's labels (smaller if one does not fit)
+PAGE_FILL, PAGE_TEXT = (236, 232, 228), (75, 65, 58)         # D71: the page label's pill
 ERASER = (0, 140, 255)                # orange
 SELECTION_HALO = (245, 200, 245)      # light magenta behind selected strokes
 PANEL_TEXT, PANEL_MUTED, PANEL_ERROR = (30, 30, 30), (110, 110, 110), (40, 40, 200)
@@ -72,6 +82,8 @@ class CanvasRenderer:
         self._under: np.ndarray | None = None          # D60: ... over one background (a document page) or none
         self._version = -1
         self.redraws = 0
+        self._band: tuple | None = None                # D71: (state, the toolbar band typeset)
+        self._label: tuple | None = None               # D71: (label, pill image, its shape)
 
     def _strokes(self, canvas: Canvas, under: np.ndarray | None = None) -> np.ndarray:
         if (self._cache is None or canvas is not self._canvas or canvas.version != self._version
@@ -109,7 +121,7 @@ class CanvasRenderer:
         if getattr(controller, "board_open", False):
             self._board_panel(img, controller)
         elif board is not None:                        # D59 / D60: what is shown, small, top left
-            cv2.putText(img, controller.view_label(), (12, 28), FONT, 0.6, PANEL_MUTED, 2, cv2.LINE_AA)
+            self._view_label(img, controller.view_label())
         notice = getattr(controller, "notice", None)
         if notice is not None and controller.now < notice["until"]:    # D60: e.g. a file that could not be opened
             self._notice(img, notice["text"])
@@ -131,33 +143,74 @@ class CanvasRenderer:
         return img
 
     def _toolbar(self, img: np.ndarray, toolbar: Toolbar, controller) -> None:
-        w, _ = self.size
-        cv2.rectangle(img, (0, toolbar.top), (w - 1, self.size[1] - 1), TOOLBAR_BG, -1)
+        """The band typeset once per state (D71) and copied over the frame; then the hold-to-press progress."""
+        key = (id(toolbar), controller.tool, controller.colour, controller.width,
+               getattr(controller, "board_open", False))
+        if self._band is None or self._band[0] != key:
+            self._band = (key, self._toolbar_band(toolbar, controller))
+        band = self._band[1]
+        img[toolbar.top:toolbar.top + band.shape[0]] = band
+        progress = controller.dwell_progress
+        b = None if progress is None else next((b for b in toolbar.buttons if b.name == progress[0]), None)
+        if b is not None:                                               # hold-to-press feedback
+            x0, y0, x1, y1 = b.rect
+            fill = int((x1 - x0 - 8) * progress[1])
+            cv2.rectangle(img, (x0 + 4, y1 - 9), (x0 + 4 + fill, y1 - 4), (40, 40, 215) if b.name == "clear" else
+                          HIGHLIGHT, -1)
+
+    def _toolbar_band(self, toolbar: Toolbar, controller) -> np.ndarray:
+        """D71: the toolbar band: rounded buttons, the colours and the widths each in a rounded group, the tool,
+        colour and width in use (and PAGES while its panel is open) outlined purple, the labels in Segoe UI
+        Semibold (one size for all, the largest that fits every button)."""
+        w, h = self.size
+        top = toolbar.top
+        band = np.full((h - top, w, 3), TOOLBAR_BG, np.uint8)
+        ops = []
+        for kind in ("colour", "width"):
+            group = [b.rect for b in toolbar.buttons if b.kind == kind]
+            ops.append(("rrect", (group[0][0] - 6, group[0][1] - top - 5, group[-1][2] + 5, group[-1][3] - top + 4),
+                        14, GROUP_FILL, GROUP_EDGE))
+        labels = [b.name.upper() for b in toolbar.buttons if b.kind not in ("colour", "width")]
+        size, room = LABEL_SIZE, toolbar.button_w - 8             # 61-px buttons: 15 px (ERASER 52 px wide)
+        while size > 10 and max(typeset.width(t, typeset.font(LABEL_FONT, size)) for t in labels) > room:
+            size -= 1
+        font = typeset.font(LABEL_FONT, size)
         for b in toolbar.buttons:
             x0, y0, x1, y1 = b.rect
-            cx, cy = (x0 + x1) // 2, (y0 + y1) // 2
-            cv2.rectangle(img, (x0, y0), (x1 - 1, y1 - 1), (255, 255, 255), -1)
+            y0, y1 = y0 - top, y1 - top
             current = ((b.kind == "tool" and controller.tool == b.name)
                        or (b.kind == "colour" and controller.colour == b.name and controller.tool == "pen")
                        or (b.kind == "width" and controller.width == b.name)
                        or (b.kind == "board" and getattr(controller, "board_open", False)))
-            cv2.rectangle(img, (x0, y0), (x1 - 1, y1 - 1), HIGHLIGHT if current else (160, 160, 160), 4 if current else 1)
+            ops.append(("rrect", (x0, y0, x1 - 1, y1 - 1), 10, (255, 255, 255), TOOL_SELECTED if current else TOOL_EDGE,
+                        3 if current else 2))
+            if b.kind not in ("colour", "width"):
+                ops.append(("text", ((x0 + x1) / 2, (y0 + y1) / 2), b.name.upper(), font, TOOL_LABEL, "mm"))
+        typeset.draw(band, ops)
+        for b in toolbar.buttons:
+            x0, y0, x1, y1 = b.rect
+            cx, cy = (x0 + x1) // 2, (y0 + y1) // 2 - top
             if b.kind == "colour":
-                cv2.circle(img, (cx, cy), 18, COLOURS[b.name], -1, cv2.LINE_AA)
+                cv2.circle(band, (cx, cy), 18, COLOURS[b.name], -1, cv2.LINE_AA)
             elif b.kind == "width":
-                t = int(WIDTHS[b.name])
-                cv2.line(img, (x0 + 22, cy), (x1 - 22, cy), COLOURS[controller.colour], t, cv2.LINE_AA)
-            else:
-                label, scale = b.name.upper(), 0.5
-                (tw, th), _ = cv2.getTextSize(label, FONT, scale, 2)
-                if tw > x1 - x0 - 4:                                    # D62: narrower buttons
-                    scale *= (x1 - x0 - 4) / tw
-                    (tw, th), _ = cv2.getTextSize(label, FONT, scale, 2)
-                cv2.putText(img, label, (cx - tw // 2, cy + th // 2), FONT, scale, (60, 60, 60), 2, cv2.LINE_AA)
-            progress = controller.dwell_progress
-            if progress is not None and progress[0] == b.name:          # hold-to-press feedback
-                fill = int((x1 - x0) * progress[1])
-                cv2.rectangle(img, (x0, y1 - 9), (x0 + fill, y1 - 1), (40, 40, 215) if b.name == "clear" else HIGHLIGHT, -1)
+                cv2.line(band, (x0 + 22, cy), (x1 - 22, cy), COLOURS[controller.colour], int(WIDTHS[b.name]),
+                         cv2.LINE_AA)
+        return band
+
+    def _view_label(self, img: np.ndarray, label: str) -> None:
+        """D71: what is shown ('Page 1 of 1') in a rounded pill at the top left, typeset once per label."""
+        if self._label is None or self._label[0] != label:
+            f = typeset.font(LABEL_FONT, 18)
+            w = int(typeset.width(label, f)) + 28
+            patch, shape = np.full((34, w, 3), 255, np.uint8), np.zeros((34, w, 3), np.uint8)
+            typeset.draw(patch, [("rrect", (0, 0, w - 1, 33), 12, PAGE_FILL, None),
+                                 ("text", (14, 17), label, f, PAGE_TEXT, "lm")])
+            typeset.draw(shape, [("rrect", (0, 0, w - 1, 33), 12, (255, 255, 255), None)])
+            self._label = (label, patch, shape[:, :, 0] > 127)
+        _, patch, shape = self._label
+        region = img[8:8 + patch.shape[0], 12:12 + patch.shape[1]]
+        h, w = region.shape[:2]
+        region[shape[:h, :w]] = patch[:h, :w][shape[:h, :w]]
 
     def _panel(self, img: np.ndarray, controller) -> None:
         layout, panel = controller.panel_layout, controller.panel

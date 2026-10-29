@@ -83,19 +83,20 @@ python -m pytest                          # unit tests
   appears in the panel as you type; Enter sends it, Esc cancels it (while you type, `z`, `s`, `c` and `o` are
   text, and Esc cancels the question instead of quitting). ASK also works on the writing. The answers come from the local model (Ollama),
   free and offline.
-- **Smart Lines (D62, D64, D66).** The LINES tool writes one line at a time in the writing area (marked by corner
-  guides and a baseline, "Write here", at the middle height). Ink appears only inside it: pointing elsewhere draws
-  nothing, and the ink begins as soon as the fingertip enters the area (no need to open the hand first). **DONE**
-  (right of it) keeps the line exactly as written as the next numbered line in the notes area at the top left, which
-  scrolls (the slim track and arrows right of it) when it is full. With the AI on, each line is then read in the
-  background by the local model (free, offline): the note turns blue with a suggestion, and the bar above the
-  writing area offers **OK** (the suggestion), **AS WRITTEN** (the literal reading), **EDIT** (type the line on the
-  laptop: Enter saves, Esc cancels), **KEEP INK** (keep the handwriting) and **RETRY**. Nothing becomes text until
-  you press one; hold the cursor on a note line to review it again. While the AI panel is open, DONE and these
-  buttons stand just left of it (D65), so they stay usable. The handwriting is always kept. With LINES,
-  UNDO / REDO / CLEAR act on the Smart Lines only (CLEAR: the unfinished line); an unfinished line stays when you
-  switch tools or pages. Smart Lines work on whiteboard pages (not on documents). Positions, numbering, font and text
-  size: `[smart_lines]` in `config/default.toml`; line images and readings are saved in `data/ai/lines/`.
+- **Smart Lines (D62, D64, D66, D71).** The LINES tool writes one line at a time in the writing area (marked by corner
+  guides, a dashed frame and a baseline, at the middle height; "Write here" in it until you write). Ink appears only
+  inside it: pointing elsewhere draws nothing, and the ink begins as soon as the fingertip enters the area (no need to
+  open the hand first). **DONE** (right of it; blue when there is a line to keep) keeps the line exactly as written as
+  the next numbered line in the notes panel at the top, which scrolls (the column right of it: arrows, a blue scroll
+  bar and a "last line shown / all lines" counter) when it is full. With the AI on, each line is then read in the
+  background by the local model (free, offline): the note turns blue with a suggestion, and the bar above the writing
+  area offers **OK** (the suggestion; filled blue), **AS WRITTEN** (the literal reading), **EDIT** (type the line on
+  the laptop: Enter saves, Esc cancels), **KEEP INK** (keep the handwriting) and **RETRY**. Nothing becomes text until
+  you press one; hold the cursor on a note line to review it again. While the AI or PAGES panel is open, DONE, these
+  buttons and the scroll column stand just left of it (D65), so they stay usable. The handwriting is always kept. With
+  LINES, UNDO / REDO / CLEAR act on the Smart Lines only (CLEAR: the unfinished line); an unfinished line stays when
+  you switch tools or pages. Smart Lines work on whiteboard pages (not on documents). Positions, numbering, font and
+  text size: `[smart_lines]` in `config/default.toml`; line images and readings are saved in `data/ai/lines/`.
 - **Saving.** On exit and with `s`: every page to `data/canvas/board-<time>.json` plus one PNG per page; an open
   document is stored by its path with its annotations (it is reopened by `--resume` if the file still exists).
 

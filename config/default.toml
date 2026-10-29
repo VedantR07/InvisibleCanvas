@@ -91,12 +91,14 @@ fallbacks = true           # server-side refusal fallbacks
 [smart_lines]
 # D62 (brain.md section 9.15): Smart Lines, the LINES tool. Projector px on the 1280 x 720 canvas, above the toolbar
 # (y < 648). The writing zone sits at the middle height, where hand tracking is best (bottom band losses: 9.12);
-# DONE is right of it. The notes area (completed, numbered lines) is at the top left, below the page label and left
-# of the PAGES panel; the scroll track and SCROLL UP / DOWN are right of it. When the lines no longer fit, it
-# scrolls. D64: the review bar takes the 60 px above the zone (the notes area must end above them).
-zone = [40, 400, 1040, 590]
-notes = [40, 40, 900, 336]
-line_height = 40
+# DONE is right of it. The notes area (completed, numbered lines) is at the top left, below the page label; the
+# scroll column (SCROLL UP / DOWN, the scroll track, a counter) is right of it. When the lines no longer fit, it
+# scrolls. D64: the review bar takes the 68 px above the zone (the notes area must end above them). D71 (the user's
+# mockup): the notes almost the canvas wide (an open PAGES or AI panel lies over their right part; the scroll column
+# then stands beside it, D65), the zone wider.
+zone = [32, 400, 1088, 590]
+notes = [32, 48, 1172, 324]
+line_height = 44
 line_spacing = 6
 numbering = "1."
 # D64: the notes' typeset text (Windows font folder; drawn with Pillow). The review bar uses Segoe UI Semibold.

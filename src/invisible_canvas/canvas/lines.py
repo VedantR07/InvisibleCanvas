@@ -18,6 +18,10 @@ and layout; the notes area and the Smart Lines controls are drawn for the projec
 - One undo history per page for Smart Lines (the unfinished line's strokes, DONE and the review decisions), apart
   from the page's freehand history, so undo never mixes the two. No decision or reading ever changes the strokes.
 - D65: while a panel is open at the right, the buttons it would cover stand left of it (`LinesLayout.beside`).
+- D71 (the user's mockup, 2026-10-29): the notes in a framed panel almost the canvas wide, the scroll buttons in a
+  framed column at its right with a blue scroll bar and a "3 / 3" counter, rounded buttons (OK and DONE filled blue),
+  the writing zone with a dashed frame inside its corner guides and "Write here" inside it until the first stroke.
+  The page stays white and the blue the darker one of D67 (for the wall); greyed buttons stay greyed.
 """
 
 from __future__ import annotations
@@ -35,19 +39,25 @@ from .toolbar import Button
 FORMAT = "invisible-canvas/smart-lines"
 VERSION = 2                                # D64: + each line's reading and the teacher's decision (1 still loads)
 NUMBERING = {"1.": "{n}.", "1)": "{n})", "(1)": "({n})", "none": ""}
-DEFAULT_ZONE = (40, 400, 1040, 590)        # x0, y0, x1, y1 projector px: the writing zone (middle height, D62)
-DEFAULT_NOTES = (40, 40, 900, 336)         # the notes area: below the page label, left of the board panel
+DEFAULT_ZONE = (32, 400, 1088, 590)        # x0, y0, x1, y1 projector px: the writing zone (middle height, D62)
+DEFAULT_NOTES = (32, 48, 1172, 324)        # the notes area: below the page label (D71: almost the canvas wide)
+DEFAULT_LINE_HEIGHT = 44
 DEFAULT_FONT, DEFAULT_TEXT_SIZE = "segoeui.ttf", 30
-SEMIBOLD = {"segoeui.ttf": "seguisb.ttf"}  # the review bar's text and the button labels
+SEMIBOLD = {"segoeui.ttf": "seguisb.ttf"}  # the notes' and review bar's text and the button labels
 DECISIONS = ("ok", "as_written", "edit", "ink")
 TEXT_MAX = 120                             # characters typed with EDIT
 REVIEW = ("lines:ok", "lines:written", "lines:edit", "lines:ink", "lines:retry")
 LABELS = {"lines:complete": "DONE", "lines:ok": "OK", "lines:written": "AS WRITTEN", "lines:edit": "EDIT",
           "lines:ink": "KEEP INK", "lines:retry": "RETRY"}
-REVIEW_WIDTH = {"lines:ok": 64, "lines:written": 136, "lines:edit": 84, "lines:ink": 116, "lines:retry": 96}
-BAR_GAP = 60                               # px from the review bar's top to the writing zone
+REVIEW_WIDTH = {"lines:ok": 72, "lines:written": 136, "lines:edit": 84, "lines:ink": 116, "lines:retry": 96}
+PRIMARY = ("lines:complete", "lines:ok")   # D71: filled blue when they can act
+BAR_GAP = 68                               # px from the review bar's top to the writing zone
+DONE_SIZE = (132, 60)                      # D71: DONE, centred on the zone's height
+COLUMN_W = 66                              # D71: the scroll column right of the notes area
+PAD = 12                                   # the notes' rows: at least this far inside the panel
+RADIUS = 10                                # buttons' corners (panels: 14)
 # colours (BGR)
-INK = (30, 30, 30)
+INK = (60, 38, 22)                         # D71: dark navy (RGB 22, 38, 60), as dark as the black before
 MUTED = (125, 125, 125)
 # D67 (wall test run 2: both too light on the wall): the suggestion's blue darker (RGB 25, 95, 190 -> 10, 60, 160:
 # luminance 87 -> 57), still blue beside black (30) and grey ink; the handwriting while it is read darker grey
@@ -56,18 +66,21 @@ SUGGESTION = (160, 60, 10)                 # blue: a suggestion waiting for the 
 WARN = (0, 120, 200)                       # orange: not recognised
 READING_INK = (105, 105, 105)              # the handwriting while it is read (and its "reading..."), or not recognised
 # D66: the wall washes light greys out (wall test run 1: 185-235 barely or not visible in the camera frames), so the
-# guides and the greyed buttons are darker and thicker than on a screen
-GUIDE, GUIDE_PX, GUIDE_LEN = (115, 115, 115), 3, 34    # the writing zone's corner guides
-BASELINE = (165, 165, 165)
+# guides and the greyed buttons are darker and thicker than on a screen (D71: the guides darker still, as the mockup's)
+GUIDE, GUIDE_PX, GUIDE_LEN = (85, 80, 75), 4, 38       # the writing zone's corner guides
+DASH = (185, 180, 175)                     # D71: the zone's dashed frame (a light frame: the corners mark the zone)
+BASELINE = (130, 125, 120)
 CAPTION = (110, 110, 110)                  # "Write here"
 IDLE_BASELINE, IDLE_INK = (200, 200, 200), (160, 160, 160)   # an unfinished line kept while another tool is in use
-REVIEW_ROW = (252, 243, 233)               # the note line the review bar is about
-BAR_FILL, BAR_EDGE = (252, 247, 244), (210, 180, 160)
+REVIEW_ROW = (250, 232, 214)               # the note line the review bar is about (light blue)
+PANEL_FILL, PANEL_EDGE = (255, 255, 255), (208, 200, 192)    # D71: the notes panel and the scroll column
+BAR_FILL, BAR_EDGE = (247, 242, 238), (208, 200, 192)
+COUNTER_FILL = (247, 242, 238)
 EDIT_FILL, EDIT_EDGE = (240, 250, 252), (150, 210, 230)
-TRACK, THUMB = (200, 200, 200), (120, 120, 120)
-EDGE, EDGE_OFF, LABEL, LABEL_OFF = (100, 100, 100), (170, 170, 170), (40, 40, 40), (160, 160, 160)
+TRACK, THUMB = (200, 196, 192), SUGGESTION
+EDGE, EDGE_OFF, LABEL, LABEL_OFF = (90, 60, 40), (170, 170, 170), (80, 50, 30), (160, 160, 160)   # navy
+OFF_FILL, PRIMARY_LABEL = (228, 228, 228), (255, 255, 255)   # D71: DONE / OK greyed (filled), and on blue
 BUTTON_EDGE_PX = 2
-PAD = 8
 
 
 @dataclass(eq=False)
@@ -258,17 +271,18 @@ def _overlap(a, b) -> bool:
 
 
 class Controls:
-    """Where the Smart Lines buttons are: DONE, SCROLL UP / DOWN with the scroll track, and the review bar with its
-    buttons right-aligned in it (D64). A layout has its own (`LinesLayout.controls`) and, for an open panel, a set
-    that keeps clear of it (`LinesLayout.beside`, D65); the note rows never move."""
+    """Where the Smart Lines buttons are: DONE, SCROLL UP / DOWN with the scroll track in their column (D71), and
+    the review bar with its buttons right-aligned in it (D64). A layout has its own (`LinesLayout.controls`) and,
+    for an open panel, a set that keeps clear of it (`LinesLayout.beside`, D65); the note rows never move."""
 
-    def __init__(self, complete, up, down, track, bar, rows):
+    def __init__(self, complete, up, down, track, bar, rows, column=None):
         self.buttons = [Button("lines:complete", "lines", complete), Button("lines:up", "lines", up),
                         Button("lines:down", "lines", down)]
         self.track, self.bar = track, bar
+        self.column = column or (min(up[0], track[0]), up[1], max(up[2], down[2]), down[3])
         x, self.review_buttons = bar[2] - 8, []
         for name in reversed(REVIEW):                # right-aligned: OK, AS WRITTEN, EDIT, KEEP INK, RETRY
-            self.review_buttons.insert(0, Button(name, "lines", (x - REVIEW_WIDTH[name], bar[1] + 6, x, bar[3] - 6)))
+            self.review_buttons.insert(0, Button(name, "lines", (x - REVIEW_WIDTH[name], bar[1] + 7, x, bar[3] - 7)))
             x -= REVIEW_WIDTH[name] + 8
         if x < bar[0] + 200:
             raise ValueError("the review bar is too narrow for its buttons")
@@ -276,7 +290,7 @@ class Controls:
         self._by_name = {b.name: b for b in self.buttons + self.review_buttons + rows}
 
     def rects(self) -> list:
-        return [b.rect for b in self.buttons] + [self.track, self.bar]
+        return [b.rect for b in self.buttons] + [self.track, self.bar, self.column]
 
     def hit(self, point) -> Button | None:
         """DONE, SCROLL UP or SCROLL DOWN under the point (the review buttons and note rows depend on what is
@@ -298,14 +312,14 @@ class Controls:
 
 class LinesLayout:
     """Where Smart Lines sit on the projector canvas (config `[smart_lines]`) and how their text looks: the writing
-    zone with DONE at its right, the notes area (one row per line shown) with a slim scroll track and SCROLL UP /
-    DOWN at its right, and the review bar between the notes area and the zone (D64). `buttons`, `track`, `bar`,
-    `review_buttons` and `bar_text_right` are the layout's own `controls`; `beside(rect)` keeps them clear of an open
-    panel (D65)."""
+    zone with DONE at its right, the notes area (one row per line shown) with the scroll column (SCROLL UP / DOWN,
+    the scroll track and the counter) at its right, and the review bar between the notes area and the zone (D64,
+    D71). `buttons`, `track`, `bar`, `review_buttons` and `bar_text_right` are the layout's own `controls`;
+    `beside(rect)` keeps them clear of an open panel (D65)."""
 
     def __init__(self, size: tuple[int, int], toolbar_top: int, zone=DEFAULT_ZONE, notes=DEFAULT_NOTES,
-                 line_height: int = 40, line_spacing: int = 6, numbering: str = "1.", font: str = DEFAULT_FONT,
-                 text_size: int = DEFAULT_TEXT_SIZE, margin: int = 16):
+                 line_height: int = DEFAULT_LINE_HEIGHT, line_spacing: int = 6, numbering: str = "1.",
+                 font: str = DEFAULT_FONT, text_size: int = DEFAULT_TEXT_SIZE, margin: int = 16):
         w, _ = int(size[0]), int(size[1])
         self.zone = _check_rect("zone", zone, w, toolbar_top)
         self.notes = _check_rect("notes area", notes, w, toolbar_top)
@@ -320,22 +334,27 @@ class LinesLayout:
         self.line_height, self.line_spacing, self.numbering = int(line_height), int(line_spacing), numbering
         zx0, zy0, zx1, zy1 = self.zone
         nx0, ny0, nx1, ny1 = self.notes
-        complete = (zx1 + 24, zy1 - 78, zx1 + 144, zy1 - 22)
-        up, down = (nx1 + 16, ny0, nx1 + 56, ny0 + 40), (nx1 + 16, ny1 - 40, nx1 + 56, ny1)
-        for name, r in (("DONE", complete), ("SCROLL UP", up), ("SCROLL DOWN", down)):
+        middle = (zy0 + zy1) // 2
+        complete = (zx1 + 24, middle - DONE_SIZE[1] // 2, zx1 + 24 + DONE_SIZE[0], middle + DONE_SIZE[1] // 2)
+        column = (nx1 + 14, ny0, nx1 + 14 + COLUMN_W, ny1)           # D71: the scroll column
+        up = (column[0] + 8, ny0 + 8, column[2] - 8, ny0 + 58)
+        down = (column[0] + 8, ny1 - 58, column[2] - 8, ny1 - 8)
+        for name, r in (("DONE", complete), ("SCROLL UP / DOWN", column)):
             if r[2] > w - margin // 2 or r[1] < 0:
                 raise ValueError(f"no room for {name} next to the Smart Lines zone / notes area")
-        if up[3] > down[1]:
-            raise ValueError("the notes area is too short for SCROLL UP / DOWN (at least 80 px)")
-        bar = (min(nx0, zx0), zy0 - BAR_GAP, w - 40, zy0 - 8)
+        if up[3] + 60 > down[1]:
+            raise ValueError("the notes area is too short for SCROLL UP / DOWN (at least 176 px)")
+        track = (column[0] + 8, up[3] + 12, column[0] + 16, down[1] - 12)
+        bar = (min(nx0, zx0), zy0 - BAR_GAP, column[2], zy0 - 8)
         if bar[1] < ny1:
             raise ValueError(f"the review bar needs {BAR_GAP} px between the bottom of the notes area and the "
                              f"top of the writing zone below it")
         step = line_height + line_spacing
         self.visible = max((ny1 - ny0 - 2 * PAD + line_spacing) // step, 1)
-        self.rows = [Button(f"lines:row:{k}", "lines", (nx0, ny0 + PAD + k * step, nx1, ny0 + PAD + k * step +
-                                                         line_height)) for k in range(self.visible)]
-        self.controls = Controls(complete, up, down, (nx1 + 2, ny0 + 2, nx1 + 8, ny1 - 2), bar, self.rows)
+        top = ny0 + max((ny1 - ny0 - self.visible * step + line_spacing) // 2, PAD)   # D71: centred in the panel
+        self.rows = [Button(f"lines:row:{k}", "lines", (nx0, top + k * step, nx1, top + k * step + line_height))
+                     for k in range(self.visible)]
+        self.controls = Controls(complete, up, down, track, bar, self.rows, column)
         c = self.controls
         self.buttons, self.track, self.bar, self.review_buttons, self.bar_text_right = (
             c.buttons, c.track, c.bar, c.review_buttons, c.bar_text_right)
@@ -343,9 +362,10 @@ class LinesLayout:
         self.baseline = zy0 + round((zy1 - zy0) * 0.76)
         self.font, self.text_size = font, int(text_size)
         bold = SEMIBOLD.get(font.lower(), font)
-        self.fonts = {"text": typeset.font(font, text_size), "number": typeset.font(font, round(text_size * 0.8)),
+        self.fonts = {"text": typeset.font(bold, text_size), "number": typeset.font(font, round(text_size * 0.8)),
                       "small": typeset.font(font, max(round(text_size * 0.57), 12)),
-                      "bar": typeset.font(bold, text_size), "label": typeset.font(bold, max(round(text_size * 0.6), 12))}
+                      "bar": typeset.font(bold, text_size + 2),
+                      "label": typeset.font(bold, max(round(text_size * 0.6), 12))}
 
     def in_zone(self, point) -> bool:
         if point is None:
@@ -386,15 +406,15 @@ class LinesLayout:
             complete = (edge - (complete[2] - complete[0]), complete[1], edge, complete[3])
             if complete[0] < self.zone[0] + 200:
                 raise ValueError("an open panel would leave too little of the writing zone beside DONE")
-        if any(_overlap(r, rect) for r in (up, down, track)):     # to the right end of the notes area
-            width = up[2] - up[0]
-            up, down = (edge - width, up[1], edge, up[3]), (edge - width, down[1], edge, down[3])
-            track = (edge - width - 14, track[1], edge - width - 8, track[3])
-            if track[0] < self.notes[0] + 200:
+        column = c.column
+        if any(_overlap(r, rect) for r in (up, down, track, column)):     # the scroll column, all of it
+            dx = edge - column[2]
+            up, down, track, column = ((r[0] + dx, r[1], r[2] + dx, r[3]) for r in (up, down, track, column))
+            if column[0] < self.notes[0] + 200:
                 raise ValueError("an open panel would leave too little of the notes area beside SCROLL UP / DOWN")
         if _overlap(bar, rect):
             bar = (bar[0], bar[1], edge, bar[3])
-        return Controls(complete, up, down, track, bar, self.rows)
+        return Controls(complete, up, down, track, bar, self.rows, column)
 
     def number_label(self, n: int) -> str:
         return NUMBERING[self.numbering].format(n=n)
@@ -432,29 +452,41 @@ def _draw_line_ink(img: np.ndarray, line: Line, box, colour=None) -> int:
 
 
 def render_sheet(sheet: LineSheet, layout: LinesLayout, show_zone: bool, active: bool = True,
-                 review: int | None = None) -> np.ndarray:
+                 review: int | None = None, right: int | None = None) -> np.ndarray:
     """The page's Smart Lines on white, full projector size: the notes area (numbered lines by status, scrolled;
-    `review`: the id of the line the review bar is about, highlighted) and, with `show_zone`, the writing guide with
-    the unfinished line (`active`: the LINES tool is in use, else it is drawn fainter). Cached until the sheet, the
-    unfinished line or the view changes. The notes and the zone are kept as separate layers and laid together
+    `review`: the id of the line the review bar is about, highlighted; `right`: where the notes end while an open
+    panel, or the scroll column beside it, lies over their right part, D71) and, with `show_zone`, the writing guide
+    with the unfinished line (`active`: the LINES tool is in use, else it is drawn fainter). Cached until the sheet,
+    the unfinished line or the view changes. The notes and the zone are kept as separate layers and laid together
     darkest-wins: a new stroke draws only itself on the zone layer, a line's new status redraws only the notes."""
-    key = (sheet.version, sheet.canvas.version, sheet.scroll, show_zone, active, review, id(layout))
+    key = (sheet.version, sheet.canvas.version, sheet.scroll, show_zone, active, review, right, id(layout))
     if key in sheet._image:
         return sheet._image[key]
-    img = _notes_image(sheet, layout, review)
+    img = _notes_image(sheet, layout, review, right)
     if show_zone:
         img = np.minimum(img, _zone_image(sheet, layout, active))
     sheet._image = {key: img}                        # only the current view is kept
     return img
 
 
+def _dashed_rect(img: np.ndarray, rect, colour, dash: int = 8, gap: int = 10, px: int = 2) -> None:
+    """D71: the writing zone's dashed frame."""
+    x0, y0, x1, y1 = rect
+    for a, b, fixed, along_x in ((x0, x1, y0, True), (x0, x1, y1, True), (y0, y1, x0, False), (y0, y1, x1, False)):
+        for s in range(a, b, dash + gap):
+            e = min(s + dash, b)
+            p, q = ((s, fixed), (e, fixed)) if along_x else ((fixed, s), (fixed, e))
+            cv2.line(img, p, q, colour, px, cv2.LINE_AA)
+
+
 def _zone_image(sheet: LineSheet, layout: LinesLayout, active: bool) -> np.ndarray:
     """The writing guide and the unfinished line alone on white. A stroke added since the last call is drawn on it
-    in place (this layer is never handed out); any other change (undo, erase, move) draws it again."""
+    in place (this layer is never handed out); any other change (undo, erase, move) draws it again, as does the
+    first stroke (D71: "Write here" is shown in the zone until something is written)."""
     strokes = list(sheet.canvas.strokes.values())
     drawn = [(s.id, len(s.points), s.points[0] if s.points else None, s.points[-1] if s.points else None)
              for s in strokes]
-    look, last = (active, id(layout)), sheet._zone
+    look, last = (active, id(layout), not strokes), sheet._zone
     if last is not None and last[0] == look and last[1] == drawn[:len(last[1])]:
         img = last[2]
         _draw_strokes(img, strokes[len(last[1]):], colour=None if active else IDLE_INK)
@@ -465,12 +497,14 @@ def _zone_image(sheet: LineSheet, layout: LinesLayout, active: bool) -> np.ndarr
         zx0, zy0, zx1, zy1 = layout.zone
         if active:
             inset = GUIDE_PX // 2                    # the corners' lines lie just inside the zone
+            _dashed_rect(img, (zx0 + inset, zy0 + inset, zx1 - 1 - inset, zy1 - 1 - inset), DASH)
             for cx, cy, dx, dy in ((zx0 + inset, zy0 + inset, 1, 1), (zx1 - 1 - inset, zy0 + inset, -1, 1),
                                    (zx0 + inset, zy1 - 1 - inset, 1, -1), (zx1 - 1 - inset, zy1 - 1 - inset, -1, -1)):
                 cv2.line(img, (cx, cy), (cx + GUIDE_LEN * dx, cy), GUIDE, GUIDE_PX, cv2.LINE_AA)
                 cv2.line(img, (cx, cy), (cx, cy + GUIDE_LEN * dy), GUIDE, GUIDE_PX, cv2.LINE_AA)
             cv2.line(img, (zx0 + 30, layout.baseline), (zx1 - 30, layout.baseline), BASELINE, 2, cv2.LINE_AA)
-            ops.append(("text", (zx0 + 4, zy1 + 4), "Write here", f["number"], CAPTION, "la"))
+            if not strokes:
+                ops.append(("text", (zx0 + 44, zy0 + 32), "Write here", f["number"], CAPTION, "lm"))
         else:
             cv2.line(img, (zx0 + 30, layout.baseline), (zx1 - 30, layout.baseline), IDLE_BASELINE, 2, cv2.LINE_AA)
             ops.append(("text", (zx0 + 4, zy1 + 4), "Unfinished line kept - LINES to continue", f["small"], MUTED,
@@ -481,60 +515,69 @@ def _zone_image(sheet: LineSheet, layout: LinesLayout, active: bool) -> np.ndarr
     return img
 
 
-def _notes_image(sheet: LineSheet, layout: LinesLayout, review: int | None) -> np.ndarray:
-    """The notes area alone on white (cached on the sheet until a line, its status or the scroll changes)."""
-    key = (sheet.version, sheet.scroll, review, id(layout))
+def _notes_image(sheet: LineSheet, layout: LinesLayout, review: int | None, right: int | None = None) -> np.ndarray:
+    """The notes area alone on white, in its framed panel (D71; cached on the sheet until a line, its status, the
+    scroll or `right` changes)."""
+    key = (sheet.version, sheet.scroll, review, right, id(layout))
     if sheet._notes is not None and sheet._notes[0] == key:
         return sheet._notes[1]
     w, h = sheet.size
     img = np.full((h, w, 3), 255, np.uint8)
     f, ops = layout.fonts, []
     nx0, ny0, nx1, ny1 = layout.notes
+    if right is not None:
+        nx1 = max(min(nx1, int(right)), nx0 + 120)
+    typeset.draw(img, [("rrect", (nx0, ny0, nx1 - 1, ny1 - 1), 14, PANEL_FILL, PANEL_EDGE, 2)])
+    end = nx1 - PAD - 8                              # the text's right end
     if sheet.lines:
         first = sheet.first_shown(layout.visible)
         shown = sheet.lines[first:first + layout.visible]
         number_w = max(typeset.width(layout.number_label(first + k + 1), f["number"]) for k in range(len(shown)))
-        x = nx0 + 16 + number_w + (14 if number_w else 0)
+        left = nx0 + 40                              # the numbers, right of the review dot
+        x = left + number_w + (16 if number_w else 0)
         for k, line in enumerate(shown):
             _, top, _, bottom = layout.rows[k].rect
             cy = (top + bottom) / 2
             if line.id == review:
-                cv2.rectangle(img, (nx0 - 4, top - 3), (nx1 - 1, bottom + 2), REVIEW_ROW, -1)
+                typeset.draw(img, [("rrect", (nx0 + 8, top - 2, nx1 - 9, bottom + 1), 10, REVIEW_ROW, None)])
             label = layout.number_label(first + k + 1)
             if label:
-                ops.append(("text", (nx0 + 16 + number_w, cy), label, f["number"], MUTED, "rm"))
+                ops.append(("text", (left + number_w, cy), label, f["number"], MUTED, "rm"))
             status = line.status
             if status in ("confirmed", "check"):
                 if status == "check":                                   # waiting for the teacher's OK
-                    cv2.circle(img, (nx0 + 5, int(round(cy))), 5, SUGGESTION, -1, cv2.LINE_AA)
-                ops.append(("text", (x, cy), typeset.fit(line.text or "", f["text"], nx1 - PAD - x), f["text"],
+                    cv2.circle(img, (nx0 + 22, int(round(cy))), 6, SUGGESTION, -1, cv2.LINE_AA)
+                ops.append(("text", (x, cy), typeset.fit(line.text or "", f["text"], end - x), f["text"],
                             INK if status == "confirmed" else SUGGESTION, "lm"))
             elif status == "ink":
-                _draw_line_ink(img, line, (x, top, nx1 - PAD, bottom))
+                _draw_line_ink(img, line, (x, top, max(end, x + 40), bottom))
             else:
                 note = "reading..." if status == "recognizing" else "not recognised - RETRY or EDIT"
-                right = max(x + 40, min(x + 420, int(nx1 - PAD - typeset.width(note, f["small"]) - 12)))
-                end = _draw_line_ink(img, line, (x, top + 6, right, bottom - 6), READING_INK)
-                ops.append(("text", (end + 12, cy), note, f["small"], READING_INK if status == "recognizing" else WARN,
-                            "lm"))
-        if len(sheet.lines) > layout.visible:
-            ops.append(("text", (nx1 - PAD, ny1), f"{first + 1}-{first + len(shown)} of {len(sheet.lines)}",
-                        f["small"], MUTED, "rd"))
+                stop = max(x + 40, min(x + 420, int(end - typeset.width(note, f["small"]) - 12)))
+                ink_end = _draw_line_ink(img, line, (x, top + 6, stop, bottom - 6), READING_INK)
+                ops.append(("text", (ink_end + 12, cy), note, f["small"],
+                            READING_INK if status == "recognizing" else WARN, "lm"))
     typeset.draw(img, ops)
     sheet._notes = (key, img)
     return img
 
 
-def _button_ops(rect, origin, label: str, on: bool, f) -> list:
+def _button_ops(rect, origin, label: str, on: bool, f, primary: bool = False) -> list:
+    """A rounded button (D71): white with a navy edge and label, or (`primary`: DONE, OK) filled blue with a white
+    label; greyed when it cannot act (DONE and OK then filled grey)."""
     x0, y0, x1, y1 = (v - o for v, o in zip(rect, origin + origin))
-    ops = [("rrect", (x0, y0, x1 - 1, y1 - 1), 8, (255, 255, 255), EDGE if on else EDGE_OFF, BUTTON_EDGE_PX)]
+    if primary:
+        fill, edge, colour = (SUGGESTION, SUGGESTION, PRIMARY_LABEL) if on else (OFF_FILL, EDGE_OFF, LABEL_OFF)
+    else:
+        fill, edge, colour = (255, 255, 255), EDGE if on else EDGE_OFF, LABEL if on else LABEL_OFF
+    ops = [("rrect", (x0, y0, x1 - 1, y1 - 1), RADIUS, fill, edge, BUTTON_EDGE_PX)]
     cx, cy = (x0 + x1) / 2, (y0 + y1) / 2
     if label in ("up", "down"):
         d = -1 if label == "up" else 1
-        ops.append(("poly", [(cx - 10, cy - 6 * d), (cx + 10, cy - 6 * d), (cx, cy + 7 * d)],
-                    LABEL if on else LABEL_OFF))
+        ops.append(("poly", [(cx - 13, cy - 7 * d), (cx + 13, cy - 7 * d), (cx, cy + 8 * d)],
+                    SUGGESTION if on else LABEL_OFF))
     else:
-        ops.append(("text", (cx, cy), label, f, LABEL if on else LABEL_OFF, "mm"))
+        ops.append(("text", (cx, cy), label, f, colour, "mm"))
     return ops
 
 
@@ -550,7 +593,8 @@ _controls: dict = {}
 
 def render_controls(layout: LinesLayout, view, controls: Controls | None = None) -> list[tuple[int, int, np.ndarray]]:
     """The Smart Lines controls while LINES is in use (D64), as opaque patches (x, y, image) the renderer copies over
-    the frame: DONE, the scroll track and SCROLL UP / DOWN, and the review bar, where `controls` puts them (D65:
+    the frame: DONE, the scroll column (D71: SCROLL UP / DOWN, the track with the part of the lines shown in blue, and
+    a counter: the last line shown over the number of lines), and the review bar, where `controls` puts them (D65:
     beside an open panel; default the layout's own). `view` is what they show, from the controller (hashable):
     (enabled button names, first line shown, number of lines, bar), the bar None or (line number, status, main
     text, note, text being typed or None). Cached by it."""
@@ -560,17 +604,27 @@ def render_controls(layout: LinesLayout, view, controls: Controls | None = None)
         return _controls[key]
     enabled, first, total, bar = view
     f = layout.fonts
-    patches = []
-    for b in controls.buttons:
-        label = {"lines:up": "up", "lines:down": "down"}.get(b.name, LABELS.get(b.name, ""))
-        patches.append(_patch(b.rect, _button_ops(b.rect, b.rect[:2], label, b.name in enabled, f["label"])))
-    tx0, ty0, tx1, ty1 = controls.track
-    ops = [("rrect", (0, 0, tx1 - tx0 - 1, ty1 - ty0 - 1), 3, TRACK, None)]
-    if total > layout.visible:                       # the thumb: which part of the lines is shown
-        th = ty1 - ty0
-        a, b = round(th * first / total), round(th * (first + layout.visible) / total)
-        ops.append(("rrect", (0, a, tx1 - tx0 - 1, max(b - 1, a + 8)), 3, THUMB, None))
-    patches.append(_patch(controls.track, ops))
+    done = controls.button("lines:complete")
+    patches = [_patch(done.rect, _button_ops(done.rect, done.rect[:2], LABELS[done.name], done.name in enabled,
+                                             f["label"], primary=True))]
+    cx0, cy0, cx1, cy1 = controls.column
+    origin = (cx0, cy0)
+    ops = [("rrect", (0, 0, cx1 - cx0 - 1, cy1 - cy0 - 1), 14, PANEL_FILL, PANEL_EDGE, 2)]
+    for b in controls.buttons[1:]:
+        ops += _button_ops(b.rect, origin, "up" if b.name == "lines:up" else "down", b.name in enabled, f["label"])
+    tx0, ty0, tx1, ty1 = (v - o for v, o in zip(controls.track, origin + origin))
+    ops.append(("rrect", (tx0, ty0, tx1 - 1, ty1 - 1), 4, TRACK, None))
+    if total:                                        # the thumb: which part of the lines is shown, and the counter
+        th, last = ty1 - ty0, min(first + layout.visible, total)
+        a, b = round(th * first / total), round(th * last / total)
+        ops.append(("rrect", (tx0, ty0 + a, tx1 - 1, ty0 + max(b - 1, a + 8)), 4, THUMB, None))
+        px0, px1, my = tx1 + 6, cx1 - cx0 - 9, (cy1 - cy0) / 2
+        mx = (px0 + px1) / 2
+        ops += [("rrect", (px0, my - 42, px1, my + 42), 10, COUNTER_FILL, PANEL_EDGE),
+                ("text", (mx, my - 22), str(last), f["label"], MUTED, "mm"),
+                ("text", (mx, my), "/", f["label"], MUTED, "mm"),
+                ("text", (mx, my + 22), str(total), f["label"], MUTED, "mm")]
+    patches.append(_patch(controls.column, ops))
     if bar is not None:
         number, status, main, note, typed = bar
         bx0, by0, bx1, by1 = controls.bar
@@ -578,26 +632,27 @@ def render_controls(layout: LinesLayout, view, controls: Controls | None = None)
         cy = bh / 2
         if typed is not None:                        # EDIT: typed on the laptop, shown live
             prompt, keys = f"Line {number} - type on the laptop:", "Enter saves   Esc cancels"
-            x = 16 + typeset.width(prompt, f["small"]) + 12
-            room = bw - 16 - typeset.width(keys, f["small"]) - 24 - x
-            ops = [("rrect", (0, 0, bw - 1, bh - 1), 10, EDIT_FILL, EDIT_EDGE),
-                   ("text", (16, cy), prompt, f["small"], MUTED, "lm"),
+            x = 20 + typeset.width(prompt, f["small"]) + 12
+            room = bw - 20 - typeset.width(keys, f["small"]) - 24 - x
+            ops = [("rrect", (0, 0, bw - 1, bh - 1), 12, EDIT_FILL, EDIT_EDGE, 2),
+                   ("text", (20, cy), prompt, f["small"], MUTED, "lm"),
                    ("text", (x, cy), typeset.fit_end(typed + "_", f["bar"], room), f["bar"], INK, "lm"),
-                   ("text", (bw - 16, cy), keys, f["small"], MUTED, "rm")]
+                   ("text", (bw - 20, cy), keys, f["small"], MUTED, "rm")]
         else:
             head = f"Line {number}:"
-            x, right = 16 + typeset.width(head, f["small"]) + 10, controls.bar_text_right - bx0
+            x, right = 20 + typeset.width(head, f["small"]) + 12, controls.bar_text_right - bx0
             big = status in ("check", "confirmed")
             main_font = f["bar"] if big else f["number"]
             colour = {"check": SUGGESTION, "failed": WARN, "recognizing": MUTED}.get(status, INK)
             main = typeset.fit(main, main_font, right - x)
-            ops = [("rrect", (0, 0, bw - 1, bh - 1), 10, BAR_FILL, BAR_EDGE),
-                   ("text", (16, cy), head, f["small"], MUTED, "lm"), ("text", (x, cy), main, main_font, colour, "lm")]
+            ops = [("rrect", (0, 0, bw - 1, bh - 1), 12, BAR_FILL, BAR_EDGE, 2),
+                   ("text", (20, cy), head, f["small"], MUTED, "lm"), ("text", (x, cy), main, main_font, colour, "lm")]
             x2 = x + typeset.width(main, main_font) + 12
             if note and right - x2 > 80:
                 ops.append(("text", (x2, cy), typeset.fit(note, f["small"], right - x2), f["small"], MUTED, "lm"))
             for b in controls.review_buttons:
-                ops += _button_ops(b.rect, (bx0, by0), LABELS[b.name], b.name in enabled, f["label"])
+                ops += _button_ops(b.rect, (bx0, by0), LABELS[b.name], b.name in enabled, f["label"],
+                                   primary=b.name in PRIMARY)
         patches.append(_patch(controls.bar, ops))
     if len(_controls) > 32:
         _controls.clear()

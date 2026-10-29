@@ -14,7 +14,8 @@ import pytest
 from invisible_canvas.canvas import lines as lines_module
 from invisible_canvas.canvas import text as typeset
 from invisible_canvas.canvas.board import Board
-from invisible_canvas.canvas.lines import DEFAULT_NOTES, DEFAULT_ZONE, LineSheet, LinesLayout, render_sheet
+from invisible_canvas.canvas.lines import (DEFAULT_NOTES, DEFAULT_ZONE, LineSheet, LinesLayout, render_controls,
+                                          render_sheet)
 from invisible_canvas.canvas.model import Canvas
 from invisible_canvas.canvas.panel import BoardPanel
 from invisible_canvas.canvas.reference import Reference
@@ -82,28 +83,34 @@ def put_texts(monkeypatch, module, fn):
 def test_the_layout_fits_the_canvas_next_to_the_panels_and_matches_the_config():
     tb = Toolbar(SIZE, ai=True)
     layout = LinesLayout(SIZE, tb.top)
-    assert layout.zone == DEFAULT_ZONE and layout.notes == DEFAULT_NOTES and layout.visible == 6
+    assert layout.zone == DEFAULT_ZONE and layout.notes == DEFAULT_NOTES and layout.visible == 5
     board = BoardPanel(SIZE).rect
-    for name, r in [("zone", layout.zone), ("notes", layout.notes)] + [(b.name, b.rect) for b in layout.buttons]:
+    column = layout.controls.column
+    for name, r in [("zone", layout.zone), ("notes", layout.notes), ("column", column)] + \
+            [(b.name, b.rect) for b in layout.buttons]:
         assert 0 <= r[0] < r[2] <= SIZE[0] and 0 <= r[1] < r[3] <= tb.top, name
-    for b in layout.buttons[1:] + [type("R", (), {"rect": layout.notes})]:     # notes and scroll: left of PAGES panel
-        assert b.rect[2] <= board[0]
+    assert layout.notes[2] < column[0] and column[1::2] == layout.notes[1::2]   # D71: the scroll column right of
+    for r in [b.rect for b in layout.buttons[1:]] + [layout.track]:             # the notes, its buttons and track in it
+        assert column[0] < r[0] < r[2] < column[2] and column[1] < r[1] < r[3] < column[3]
+    assert layout.buttons[2].rect[1] - layout.buttons[1].rect[3] > layout.track[3] - layout.track[1] > 100
     assert layout.buttons[0].rect[1] >= board[3]                            # DONE below the PAGES panel
-    assert layout.buttons[0].rect == (1064, 512, 1184, 568)                 # D64: compact, right of the zone
+    assert layout.buttons[0].rect == (1112, 465, 1244, 525)                 # D71: right of the zone, centred on it
     bx0, by0, bx1, by1 = layout.bar                                         # D64: the review bar between them
-    assert layout.notes[3] <= by0 and by1 < layout.zone[1] and bx1 <= SIZE[0]
+    assert layout.notes[3] <= by0 and by1 < layout.zone[1] and bx1 == column[2]
     assert [b.name for b in layout.review_buttons] == ["lines:ok", "lines:written", "lines:edit", "lines:ink",
                                                        "lines:retry"]
     for b in layout.review_buttons:
         x0, y0, x1, y1 = b.rect
-        assert bx0 < x0 < x1 <= bx1 and by0 < y0 < y1 < by1 and x0 > layout.bar_text_right and y1 - y0 == 40
-    assert len(layout.rows) == 6 and layout.rows[-1].rect[3] < layout.notes[3]
+        assert bx0 < x0 < x1 <= bx1 and by0 < y0 < y1 < by1 and x0 > layout.bar_text_right and y1 - y0 == 46
+    assert len(layout.rows) == 5 and layout.rows[-1].rect[3] < layout.notes[3]
+    above, below = layout.rows[0].rect[1] - layout.notes[1], layout.notes[3] - layout.rows[-1].rect[3]
+    assert abs(above - below) <= 1                                          # D71: the rows centred in the panel
     assert layout.zone[1] < layout.baseline < layout.zone[3]
     cfg = load_config().smart_lines
     same = LinesLayout(SIZE, tb.top, cfg.zone, cfg.notes, cfg.line_height, cfg.line_spacing, cfg.numbering,
                        cfg.font, cfg.text_size)
     assert (same.zone, same.notes, same.visible, same.numbering, same.text_size) == \
-        (layout.zone, layout.notes, 6, "1.", 30)
+        (layout.zone, layout.notes, 5, "1.", 30)
     with pytest.raises(ValueError):
         LinesLayout(SIZE, tb.top, zone=(24, 400, 1080, 700))               # into the toolbar
     with pytest.raises(ValueError):
@@ -111,7 +118,7 @@ def test_the_layout_fits_the_canvas_next_to_the_panels_and_matches_the_config():
     with pytest.raises(ValueError, match="review bar"):
         LinesLayout(SIZE, tb.top, notes=(40, 40, 900, 360))               # no room left for the review bar
     with pytest.raises(ValueError, match="text_size"):
-        LinesLayout(SIZE, tb.top, text_size=44)                            # taller than a line
+        LinesLayout(SIZE, tb.top, text_size=48)                            # taller than a line
     with pytest.raises(ValueError):
         LinesLayout(SIZE, tb.top, numbering="#")
     assert [LinesLayout(SIZE, tb.top, numbering=n).number_label(3) for n in ("1.", "1)", "(1)", "none")] == \
@@ -119,7 +126,7 @@ def test_the_layout_fits_the_canvas_next_to_the_panels_and_matches_the_config():
 
 
 @pytest.mark.parametrize("key, value", [("numbering", "#1"), ("zone", [24, 360, 1080]), ("line_height", 8),
-                                        ("notes", [24.0, 16, 900, 336]), ("text_size", 41), ("text_size", 30.0),
+                                        ("notes", [24.0, 16, 900, 336]), ("text_size", 45), ("text_size", 30.0),
                                         ("font", "segoeui.png")])
 def test_a_wrong_smart_lines_config_is_refused(key, value):
     with open(DEFAULT_CONFIG_PATH, "rb") as f:
@@ -255,17 +262,20 @@ def test_the_notes_area_scrolls_when_it_fills_up(monkeypatch):
     ctl = lines_controller()
     complete_lines(ctl, 9)
     sheet, layout = ctl.sheet(), ctl.lines_layout
-    assert layout.visible == 6 and sheet.first_shown(6) == 3                # the newest line in view
+    assert layout.visible == 5 and sheet.first_shown(5) == 4                # the newest line in view
     assert ctl.lines_enabled("lines:up") and not ctl.lines_enabled("lines:down")
     texts = drawn_texts(monkeypatch, lambda: render_sheet(sheet, layout, True))
-    assert "4." in texts and "9." in texts and "3." not in texts and "4-9 of 9" in texts
+    assert "5." in texts and "9." in texts and "4." not in texts
+    texts = drawn_texts(monkeypatch, lambda: render_controls(layout, ctl.lines_view()))
+    assert texts[:4] == ["DONE", "9", "/", "9"]                             # D71: the counter, last shown / all
     dwell(ctl, "lines:up", 100.0)
-    assert sheet.first_shown(6) == 2 and ctl.lines_enabled("lines:down")
+    assert sheet.first_shown(5) == 3 and ctl.lines_enabled("lines:down")
+    assert drawn_texts(monkeypatch, lambda: render_controls(layout, ctl.lines_view()))[1:4] == ["8", "/", "9"]
     dwell(ctl, "lines:down", 110.0)
     dwell(ctl, "lines:down", 120.0)
-    assert sheet.first_shown(6) == 3 and ctl.log["lines:scroll_limit"] == 1
+    assert sheet.first_shown(5) == 4 and ctl.log["lines:scroll_limit"] == 1
     ctl.undo()                                                              # a line goes: still the newest in view
-    assert len(sheet.lines) == 8 and sheet.first_shown(6) == 2
+    assert len(sheet.lines) == 8 and sheet.first_shown(5) == 3
 
 
 # -- the wall ------------------------------------------------------------------------------------------------------
@@ -280,7 +290,8 @@ def test_rendering_with_and_without_smart_lines(monkeypatch):
     img = r.render(ctl.canvas, ctl, ctl.toolbar, mode=HOVER, cursor=None)
     zx0, zy0, zx1, zy1 = layout.zone
     assert (img[zy0:zy0 + 2, zx0 + 2:zx0 + 20] < 230).any(axis=0).all()      # D64: a corner guide ...
-    assert (img[zy0:zy0 + 2, zx0 + 40:zx1 - 40] == 255).all()               # ... not a frame
+    edge = img[zy0:zy0 + 4, zx0 + 60:zx1 - 60].min(axis=(0, 2))
+    assert (edge > 225).sum() > 200 and (edge < 200).sum() > 400 and edge.min() >= 140   # D71: a light dashed frame
     assert (img[layout.baseline, zx0 + 40:zx1 - 40] < 255).all()            # the baseline
     cx0, cy0, cx1, cy1 = layout.buttons[0].rect
     assert (img[cy0:cy1, cx0:cx1] < 250).any()                              # DONE
@@ -336,7 +347,7 @@ def test_the_board_file_keeps_smart_lines_and_older_files_still_load():
     restored = DrawingController(Canvas(SIZE), Toolbar(SIZE), board=again)
     restored.board.current = 0
     restored.press("lines")
-    assert restored.sheet().first_shown(6) == 0 and len(restored.sheet().canvas.strokes) == 1
+    assert restored.sheet().first_shown(5) == 1 and len(restored.sheet().canvas.strokes) == 1
     letter(restored, 340)
     dwell(restored, "lines:complete")
     sheet = restored.sheet()
@@ -464,7 +475,7 @@ def test_the_writing_guides_and_greyed_buttons_are_dark_enough_for_the_wall():
     assert img[zy0:zy0 + 4, zx0 + 5:zx0 + 30].min() <= 130                  # corner guides
     assert img[zy1 - 4:zy1, zx1 - 30:zx1 - 5].min() <= 130
     assert img[layout.baseline - 1:layout.baseline + 2, zx0 + 100:zx0 + 200].min(axis=0).max() <= 180   # baseline
-    assert img[zy1 + 4:zy1 + 34, zx0 + 4:zx0 + 120].min() <= 130            # "Write here"
+    assert img[zy0 + 16:zy0 + 48, zx0 + 44:zx0 + 160].min() <= 130          # "Write here", in the zone (D71)
     x0, y0, x1, y1 = layout.button("lines:complete").rect                   # DONE, greyed (nothing written)
     assert not ctl.lines_enabled("lines:complete") and img[y0:y1, x0:x1].min() <= 175
     tx0, ty0, tx1, ty1 = layout.track

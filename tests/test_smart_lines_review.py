@@ -19,9 +19,9 @@ from invisible_canvas.ai.recognize import (
 )
 from invisible_canvas.canvas import text as typeset
 from invisible_canvas.canvas.board import Board
-from invisible_canvas.canvas.lines import INK, READING_INK, SUGGESTION, render_controls, render_sheet
+from invisible_canvas.canvas.lines import INK, OFF_FILL, READING_INK, SUGGESTION, render_controls, render_sheet
 from invisible_canvas.canvas.model import Canvas
-from invisible_canvas.canvas.render import CanvasRenderer
+from invisible_canvas.canvas.render import PAGE_FILL, TOOL_SELECTED, CanvasRenderer
 from invisible_canvas.canvas.toolbar import Toolbar
 from invisible_canvas.config import AIConfig
 from invisible_canvas.interaction.drawing import DrawingController
@@ -509,9 +509,9 @@ def test_the_notes_are_typeset_and_drawn_again_only_when_a_line_changes():
     third = render_sheet(sheet, layout, True)
     assert sheet._notes is notes and third is not second
     x0, y0, x1, y1 = layout.zone
-    assert (third[y0:y1, 495:506] < 100).any() and (second[y0:y1, 495:506] > 150).all()   # (the baseline: 165)
+    assert (third[y0:y1, 495:506] < 100).any() and (second[y0:y1, 495:506] > 110).all()   # (the baseline: 120)
     ctl.undo()                                                                # the stroke goes: drawn again
-    assert (render_sheet(sheet, layout, True)[y0:y1, 495:506] > 150).all()
+    assert (render_sheet(sheet, layout, True)[y0:y1, 495:506] > 110).all()
 
 
 # -- D65: the AI panel and the Smart Lines buttons -----------------------------------------------------------------
@@ -556,8 +556,11 @@ def test_the_open_ai_panel_lies_over_none_of_the_smart_lines_buttons():
     assert ctl.lines_layout.zone[0] + 200 <= beside.button("lines:complete").rect[0]
     ctl.press("ai:close")
     assert ctl.lines_controls is own                                        # back in their own places
-    ctl.press("pages")                                                      # the PAGES panel covers none of them
-    assert ctl.board_open and ctl.lines_controls is own
+    ctl.press("pages")                                                      # D71: the PAGES panel covers the scroll
+    pages, column = ctl.board_layout.rect, ctl.lines_controls.column          # column only: it stands beside it
+    assert ctl.board_open and ctl.lines_controls is not own and not overlaps(column, pages)
+    assert column[2] == pages[0] - 16 and ctl.lines_controls.bar == own.bar
+    assert ctl.lines_controls.button("lines:complete").rect == own.button("lines:complete").rect
     with pytest.raises(ValueError, match="writing zone"):                   # no room beside a too-wide panel
         ctl.lines_layout.beside((200, 16, 1264, 632))
 
@@ -594,11 +597,11 @@ def test_done_review_and_scroll_work_beside_the_open_ai_panel():
         stroke(ctl, [(200 + 30 * k, Y - 30), (200 + 30 * k, Y + 30)])
         dwell(ctl, "lines:complete", 30.0 + 5 * k)
     sheet = ctl.sheet()
-    assert len(sheet.lines) == 8 and sheet.first_shown(6) == 2
+    assert len(sheet.lines) == 8 and sheet.first_shown(5) == 3
     dwell(ctl, "lines:up", 80.0)
-    assert sheet.first_shown(6) == 1
+    assert sheet.first_shown(5) == 2
     dwell(ctl, "lines:down", 85.0)
-    assert sheet.first_shown(6) == 2
+    assert sheet.first_shown(5) == 3
     dwell(ctl, "ai:summarize", 90.0)                                        # the AI panel itself still works
     (action, _, context), = ctl.take_ai_jobs()
     assert action == "summarize" and ctl.panel["state"] == "thinking" and ctl.tool == "lines"
@@ -609,8 +612,10 @@ def test_nothing_is_pressed_or_drawn_through_the_open_ai_panel():
     own = ctl.lines_layout.controls
     stroke(ctl, [(300, Y - 30), (305, Y), (300, Y + 30)])                  # an unfinished line to complete
     before = dict(ctl.log)
-    for k, name in enumerate(["lines:complete", "lines:written", "lines:edit", "lines:ink", "lines:retry",
-                              "lines:up", "lines:down"]):
+    names = [n for n in ("lines:complete", "lines:written", "lines:edit", "lines:ink", "lines:retry", "lines:up",
+                         "lines:down") if not any(b.contains(own.button(n).centre) for b in ctl.panel_layout.buttons)]
+    assert len(names) == 6                                                  # (D71: SCROLL UP's place is on a panel
+    for k, name in enumerate(names):                                        # button, which acts there)
         point = own.button(name).centre                                     # the layout's own place: on the panel
         assert ctl.panel_layout.contains(point)
         dwell_at(ctl, point, 10.0 * k)
@@ -785,3 +790,101 @@ def test_the_suggestion_and_the_reading_ink_are_dark_and_distinct_on_the_wall():
     suggested = img[rows[1].rect[1]:rows[1].rect[3], 80:900].astype(int)
     assert (np.abs(reading - READING_INK).sum(axis=2) < 10).sum() > 50 and reading.min() >= min(READING_INK) - 10
     assert (np.abs(suggested - SUGGESTION).sum(axis=2) < 30).sum() > 50
+
+
+# -- D71: the look of the user's mockup ----------------------------------------------------------------------------
+
+def near(img, colour, tolerance=30):
+    return (np.abs(img.astype(int) - colour).sum(axis=2) < tolerance).sum()
+
+
+def test_write_here_stands_in_the_zone_until_something_is_written():
+    ctl = controller()
+    zx0, zy0, _, _ = ctl.lines_layout.zone
+    caption = (slice(zy0 + 16, zy0 + 48), slice(zx0 + 44, zx0 + 160))
+    assert ctl.background[caption].min() <= 130                               # "Write here" inside the zone
+    stroke(ctl, [(600, Y - 30), (605, Y), (600, Y + 30)])                     # the first stroke, away from it
+    assert ctl.background[caption].min() == 255                               # gone
+    ctl.undo()
+    assert ctl.background[caption].min() <= 130                               # nothing written: back
+    write_line(ctl)                                                           # DONE: the zone is empty again
+    assert ctl.background[caption].min() <= 130
+
+
+def test_ok_and_done_are_filled_blue_when_they_can_act_and_grey_when_not():
+    ctl = controller()
+    line = write_line(ctl)
+    (n, _, _), = ctl.take_line_jobs()
+    ctl.line_result(n, ok("ICE IS COLDWATER", "ICE IS COLD WATER"))
+    r = CanvasRenderer(SIZE)
+    img = r.render(ctl.canvas, ctl, ctl.toolbar, mode=HOVER, cursor=None)
+    layout = ctl.lines_layout
+
+    def inside(name):
+        x0, y0, x1, y1 = layout.button(name).rect
+        return img[y0 + 4:y1 - 4, x0 + 4:x1 - 4]
+    assert ctl.lines_enabled("lines:ok") and near(inside("lines:ok"), SUGGESTION) > 0.6 * inside("lines:ok")[..., 0].size
+    assert near(inside("lines:edit"), SUGGESTION) == 0 and (inside("lines:edit") == 255).mean() > 0.6   # white
+    assert not ctl.lines_enabled("lines:complete") and near(inside("lines:complete"), OFF_FILL, 6) > 1000
+    stroke(ctl, [(600, Y - 30), (605, Y), (600, Y + 30)])
+    dwell(ctl, "lines:ok", 5.0)
+    dwell(ctl, "lines:row:0", 10.0)                                           # the line in the review bar again
+    img = r.render(ctl.canvas, ctl, ctl.toolbar, mode=HOVER, cursor=None)
+    assert line.status == "confirmed" and ctl.review_line() is line and not ctl.lines_enabled("lines:ok")
+    assert near(inside("lines:ok"), SUGGESTION) == 0 and near(inside("lines:ok"), OFF_FILL, 6) > 500   # grey
+    assert ctl.lines_enabled("lines:complete") and near(inside("lines:complete"), SUGGESTION) > 3000   # DONE blue
+    assert (inside("lines:complete") > 245).all(axis=2).sum() > 50            # its white label
+
+
+def test_the_toolbar_is_typeset_once_per_state_and_shows_the_tool_in_use():
+    ctl = controller()
+    r = CanvasRenderer(SIZE)
+    calls = []
+    real = typeset.draw
+    typeset.draw = lambda img, ops: (calls.append(len(ops)), real(img, ops))[1]
+    try:
+        img = r.render(ctl.canvas, ctl, ctl.toolbar, mode=HOVER, cursor=None)
+        first = len(calls)
+        again = r.render(ctl.canvas, ctl, ctl.toolbar, mode=HOVER, cursor=None)
+        assert len(calls) == first and (again == img).all()                   # nothing typeset again
+        ctl.press("pen")
+        r.render(ctl.canvas, ctl, ctl.toolbar, mode=HOVER, cursor=None)
+        assert len(calls) > first                                             # a new state: typeset once
+    finally:
+        typeset.draw = real
+    img = r.render(ctl.canvas, ctl, ctl.toolbar, mode=HOVER, cursor=None)
+    for name in ("pen", "black", "medium"):                                   # in use: outlined purple
+        x0, y0, x1, y1 = ctl.toolbar.button(name).rect
+        assert near(img[y0:y1, x0:x1], TOOL_SELECTED) > 100, name
+    for name in ("lines", "red", "thin", "undo"):
+        x0, y0, x1, y1 = ctl.toolbar.button(name).rect
+        assert near(img[y0:y1, x0:x1], TOOL_SELECTED) == 0, name
+    x0, y0, x1, y1 = ctl.toolbar.button("eraser").rect
+    assert (img[y0 + 10:y1 - 10, x0 + 6:x1 - 6].min(axis=2) < 120).sum() > 40   # its label, dark
+    ctl.update_pointer(0.0, ctl.toolbar.button("undo").centre)
+    ctl.update_pointer(0.5, ctl.toolbar.button("undo").centre)
+    img = r.render(ctl.canvas, ctl, ctl.toolbar, mode=HOVER, cursor=None)
+    x0, y0, x1, y1 = ctl.toolbar.button("undo").rect
+    assert (img[y1 - 6, x0 + 5:x0 + 20] == (200, 60, 200)).all()              # hold-to-press progress, each frame
+
+
+def test_the_notes_end_at_an_open_panel_and_the_page_label_is_a_pill():
+    ctl = controller(ai=True)
+    for k in range(2):
+        write_line(ctl, 200 + 80 * k)
+    for n, _, _ in ctl.take_line_jobs():
+        ctl.line_result(n, ok("A VERY LONG LINE OF WRITING THAT GOES ON AND ON ACROSS THE WHOLE WALL " * 2))
+    nx0, ny0, nx1, ny1 = ctl.lines_layout.notes
+    wide = ctl.background
+    assert ctl._notes_right() is None and (wide[ny0 + 20:ny1 - 20, 900:nx1 - 40] < 120).any()   # text out to 1100+
+    ctl.press("ai")
+    right = ctl._notes_right()
+    assert right == min(ctl.panel_layout.rect[0], ctl.lines_controls.column[0]) - 12
+    clipped = ctl.background
+    assert (clipped[ny0 + 4:ny1 - 4, right + 2:nx1] == 255).all()             # nothing right of it, frame neither
+    assert (clipped[ny0 + 20:ny1 - 20, right - 200:right - 20] < 120).any()   # the text up to it ("...")
+    ctl.press("ai:close")
+    assert ctl.background is not clipped and ctl._notes_right() is None
+    img = CanvasRenderer(SIZE).render(ctl.canvas, ctl, ctl.toolbar, mode=HOVER, cursor=None)
+    assert tuple(img[10, 40]) == PAGE_FILL and tuple(img[9, 13]) == (255, 255, 255)   # the pill, its round corner
+    assert (img[15:35, 20:120].min(axis=2) < 120).any()                       # "Page 1 of 1"
