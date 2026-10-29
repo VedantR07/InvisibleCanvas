@@ -49,9 +49,12 @@ BAR_GAP = 60                               # px from the review bar's top to the
 # colours (BGR)
 INK = (30, 30, 30)
 MUTED = (125, 125, 125)
-SUGGESTION = (190, 95, 25)                 # blue: a suggestion waiting for the teacher's OK
+# D67 (wall test run 2: both too light on the wall): the suggestion's blue darker (RGB 25, 95, 190 -> 10, 60, 160:
+# luminance 87 -> 57), still blue beside black (30) and grey ink; the handwriting while it is read darker grey
+# (150 -> 105), still well apart from black handwriting and from the blue
+SUGGESTION = (160, 60, 10)                 # blue: a suggestion waiting for the teacher's OK
 WARN = (0, 120, 200)                       # orange: not recognised
-READING_INK = (150, 150, 150)              # the handwriting while it is read, or when it was not recognised
+READING_INK = (105, 105, 105)              # the handwriting while it is read (and its "reading..."), or not recognised
 # D66: the wall washes light greys out (wall test run 1: 185-235 barely or not visible in the camera frames), so the
 # guides and the greyed buttons are darker and thicker than on a screen
 GUIDE, GUIDE_PX, GUIDE_LEN = (115, 115, 115), 3, 34    # the writing zone's corner guides
@@ -512,7 +515,8 @@ def _notes_image(sheet: LineSheet, layout: LinesLayout, review: int | None) -> n
                 note = "reading..." if status == "recognizing" else "not recognised - RETRY or EDIT"
                 right = max(x + 40, min(x + 420, int(nx1 - PAD - typeset.width(note, f["small"]) - 12)))
                 end = _draw_line_ink(img, line, (x, top + 6, right, bottom - 6), READING_INK)
-                ops.append(("text", (end + 12, cy), note, f["small"], MUTED if status == "recognizing" else WARN, "lm"))
+                ops.append(("text", (end + 12, cy), note, f["small"], READING_INK if status == "recognizing" else WARN,
+                            "lm"))
         if len(sheet.lines) > layout.visible:
             ops.append(("text", (nx1 - PAD, ny1), f"{first + 1}-{first + len(shown)} of {len(sheet.lines)}",
                         f["small"], MUTED, "rd"))

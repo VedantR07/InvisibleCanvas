@@ -10,6 +10,7 @@ import threading
 import time
 import urllib.error
 
+import cv2
 import numpy as np
 import pytest
 
@@ -18,7 +19,7 @@ from invisible_canvas.ai.recognize import (
 )
 from invisible_canvas.canvas import text as typeset
 from invisible_canvas.canvas.board import Board
-from invisible_canvas.canvas.lines import render_controls, render_sheet
+from invisible_canvas.canvas.lines import INK, READING_INK, SUGGESTION, render_controls, render_sheet
 from invisible_canvas.canvas.model import Canvas
 from invisible_canvas.canvas.render import CanvasRenderer
 from invisible_canvas.canvas.toolbar import Toolbar
@@ -473,10 +474,10 @@ def test_the_controls_and_review_bar_are_drawn_only_with_lines_and_cached():
     bx0, by0, bx1, by1 = ctl.lines_layout.bar
     img = r.render(ctl.canvas, ctl, ctl.toolbar, mode=HOVER, cursor=None)
     bar = img[by0:by1, bx0:bx1]
-    assert (bar != 255).any() and (np.abs(bar.astype(int) - (190, 95, 25)).sum(axis=2) < 60).any()   # blue text
+    assert (bar != 255).any() and (np.abs(bar.astype(int) - SUGGESTION).sum(axis=2) < 60).any()   # blue text
     _, top, _, bottom = ctl.lines_layout.rows[0].rect
     row = img[top:bottom, 40:900]
-    assert (np.abs(row.astype(int) - (190, 95, 25)).sum(axis=2) < 60).any()   # the suggestion in the notes, blue
+    assert (np.abs(row.astype(int) - SUGGESTION).sum(axis=2) < 60).any()   # the suggestion in the notes, blue
     view = ctl.lines_view()
     assert render_controls(ctl.lines_layout, view) is render_controls(ctl.lines_layout, ctl.lines_view())
     ok_button = ctl.lines_layout.button("lines:ok")
@@ -489,7 +490,7 @@ def test_the_controls_and_review_bar_are_drawn_only_with_lines_and_cached():
     ctl.press("pen")
     img = r.render(ctl.canvas, ctl, ctl.toolbar, mode=HOVER, cursor=None)
     assert (img[by0:by1, bx0:bx1] == 255).all()                               # no review bar with PEN
-    assert (np.abs(img[top:bottom, 40:900].astype(int) - (190, 95, 25)).sum(axis=2) < 60).any()   # notes still
+    assert (np.abs(img[top:bottom, 40:900].astype(int) - SUGGESTION).sum(axis=2) < 60).any()   # notes still
 
 
 def test_the_notes_are_typeset_and_drawn_again_only_when_a_line_changes():
@@ -661,3 +662,126 @@ def test_the_controls_are_drawn_beside_the_open_ai_panel_and_the_panel_over_thei
     img = r.render(ctl.canvas, ctl, ctl.toolbar, mode=HOVER, cursor=None)
     x0, y0, x1, y1 = own.button("lines:retry").rect
     assert (img[y0:y1, x0:x1] < 200).any() and ctl.lines_controls is own
+
+
+# -- D67: the reader's warm-up (R43), and the notes' colours on the wall -------------------------------------------
+
+class WarmingRecognizer:
+    """A fake reader whose warm-up waits for `gate` (or raises); records the calls in order."""
+
+    def __init__(self, gate=None, fail=False):
+        self.gate, self.fail, self.calls = gate, fail, []
+
+    def warm_up(self):
+        self.calls.append("warm_up")
+        if self.gate is not None:
+            self.gate.wait(5)
+        if self.fail:
+            raise RuntimeError("boom")
+        self.calls.append("warm_up_done")
+        return {"answered": True, "error": "", "latency_s": 0.01}
+
+    def read(self, png):
+        self.calls.append("read")
+        return ok(png.decode())
+
+
+def wait_for(condition, timeout=5.0):
+    end = time.time() + timeout
+    while not condition() and time.time() < end:
+        time.sleep(0.005)
+    return condition()
+
+
+def test_the_warm_up_runs_once_in_the_background_before_any_line(tmp_path):
+    gate = threading.Event()
+    fake = WarmingRecognizer(gate)
+    t0 = time.perf_counter()
+    worker = RecognitionWorker(fake, save_dir=tmp_path, warm_up=True)
+    assert time.perf_counter() - t0 < 0.5 and worker.warming_up               # the caller does not wait for it
+    worker.submit(1, b"L1", {"page": 1, "line": 1})                           # a line done during the warm-up ...
+    assert wait_for(lambda: fake.calls) and fake.calls == ["warm_up"]
+    time.sleep(0.1)
+    assert fake.calls == ["warm_up"] and worker.poll() == [] and worker.busy  # ... waits: never two requests at once
+    gate.set()
+    assert wait_for(lambda: not worker.busy)
+    assert [(n, r["text"]) for n, r in worker.poll()] == [(1, "L1")]          # only the line comes back: no note
+    assert fake.calls == ["warm_up", "warm_up_done", "read"] and not worker.warming_up
+    assert worker.warm_up_result == {"answered": True, "error": "", "latency_s": 0.01}
+    assert [r["request"] for r in worker.readings] == [1]                     # the warm-up is not a reading ...
+    assert worker.readings[0]["waited_s"] >= 0.1                              # (the line's wait behind it, recorded)
+    assert len(list(tmp_path.glob("*.json"))) == 1                            # ... nor saved as a line
+    worker.close()
+    plain = RecognitionWorker(fake)                                           # without warm_up: none
+    plain.submit(2, b"L2")
+    assert wait_for(lambda: not plain.busy) and not plain.warming_up and plain.warm_up_result is None
+    plain.close()
+    assert fake.calls.count("warm_up") == 1 and fake.calls[-1] == "read"
+
+
+def test_a_failed_warm_up_is_recorded_and_lines_are_still_read():
+    worker = RecognitionWorker(WarmingRecognizer(fail=True), warm_up=True)
+    worker.submit(1, b"L1", {"page": 1, "line": 1})
+    assert wait_for(lambda: not worker.busy)
+    assert worker.warm_up_result == {"answered": False, "error": "warm-up failed: RuntimeError", "latency_s": None}
+    assert [(n, r["text"]) for n, r in worker.poll()] == [(1, "L1")] and not worker.warming_up
+    worker.close()
+
+
+def test_closing_during_the_warm_up_returns_promptly_and_reads_nothing_more():
+    gate = threading.Event()
+    fake = WarmingRecognizer(gate)
+    worker = RecognitionWorker(fake, warm_up=True)
+    worker.submit(1, b"L1")
+    assert wait_for(lambda: fake.calls)
+    t0 = time.perf_counter()
+    worker.close(timeout=0.2)
+    assert time.perf_counter() - t0 < 1.0                                     # the app's exit is not held up
+    gate.set()
+    worker._thread.join(2.0)
+    assert not worker._thread.is_alive() and fake.calls == ["warm_up", "warm_up_done"]   # no line read after close
+
+
+def test_the_warm_up_request_is_a_line_request_with_a_small_image_made_by_the_app():
+    seen = []
+
+    def opener(request, timeout):
+        seen.append((request.full_url, json.loads(request.data), timeout))
+        return Response(reply({"written": "", "text": ""}))
+    result = LineRecognizer(CFG, opener).warm_up()
+    assert result["answered"] and result["error"] == "" and result["latency_s"] >= 0
+    (url, body, timeout), = seen
+    line = build_line_request(CFG, b"png")                                    # the line's own request, prompt unchanged
+    assert url == "http://127.0.0.1:11434/api/chat" and timeout == 120.0
+    assert {k: v for k, v in body.items() if k != "messages"} == {k: v for k, v in line.items() if k != "messages"}
+    assert body["messages"][0] == line["messages"][0]
+    assert body["messages"][1]["content"] == line["messages"][1]["content"]
+    image = cv2.imdecode(np.frombuffer(base64.b64decode(body["messages"][1]["images"][0]), np.uint8), cv2.IMREAD_COLOR)
+    assert image.shape[:2] == (160, 640) and image.min() < 60 and (image == 255).mean() > 0.8   # one stroke on white
+    for error, message in [(urllib.error.URLError(ConnectionRefusedError()), "start Ollama"),
+                           (urllib.error.URLError(socket.timeout()), "No answer within 120 s"),
+                           (urllib.error.HTTPError("u", 404, "missing", {}, None), "ollama pull")]:
+        def failing(request, timeout, error=error):
+            raise error
+        result = LineRecognizer(CFG, failing).warm_up()                      # never raises
+        assert result["answered"] is False and message in result["error"] and result["latency_s"] >= 0
+
+
+def test_the_suggestion_and_the_reading_ink_are_dark_and_distinct_on_the_wall():
+    # Wall test run 2: the blue suggestion and the grey ink of a line being read were hard to see on the wall
+    def luminance(bgr):
+        return 0.0722 * bgr[0] + 0.7152 * bgr[1] + 0.2126 * bgr[2]
+    assert luminance(SUGGESTION) <= 60 and SUGGESTION[0] >= SUGGESTION[1] + 60 >= SUGGESTION[2] + 60   # dark blue
+    assert 95 <= luminance(READING_INK) <= 115 and luminance(READING_INK) - luminance(INK) >= 60       # grey, not black
+    assert len(set(READING_INK)) == 1                                         # a grey, unlike the blue
+    ctl = controller()
+    write_line(ctl, 200)                                                      # line 1: still being read
+    write_line(ctl, 400)                                                      # line 2: a suggestion
+    jobs = ctl.take_line_jobs()
+    ctl.line_result(jobs[1][0], ok("CAT"))
+    img = render_sheet(ctl.sheet(), ctl.lines_layout, True)
+    rows = ctl.lines_layout.rows
+    reading = img[rows[0].rect[1]:rows[0].rect[3], 80:900].astype(int)       # right of the number
+    suggested = img[rows[1].rect[1]:rows[1].rect[3], 80:900].astype(int)
+    assert (np.abs(reading - READING_INK).sum(axis=2) < 10).sum() > 50 and reading.min() >= min(READING_INK) - 10
+    assert (np.abs(suggested - SUGGESTION).sum(axis=2) < 30).sum() > 50

@@ -11,6 +11,11 @@ A corrected text needs a readable literal one: when `written` has no letter or d
 whatever `text` says. Every failure (Ollama not running, the model not downloaded, a timeout, an answer cut off or
 not readable, nothing readable) is a reading with ok False and a message; nothing raises. `RecognitionWorker` runs
 the requests one after another in a background thread, so the tracking loop never waits for them.
+
+D67 (R43): the worker can warm the reader up once, in its own thread, before the first line: one request like a
+line's (the same prompt, answer format and model) with a small image made here, so a one-time cost of the first
+image request (22 s after an Ollama update, wall test run 2; cause not proven) falls at the start of the session
+instead of on the teacher's first line. Its answer is not used; lines finished meanwhile wait for it.
 """
 
 from __future__ import annotations
@@ -22,6 +27,9 @@ import threading
 import time
 import urllib.request
 from pathlib import Path
+
+import cv2
+import numpy as np
 
 from ..config import AIConfig
 from .local import KEEP_ALIVE, LocalAssistant, local_error_message
@@ -45,6 +53,19 @@ SCHEMA = {"type": "object", "properties": {"written": {"type": "string"}, "text"
           "required": ["written", "text"]}
 # One line in two texts: ~20-60 tokens each. A model repeating "[?]" ends here after ~6 s instead of running on.
 LINE_MAX_TOKENS = 256
+# D67: the warm-up image. ~400 image tokens (with the prompt ~650, two 512-token batches, as a real line's ~1,300
+# take three), a fraction of a line's cost; no user content: white with one smooth synthetic stroke.
+WARM_UP_SIZE = (640, 160)
+
+
+def warm_up_png() -> bytes:
+    """D67: the warm-up's image, made here (never the user's writing, board or documents)."""
+    w, h = WARM_UP_SIZE
+    img = np.full((h, w, 3), 255, np.uint8)
+    xs = np.linspace(40, w - 40, 80)
+    points = np.stack([xs, h / 2 + 30 * np.sin(xs / 45)], axis=1)
+    cv2.polylines(img, [np.round(points).astype(np.int32)], False, (25, 25, 25), 8, cv2.LINE_AA)
+    return cv2.imencode(".png", img)[1].tobytes()
 
 
 def readable(text: str) -> bool:
@@ -108,14 +129,32 @@ class LineRecognizer:
         reading["latency_s"] = round(time.perf_counter() - t0, 3)
         return reading
 
+    def warm_up(self) -> dict:
+        """D67: one request built as a line's (`build_line_request`: the same prompt, answer format and model) with
+        `warm_up_png`; the answer is not used. Never raises: {"answered", "error", "latency_s"}."""
+        t0 = time.perf_counter()
+        try:
+            self._local._post("/api/chat", build_line_request(self.cfg, warm_up_png()), self.cfg.timeout_s)
+            result = {"answered": True, "error": ""}
+        except Exception as e:                           # Ollama not running, the model missing, a timeout ...
+            result = {"answered": False, "error": local_error_message(e, self.cfg)}
+        result["latency_s"] = round(time.perf_counter() - t0, 3)
+        return result
+
 
 class RecognitionWorker:
     """Reads Smart Lines one after another in a background thread (D64). `submit` queues a request (never refused);
     `cancel` drops one that has not started (its result comes back as None); `poll()`, once per frame, returns the
     finished (request, reading) pairs. Each line's image and reading are saved under `save_dir`
-    (data/ai/lines/<stamp>-<request>-p<page>-l<line>.png / .json)."""
+    (data/ai/lines/<stamp>-<request>-p<page>-l<line>.png / .json).
 
-    def __init__(self, recognizer, save_dir: Path | None = None):
+    D67: with `warm_up`, the recognizer's `warm_up()` runs once, first, in this worker's own thread (so never at the
+    same time as a line's request, and never twice); lines submitted meanwhile wait in the queue. Its outcome goes to
+    `warm_up_result` only: nothing comes back from `poll()`, nothing is saved as a line, and an exception from it is
+    recorded, never raised. `close()` during the warm-up returns after `timeout`; the thread, a daemon, then stops
+    without reading anything more."""
+
+    def __init__(self, recognizer, save_dir: Path | None = None, warm_up: bool = False):
         self.recognizer = recognizer
         self.save_dir = None if save_dir is None else Path(save_dir)
         self._jobs: queue.Queue = queue.Queue()
@@ -124,6 +163,11 @@ class RecognitionWorker:
         self._cancelled: set[int] = set()
         self._pending = 0
         self.readings: list[dict] = []               # every reading made, in order, with its request (the report)
+        self.warm_up_result: dict | None = None      # D67: {"answered", "error", "latency_s"}; None: not (yet) run
+        self._warming = threading.Event()
+        self._closing = threading.Event()
+        if warm_up and hasattr(recognizer, "warm_up"):
+            self._warming.set()
         self._thread = threading.Thread(target=self._run, name="line-reader", daemon=True)
         self._thread.start()
 
@@ -132,10 +176,15 @@ class RecognitionWorker:
         """A request is queued or being read."""
         return self._pending > 0
 
+    @property
+    def warming_up(self) -> bool:
+        """D67: the warm-up has not finished yet."""
+        return self._warming.is_set()
+
     def submit(self, request: int, png: bytes, context: dict | None = None) -> None:
         with self._lock:
             self._pending += 1
-        self._jobs.put((request, png, dict(context or {})))
+        self._jobs.put((request, png, dict(context or {}), time.perf_counter()))
 
     def cancel(self, request: int) -> None:
         with self._lock:
@@ -150,17 +199,27 @@ class RecognitionWorker:
                 return out
 
     def _run(self) -> None:
+        if self._warming.is_set():
+            try:
+                if not self._closing.is_set():
+                    self.warm_up_result = dict(self.recognizer.warm_up())
+            except Exception as e:                    # a warm-up never stops the readings
+                self.warm_up_result = {"answered": False, "error": f"warm-up failed: {type(e).__name__}",
+                                       "latency_s": None}
+            finally:
+                self._warming.clear()
         while True:
             job = self._jobs.get()
-            if job is None:
+            if job is None or self._closing.is_set():
                 return
-            request, png, context = job
+            request, png, context, submitted = job
+            waited = round(time.perf_counter() - submitted, 3)    # in the queue (D67: e.g. behind the warm-up)
             with self._lock:
                 skip = request in self._cancelled
                 self._cancelled.discard(request)
             reading = None if skip else self.recognizer.read(png)
             if reading is not None:
-                self.readings.append({"request": request, **context, **reading})
+                self.readings.append({"request": request, **context, **reading, "waited_s": waited})
                 self._save(request, png, context, reading)
             with self._lock:
                 self._pending -= 1
@@ -179,5 +238,7 @@ class RecognitionWorker:
             pass                                      # a failed save never stops the reading reaching the line
 
     def close(self, timeout: float = 2.0) -> None:
+        """Stop: nothing more is read (a request already running is abandoned after `timeout`: daemon thread)."""
+        self._closing.set()
         self._jobs.put(None)
         self._thread.join(timeout)

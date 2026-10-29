@@ -6,6 +6,7 @@ import contextlib
 import copy
 import dataclasses
 import json
+import threading
 import time
 import tomllib
 from types import SimpleNamespace
@@ -18,6 +19,7 @@ from synthetic_hand import CURLED, EXTENDED, hand, to_image
 from test_auto import auto_calibration
 
 from invisible_canvas.ai.client import AIAnswer
+from invisible_canvas.ai.recognize import LineRecognizer
 from invisible_canvas.calibration.store import save_calibration
 from invisible_canvas.config import DEFAULT_CONFIG_PATH, config_from_dict
 from invisible_canvas.interaction.engine import EngineParams
@@ -41,6 +43,20 @@ def observation(shape, tip_camera):
     lm = to_image(world, scale_px_per_m=900.0)
     lm = lm - lm[8] + np.asarray(tip_camera)
     return HandObservation((float(lm[8, 0]), float(lm[8, 1])), lm, "Right", 0.9, world=world)
+
+
+class OfflineRecognizer:
+    """The Smart Lines reader of `draw` tests that do not bring their own (D67): its warm-up runs at every `draw`
+    start with the AI on, and must not reach a real Ollama in a test."""
+
+    def __init__(self, cfg):
+        pass
+
+    def warm_up(self):
+        return {"answered": False, "error": "offline test", "latency_s": 0.0}
+
+    def read(self, png):
+        return {"ok": False, "written": "", "text": "", "error": "offline test", "latency_s": 0.0}
 
 
 def run_tool(tool, tmp_path, monkeypatch, argv, schedule, ai_enabled=False, keys=None):
@@ -109,6 +125,8 @@ def run_tool(tool, tmp_path, monkeypatch, argv, schedule, ai_enabled=False, keys
 
     monkeypatch.setattr(tool, "open_session", fake_session)
     monkeypatch.setattr(tool, "HandTracker", FakeTracker)
+    if getattr(tool, "LineRecognizer", None) is LineRecognizer:          # D67: unless the test brought its own
+        monkeypatch.setattr(tool, "LineRecognizer", OfflineRecognizer)
     monkeypatch.setattr(tracking_session, "CameraMeasure", lambda s, title, **k: scene)
     key = (lambda *a: -1) if keys is None else (lambda *a: keys(time.perf_counter() - state["t0"]) if state else -1)
     monkeypatch.setattr(cv2, "waitKey", key)
@@ -537,9 +555,17 @@ def test_a_smart_line_is_read_in_the_background_and_confirmed_with_ok(tmp_path, 
     done, ok_button = layout.button("lines:complete").centre, layout.button("lines:ok").centre
     read = []
 
+    warmed, frames_started = [], threading.Event()
+
     class FakeRecognizer:
         def __init__(self, cfg):
             pass
+
+        def warm_up(self):                                        # D67: at the start, in the reader's thread
+            warmed.append(time.perf_counter())
+            frames_started.wait(30)                               # (it began before the setup check: here it is
+            time.sleep(0.5)                                       # made to last into the frame loop, which keeps
+            return {"answered": True, "error": "", "latency_s": 0.5}   # running meanwhile)
 
         def read(self, png):
             read.append(png)
@@ -550,6 +576,7 @@ def test_a_smart_line_is_read_in_the_background_and_confirmed_with_ok(tmp_path, 
     monkeypatch.setattr(draw_tool, "LocalAssistant", RecordingAssistant)      # the AI panel's backend (not used)
 
     def schedule(s, mapper):
+        frames_started.set()
         if s < 1.2:
             return OTHER, lines_button
         if s < 1.4:
@@ -579,6 +606,12 @@ def test_a_smart_line_is_read_in_the_background_and_confirmed_with_ok(tmp_path, 
     assert len(read) == 1 and read[0][:4] == b"\x89PNG"
     assert rec["busy_frames"] > 5 and rec["busy_processing_fps"] > 30            # the loop did not wait
     assert sum(line["lines_busy"] for line in trace) == rec["busy_frames"]
+    # D67: one warm-up at the start, the loop running meanwhile; no line or note from it; the first reading's time
+    assert len(warmed) == 1 and rec["warm_up"] == {"answered": True, "error": "", "latency_s": 0.5}
+    assert rec["warm_up_frames"] > 5 and rec["warm_up_processing_fps"] > 30
+    assert sum(line["lines_warming"] for line in trace) == rec["warm_up_frames"]
+    assert rec["first_reading_latency_s"] == 0.4 and rec["later_reading_latency_s"] is None
+    assert 0 <= rec["first_reading_waited_s"] < 1.0                            # (the warm-up was over by then)
     saved = json.load(open(report["board"]["json"], encoding="utf-8"))["smart_lines"][0]["lines"][0]
     assert saved["decision"] == {"kind": "ok", "text": "CAT"} and saved["reading"]["written"] == "CAT"
     assert len(list((config.root / "data" / "ai" / "lines").glob("*-p1-l1.json"))) == 1
@@ -917,6 +950,7 @@ def test_the_ai_is_on_by_default_and_no_ai_switches_it_off(tmp_path, monkeypatch
     assert code == 0 and config.ai.enabled and len(made) == 1
     assert made[0].backend == "local" and made[0].local_model == "qwen3-vl:8b-instruct"
     assert report["ai"] is not None and report["ai"]["model"] == "qwen3-vl:8b-instruct"
+    assert report["line_recognition"]["warm_up"]["error"] == "offline test"     # D67: started with the session
     assert toolbars[-1].ai and toolbars[-1].button("ai").kind == "ai"            # the AI button is on the toolbar
 
     code, config, shown = run_tool(draw_tool, tmp_path / "off", monkeypatch,

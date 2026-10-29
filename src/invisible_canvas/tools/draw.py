@@ -21,7 +21,9 @@ board; report `smart_lines`.
 D64: with the AI on, each completed line is read in the background by the local model (`[ai] local_model`, free)
 as a literal and a corrected text; the teacher confirms one, edits it (typed on the laptop, as ASK), keeps the ink
 or retries. Line images and readings are saved under data/ai/lines/; the report has each line's status and the
-frame rate while lines were read (`line_recognition`).
+frame rate while lines were read (`line_recognition`). D67: the reader warms up once at the start, in the
+background, with a small image made by the app (never the user's content); the report has the warm-up and the
+first line's reading time against the later ones.
 
 Keyboard (laptop): o open a file, z undo, y redo, s save, c twice clear, ESC quit. Before tracking, the setup check runs
 (a moved setup is recalibrated automatically and validated first, D39). On exit the current page is saved to
@@ -267,7 +269,9 @@ def run(config: Config, args) -> int:
             print(f"the AI needs the anthropic package ({e}): pip install -e .[ai]")
             return 2
         # D64: Smart Lines are read by the local model (free), whatever the AI panel's backend
-        line_worker = RecognitionWorker(LineRecognizer(config.ai), save_dir=config.root / "data" / "ai" / "lines")
+        # D67 (R43): the reader warms up once, in its own thread, before the first line
+        line_worker = RecognitionWorker(LineRecognizer(config.ai), save_dir=config.root / "data" / "ai" / "lines",
+                                        warm_up=True)
     try:
         tracker = HandTracker(**TRACKER_OPTIONS)
     except HandTrackingError as e:
@@ -366,7 +370,8 @@ def run(config: Config, args) -> int:
             records.append({"t": frame.timestamp - start, "mode": step.mode, "hand": obs is not None,
                             "inference_ms": (t1 - t0) * 1000, "pipeline_ms": (t2 - frame.timestamp) * 1000,
                             "ai_busy": bool(worker is not None and worker.busy),
-                            "lines_busy": bool(line_worker is not None and line_worker.busy)})
+                            "lines_busy": bool(line_worker is not None and line_worker.busy),
+                            "lines_warming": bool(line_worker is not None and line_worker.warming_up)})
             td = time.perf_counter()
             stage_ms = {"queue": (t0 - frame.timestamp) * 1000, "inference": (t1 - t0) * 1000,
                         "hand": (th - t1) * 1000, "engine": (te - th) * 1000, "controller": (tc - te) * 1000,
@@ -387,6 +392,7 @@ def run(config: Config, args) -> int:
                          "blocked": controller.blocked,                  # D56: why the pointing draws nothing
                          "ai_busy": records[-1]["ai_busy"],              # an AI request was running (S3, §9.13)
                          "lines_busy": records[-1]["lines_busy"],        # D64: a Smart Line was being read
+                         "lines_warming": records[-1]["lines_warming"],  # D67: the reader's warm-up was running
                          "page": controller.board.current + 1,           # D59
                          "view": controller.view,                        # D60: board or doc
                          "tool": controller.tool,                        # D62: lines (Smart Lines) or another
@@ -516,6 +522,13 @@ def run(config: Config, args) -> int:
             "not_read": controller.log["lines:not_read"], "stale_ignored": controller.log["lines:stale_results"],
             "skipped": controller.log["lines:skipped"],
             "latency_s": _percentiles([r["latency_s"] for r in line_worker.readings]),
+            # D67 (R43): the warm-up, and the first line's time against the later ones, to judge whether it helps
+            "warm_up": line_worker.warm_up_result,
+            "warm_up_frames": sum(r["lines_warming"] for r in records),
+            "warm_up_processing_fps": segment_fps([r["t"] for r in records if r["lines_warming"]]),
+            "first_reading_latency_s": line_worker.readings[0]["latency_s"] if line_worker.readings else None,
+            "first_reading_waited_s": line_worker.readings[0]["waited_s"] if line_worker.readings else None,
+            "later_reading_latency_s": _percentiles([r["latency_s"] for r in line_worker.readings[1:]]),
             "busy_frames": sum(r["lines_busy"] for r in records),
             "busy_processing_fps": segment_fps([r["t"] for r in records if r["lines_busy"]]),
             "idle_processing_fps": segment_fps([r["t"] for r in records if not r["lines_busy"]]),
@@ -570,11 +583,21 @@ def run(config: Config, args) -> int:
             print(f"while AI requests ran: {ai['busy_frames']} frames, {ai['busy_processing_fps']:.1f} fps, "
                   f"pipeline p95 {ai['busy_pipeline_ms']['p95']:.1f} ms")
     rec = report["line_recognition"]
+    if rec is not None:                                # D67: the warm-up, whether or not a line was read
+        w = rec["warm_up"]
+        print("Smart Lines reader warm-up: " + ("not finished" if w is None else
+                                                f"answered in {w['latency_s']:.1f} s" if w["answered"] else
+                                                f"no answer ({w['error']})"))
     if rec is not None and rec["requests"]:
         print(f"Smart Lines read: {rec['requests']} requests, {rec['read']} read, {rec['not_read']} not read, "
               f"{rec['stale_ignored']} late readings ignored"
               + (f"; while reading {rec['busy_frames']} frames at {rec['busy_processing_fps']:.1f} fps "
                  f"(otherwise {rec['idle_processing_fps']:.1f})" if rec["busy_frames"] else ""))
+        if rec["first_reading_latency_s"] is not None:
+            later = rec["later_reading_latency_s"]
+            print(f"  first line read in {rec['first_reading_latency_s']:.1f} s (after {rec['first_reading_waited_s']:.1f} s "
+                  f"in the queue)" + (f"; later lines median {later['median']:.1f} s, max {later['max']:.1f} s"
+                                      if later else ""))
     print(f"canvas: {json_path} (+ .png)")
     print(f"report: {save_report(config, 'draw', report)}")
     if controller.reference is not None:               # D60: let go of the document file
