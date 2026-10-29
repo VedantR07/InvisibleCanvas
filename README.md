@@ -46,8 +46,10 @@ python -m invisible_canvas draw           # Phase 2: index finger = use the tool
                                           #          a stroke stops at the toolbar; a slashed ring = not drawing:
                                           #          open the hand, then point again (D56); if the projector or
                                           #          camera is moved, it recalibrates by itself (D58: keep clear)
-                                          #          --light: light the hand white, ring cursor (D50, off by default);
-                                          #          the l key switches it on / off during a session (D68)
+                                          #          the hand is lit plain white, with a ring cursor, so writing
+                                          #          already on the wall does not fall on it (D50; on by default
+                                          #          since D69, --no-light for a session without it); the l key
+                                          #          switches it on / off during a session (D68)
 python -m invisible_canvas replay DIR     # Phase 2: replay a `gestures --video` recording offline (D48)
 python -m invisible_canvas draw          # with the AI (on by default, D57; `draw --no-ai` for a session
                                           #          without it): SELECT a loop around writing, AI button -> the AI

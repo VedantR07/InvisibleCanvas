@@ -4,7 +4,8 @@
     anything else (open hand, fist) -> cursor only
     cursor held on a toolbar button 1 s (CLEAR 2 s) -> press it
 
-`--light` lights the hand plain white with a ring cursor (D50; off by default since 2026-10-23, user decision). D68:
+The hand is lit plain white with a ring cursor (D50): on by default (D69, user decision 2026-10-29: essential for
+writing over existing content; it was off from 2026-10-23); `--no-light` switches it off for a session. D68:
 the `l` key switches it on or off during a session; the report compares the frames of the two states (`light_ab`:
 hand found and lost, frame rate, pipeline, ink), the trace marks each frame (`light_on`, `lit`).
 The AI button is on by default (`[ai] enabled = true`, D57; `--no-ai` switches it off for one session, `--ai`
@@ -91,7 +92,8 @@ def add_parser(subparsers) -> None:
     p.add_argument("--no-recalibrate", action="store_true", help="stop instead of recalibrating a moved setup")
     p.add_argument("--save-every", type=float, default=0.0, help="save a camera frame every S seconds (diagnostic)")
     p.add_argument("--trace", action="store_true", help="per-frame JSONL trace: shape measures, mode, events")
-    p.add_argument("--light", action="store_true", help="light the hand plain white, ring cursor (D50; off by default)")
+    p.add_argument("--light", action="store_true", help="light the hand plain white, ring cursor (D50; on by default since D69: kept for scripts)")
+    p.add_argument("--no-light", action="store_true", help="switch the light on the hand off for this session (D69)")
     p.add_argument("--ai", action="store_true", help="switch the AI on for this session (the AI reads the selection, D51/D52)")
     p.add_argument("--no-ai", action="store_true", help="switch the AI off for this session (on by default, D57)")
     p.set_defaults(func=run)
@@ -331,7 +333,7 @@ def run(config: Config, args) -> int:
         controller.recognition = line_worker is not None
         restore_reference(controller, board_data)
         engine, points = InteractionEngine(), HandPoints(mapper)
-        light = HandLight() if args.light else None
+        light = None if getattr(args, "no_light", False) else HandLight()   # D69: on by default (user, 2026-10-29)
         brightness = brightness_check(s, mapper, renderer.render(controller.canvas, controller, toolbar, mode=IDLE, cursor=None))
         diag = DrawDiagnostics(size, toolbar.top)       # §9.12 item 1: observation only
         watch = SetupWatch(expected_corners(mapper, size))   # D58: did the projector or camera move meanwhile?
@@ -580,7 +582,7 @@ def run(config: Config, args) -> int:
         },
         "canvas": {"json": str(json_path), "png": str(png_path), "saved_during_run": saved_paths},
         "trace": str(save_dir / "trace.jsonl") if args.trace else None,
-        "light": bool(args.light),                                             # at the start
+        "light": not getattr(args, "no_light", False),                        # at the start (D69: on by default)
         # D68: the light switched with the `l` key, and the frames of each state (an A/B in one session)
         "light_ab": {"toggles": light_toggles, "off": light_state([r for r in records if not r["light_on"]]),
                      "on": light_state([r for r in records if r["light_on"]])},

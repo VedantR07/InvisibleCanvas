@@ -396,15 +396,21 @@ def test_gestures_busy_light_ab_records_the_light_per_round(tmp_path, monkeypatc
     assert shown[-2].shape == (720, 1280, 3)
 
 
-def test_draw_light_is_off_by_default_and_can_be_turned_on(tmp_path, monkeypatch):
+def test_draw_light_is_on_by_default_and_no_light_turns_it_off(tmp_path, monkeypatch):
+    # D69 (user decision 2026-10-29): the light on the hand is on by default; --no-light switches it off for a
+    # session; --light is still accepted. A stroke under the hovering hand shows only without the light.
     def schedule(s, mapper):
-        return OTHER, (640.0, 360.0)
-    for argv, lit in ((["draw", "--seconds", "0.4"], False), (["draw", "--seconds", "0.4", "--light"], True)):
-        code, config, shown = run_tool(draw_tool, tmp_path / str(lit), monkeypatch, argv, schedule)
+        if s < 0.4:
+            return POINT, (580.0 + 300 * s, 360.0)                # a stroke along y = 360 ...
+        return OTHER, (640.0, 360.0)                              # ... then the hand hovers over it
+    for name, argv, lit in (("default", [], True), ("light", ["--light"], True), ("no-light", ["--no-light"], False)):
+        code, config, shown = run_tool(draw_tool, tmp_path / name, monkeypatch, ["draw", "--seconds", "1.2", *argv],
+                                       schedule)
         report = json.loads(sorted(config.reports_dir.glob("draw-*.json"))[-1].read_text())
-        assert report["light"] is lit
+        assert code == 0 and report["light"] is lit and report["strokes_on_canvas"] == 1, name
+        assert (report["light_ab"]["on" if lit else "off"]["frames"] > 0 and report["light_ab"]["toggles"] == []), name
         frame = shown[-2]                                     # the last canvas frame before the closing blank
-        assert (frame[360, 640].tolist() == [255, 255, 255]) or not lit
+        assert (frame[360, 640].tolist() == [255, 255, 255]) is lit, name     # white over the stroke under the hand
 
 
 def test_the_l_key_switches_the_light_on_the_hand_and_both_states_are_reported(tmp_path, monkeypatch):
@@ -420,8 +426,8 @@ def test_the_l_key_switches_the_light_on_the_hand_and_both_states_are_reported(t
     def keys(s):
         return queue.pop(0)[1] if queue and s >= queue[0][0] else -1
 
-    code, config, shown = run_tool(draw_tool, tmp_path, monkeypatch, ["draw", "--seconds", "4.0", "--trace"], schedule,
-                                   keys=keys)
+    code, config, shown = run_tool(draw_tool, tmp_path, monkeypatch, ["draw", "--seconds", "4.0", "--trace", "--no-light"],
+                                   schedule, keys=keys)            # (D69: on by default; started off here)
     report, trace = draw_report(config)
     ab = report["light_ab"]
     assert code == 0 and report["light"] is False and queue == []
