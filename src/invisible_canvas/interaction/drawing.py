@@ -33,6 +33,32 @@ the network.
 D61: while a document is shown, the AI reads the shown page itself (the picture, or the PDF page rendered for the AI;
 not the annotations). ASK waits for a question typed on the laptop (`typing`, `type_key`: shown live in the panel,
 Enter sends, Esc cancels); the pointing gestures and the panel buttons work as before meanwhile.
+
+D62: Smart Lines (the LINES tool, whiteboard pages only). The tools act on `target`: the shown page (`canvas`,
+`history`) as before, except with LINES, where it is the page's line sheet: a pointing stroke that starts inside the
+writing zone writes the unfinished line (D66: one that starts outside it waits for the zone), and UNDO / REDO /
+CLEAR act on the Smart Lines only (the unfinished line's strokes and COMPLETE LINE). COMPLETE LINE and SCROLL UP /
+DOWN are pressed like the toolbar. The unfinished line stays on its page when the tool, the page or the view changes;
+LINES pauses (back to PEN, with a notice) while a document is shown. The renderer draws `canvas` (the page's
+freehand ink) over `background`, which carries the notes area and the writing zone.
+
+D64: what Smart Lines say. Every completed line with neither a reading nor the teacher's decision is read in the
+background: `take_line_jobs` hands the drawing tool its image (each request numbered), `line_result` takes the
+reading back, and a reading is used only when the line still awaits exactly that request; after an edit, a decision,
+a retry or its undo a late one is ignored (`take_line_cancels` says which queued requests are no longer wanted). A
+line undone meanwhile keeps its reading for the redo. The review bar (LINES only) is about `review_line`; its
+buttons OK, AS WRITTEN, EDIT, KEEP INK and RETRY are pressed like the toolbar and are undoable steps of the Smart
+Lines history. EDIT types the line on the laptop as ASK does (`typing`). Holding the cursor on a line in the notes
+area picks that line for the review bar.
+
+D65: while a panel is open, the Smart Lines buttons it would cover (the AI panel: DONE, the review buttons, SCROLL
+UP / DOWN) stand left of it (`lines_controls`), so they stay usable; the panel still covers what lies under it.
+
+D66 (wall test run 1): with LINES, ink is made only inside the writing zone (not on a button or panel there). A
+pointing stroke that starts anywhere else waits (`blocked` "zone") and begins where the fingertip enters the zone,
+instead of being refused until the lift (the hand rising into the zone from below while pointing started its strokes
+just below it); a line stroke that leaves the zone ends there and begins again when it comes back. UNDO / REDO /
+CLEAR with LINES say so on the wall when there is nothing for them in the Smart Lines.
 """
 
 from __future__ import annotations
@@ -42,22 +68,36 @@ from collections import Counter
 
 from ..canvas.board import Board
 from ..canvas.history import AddStroke, History, MoveStrokes, ReplaceStrokes
+from ..canvas.lines import (
+    REVIEW, TEXT_MAX, CompleteLine, LineSheet, LinesLayout, RetryLine, ReviewLine, render_sheet,
+)
 from ..canvas.model import Canvas, Stroke
 from ..canvas.panel import BOARD_LABELS, QUESTION_MAX, AIPanel, BoardPanel
 from ..canvas.reference import ReferenceError, document_key
-from ..canvas.selection import close_loop, png_bytes, select_in_loop, selection_image
+from ..canvas.selection import close_loop, png_bytes, select_in_loop, selection_image, strokes_image
+
+AI_OFF = "The AI is off (draw --no-ai): EDIT or KEEP INK."
 from ..canvas.toolbar import COLOURS, WIDTHS, Toolbar
 
 ERASER_RADIUS = {"thin": 12.0, "medium": 24.0, "thick": 42.0}     # px, by the selected width
 
 
 class DrawingController:
-    def __init__(self, canvas: Canvas, toolbar: Toolbar, history: History | None = None, board: Board | None = None):
+    def __init__(self, canvas: Canvas, toolbar: Toolbar, history: History | None = None, board: Board | None = None,
+                 lines_layout: LinesLayout | None = None):
         self.toolbar = toolbar
         # D59: pages. `canvas` (and `history`) are always the current page's; the canvas given is page 1.
         self.board = board or Board(canvas.size, canvas, history)
         self.board_layout = BoardPanel(canvas.size)
         self.board_open = False                        # the board panel (PAGES button) is shown
+        self.lines_layout = lines_layout or LinesLayout(canvas.size, toolbar.top)     # D62: Smart Lines
+        # D64: reading the lines. `recognition`: the drawing tool has a reader (the AI is on).
+        self.recognition = False
+        self._requests: dict[int, tuple] = {}         # request -> (sheet, line), until its reading comes back
+        self._request_no = 0
+        self._cancelled: set[int] = set()
+        self.review_pick: dict | None = None           # {"sheet", "line"}: picked in the notes area
+        self.line_edit: dict | None = None             # {"sheet", "line", "text"}: EDIT typing on the laptop
         # D60: a reference document (image / PDF) with its own annotation layers; view "board" or "doc"
         self.reference = None
         self.view = "board"
@@ -75,11 +115,15 @@ class DrawingController:
         self.selection_log: list[dict] = []            # every loop: when, its points' bounds, what it selected (S1)
         self.loop: list | None = None                  # the loop being drawn
         self.panel_layout = AIPanel(canvas.size, toolbar.top) if getattr(toolbar, "ai", False) else None
+        for panel in (self.panel_layout, self.board_layout):           # D65: room beside each panel (ValueError)
+            if panel is not None:
+                self.lines_layout.beside(panel.rect)
         # {"state": menu|asking|thinking|answer|error, "since", "action", "answer", "source", "title", "question"}
         self.panel: dict | None = None
         self.ai_jobs: list[tuple[str, bytes, dict]] = []    # (action, PNG, context), D61
         self.now = 0.0
         self.blocked: str | None = None                # D56: "toolbar" / "panel" / "no-point": no ink until the lift
+        #                                                D66: "zone": a line stroke waiting for the writing zone
         # Diagnostics only (brain.md §9.12, Stage 3 item 1): what each event's point became, noted inside the
         # existing branches; kept apart from `log`, and never read by any decision here.
         self.outcomes: list[tuple[str, tuple | None, int | None]] = []   # (outcome, point, attempt), last handle()
@@ -110,12 +154,35 @@ class DrawingController:
         """That page's own undo history: undo and redo never reach another page (D59, D60)."""
         return self._layer().history
 
+    def sheet(self) -> LineSheet:
+        """The current whiteboard page's Smart Lines (D62), made when first used."""
+        page = self.board.page
+        if page.lines is None:
+            page.lines = LineSheet(self.board.size)
+        return page.lines
+
+    @property
+    def lines_active(self) -> bool:
+        """The LINES tool is in use on a whiteboard page (D62)."""
+        return self.tool == "lines" and not (self.view == "doc" and self.reference is not None)
+
+    @property
+    def target(self):
+        """What the tools act on (D62): the line sheet with LINES, else the shown page (`canvas`, `history`)."""
+        return self.sheet() if self.lines_active else self._layer()
+
     @property
     def background(self):
-        """The shown document page fitted on white (D60), or None on the whiteboard."""
+        """What lies under the page's ink: the shown document page fitted on white (D60); on the whiteboard the
+        page's Smart Lines (D62: notes area, writing zone, unfinished line), or None when it has none."""
         if self.view == "doc" and self.reference is not None:
             return self.reference.display(self.board.size, self.toolbar.top)
-        return None
+        sheet = self.board.page.lines
+        if not self.lines_active and (sheet is None or not sheet.has_content):
+            return None
+        sheet, review = self.sheet(), self.review_line()
+        return render_sheet(sheet, self.lines_layout, self.lines_active or bool(sheet.canvas.strokes),
+                            self.lines_active, None if review is None else review.id)
 
     def view_label(self) -> str:
         """What is shown, for the wall: 'Page 2 of 5', or the document page and file name."""
@@ -143,6 +210,7 @@ class DrawingController:
             self.log["doc:annotations_back"] += 1
         self.reference, self.view = reference, "doc"
         self.log["doc:open"] += 1
+        self._pause_lines()
 
     def keep_annotations(self, path, annotations: dict) -> None:
         """A closed document's annotation layers, given back when that file is opened again."""
@@ -157,10 +225,31 @@ class DrawingController:
     def _leave_layer(self) -> None:
         """Before the page drawn on changes: whatever is live ends where it was drawn, the selection is dropped, and
         a pointing stroke still going on draws nothing on the new page."""
-        self._finish()
+        self._leave_target()
+        self._cancel_edit("left")
         self.selection, self.selected = [], None
+
+    def _leave_target(self) -> None:
+        """Before `target` changes (D62: into or out of LINES): what is live ends where it was drawn, and a pointing
+        stroke still going on draws nothing more (D66: also one waiting for the writing zone)."""
+        self._finish()
         if self.stroke_open:
-            self.blocked = self.blocked or "panel"
+            self.blocked = "panel" if self.blocked in (None, "zone") else self.blocked
+
+    def _pause_line_stroke(self) -> None:
+        """D66: a Smart Lines button pressed while pointing: what is live ends in the line, and the pointing waits
+        for the writing zone (pointing back into it writes on)."""
+        self._finish()
+        if self.stroke_open and self.blocked is None:
+            self.blocked = "zone"
+
+    def _pause_lines(self) -> None:
+        """A document is now shown: LINES works on whiteboard pages only, so the tool goes back to PEN (D62)."""
+        if self.tool == "lines" and self.view == "doc" and self.reference is not None:
+            self.tool = "pen"
+            self.show_notice(f"Smart Lines paused on the document; any unfinished line stays on whiteboard "
+                             f"{self.board.label().lower()}.")
+            self.log["lines:paused_doc"] += 1
 
     @property
     def eraser_radius(self) -> float:
@@ -189,15 +278,31 @@ class DrawingController:
                 or (self.board_open and self.board_layout.contains(point)))
 
     def _ui_at(self, point) -> str | None:
-        """The UI area a point lies on, where nothing is drawn: "toolbar" (the band, D46) or "panel" (D51)."""
+        """The UI area a point lies on, where nothing is drawn: "toolbar" (the band, D46) or "panel" (D51; D62: the
+        Smart Lines buttons while LINES is in use)."""
         if self.toolbar.in_band(point):
             return "toolbar"
-        return "panel" if self._on_panel(point) else None
+        if self._on_panel(point) or (self.lines_active and (self.lines_controls.on_control(point) or (
+                self.lines_controls.in_bar(point) and self.review_line() is not None))):    # D64: the review bar
+            return "panel"
+        return None
+
+    def _writes_line_at(self, point) -> bool:
+        """D66: with LINES, ink is made only here: inside the writing zone and not on a button or a panel."""
+        return point is not None and self.lines_layout.in_zone(point) and self._ui_at(point) is None
 
     def _stroke_start(self, e) -> None:
         self.attempts += 1
         self.attempt, self.stroke_open, self._refused = self.attempts, True, False
         self.blocked = None
+        if self.lines_active and not self._writes_line_at(e.point):
+            # D66 (R42): a line stroke that starts outside the zone (below it, on the toolbar, on a button) waits
+            # and begins where the fingertip enters the zone, instead of being refused until the lift
+            self.log["line_starts_outside_zone"] += 1
+            self.blocked = "zone"
+            self._note("outside_zone", e.point)
+            self.active = self._drag = self.loop = None
+            return
         ui = "no-point" if e.point is None else self._ui_at(e.point)
         if ui is not None:
             self.log["strokes_refused_on_panel" if ui == "panel" else "strokes_refused_on_toolbar"] += 1
@@ -206,29 +311,49 @@ class DrawingController:
                        else "refused_panel", e.point)
             self.active = self._drag = self.loop = None
             return
+        self._begin(e.point)
+
+    def _begin(self, point) -> None:
+        """The current tool's start of a stroke at `point`."""
         if self.tool == "select":
-            self.loop = [e.point]
-            self._note("select", e.point)
-        elif self.tool == "pen":
-            self.active = Stroke(self.canvas.new_id(), COLOURS[self.colour], WIDTHS[self.width])
-            self.active.append(e.point)
-            self._note("added" if self.active.points else "not_appended", e.point)
+            self.loop = [point]
+            self._note("select", point)
+        elif self.tool in ("pen", "lines"):
+            self.active = Stroke(self.target.canvas.new_id(), COLOURS[self.colour], WIDTHS[self.width])
+            self.active.append(point)
+            self._note("added" if self.active.points else "not_appended", point)
         elif self.tool == "eraser":
             self._erase_group = {"removed": {}, "created": set()}
-            self._erase_at(e.point)
-            self._note("eraser", e.point)
+            self._erase_at(point)
+            self._note("eraser", point)
         else:
-            sid = self.canvas.hit_test(e.point)
+            sid = self.target.canvas.hit_test(point)
             self.selected = sid
-            self._drag = None if sid is None else {"ids": [sid], "last": e.point, "dx": 0.0, "dy": 0.0}
-            self._note("move" if sid is not None else "move_nothing", e.point)
+            self._drag = None if sid is None else {"ids": [sid], "last": point, "dx": 0.0, "dy": 0.0}
+            self._note("move" if sid is not None else "move_nothing", point)
 
     def _stroke_point(self, e) -> None:
+        if self.blocked == "zone":                     # D66: a line stroke waiting for the zone
+            if self.lines_active and self._writes_line_at(e.point):
+                self.blocked = None
+                self._begin(e.point)
+                self.log["line_strokes_entered_zone"] += 1
+            else:
+                self._note("outside_zone", e.point)
+            return
         if self.blocked is not None:                   # D56: refused, or ended on the toolbar/panel: until the lift
             self._note("after_refused_start" if self._refused else "after_ui_end", e.point)
             return
         if e.point is None:
             self._note("dropped_no_point", e.point)
+            return
+        if self.lines_active and self.active is not None and not self._writes_line_at(e.point):
+            # D66: a line stroke ends where it leaves the zone (or reaches a button), as if the pen had lifted,
+            # and the pointing goes on waiting: back in the zone, a new stroke begins
+            self._note("left_zone", e.point)
+            self._finish()
+            self.blocked = "zone"
+            self.log["line_strokes_left_zone"] += 1
             return
         ui = self._ui_at(e.point)
         if ui is not None:                             # D56: the stroke ends here, as if the pen had lifted
@@ -240,7 +365,7 @@ class DrawingController:
         if self.tool == "select" and self.loop is not None:
             self.loop.append(e.point)
             self._note("select", e.point)
-        elif self.tool == "pen" and self.active is not None:
+        elif self.tool in ("pen", "lines") and self.active is not None:
             n = len(self.active.points)
             self.active.append(e.point)
             self._note("added" if len(self.active.points) > n                  # Stroke.append skips a repeat
@@ -251,7 +376,7 @@ class DrawingController:
         elif self.tool == "move" and self._drag is not None:
             d = self._drag
             dx, dy = e.point[0] - d["last"][0], e.point[1] - d["last"][1]
-            self.canvas.move(d["ids"], dx, dy)
+            self.target.canvas.move(d["ids"], dx, dy)
             d["dx"], d["dy"], d["last"] = d["dx"] + dx, d["dy"] + dy, e.point
             self._note("move", e.point)
         else:                                          # no branch took the point (diagnostics only)
@@ -264,21 +389,22 @@ class DrawingController:
 
     def _finish(self) -> None:
         """What the pen lift does with the current tool: commit the stroke, record the erase or move, select."""
+        target = self.target
         if self.active is not None and self.active.points:
-            self.history.do(AddStroke(self.active), self.canvas)
-            self.log["strokes"] += 1
+            target.history.do(AddStroke(self.active), target.canvas)
+            self.log["line_strokes" if self.lines_active else "strokes"] += 1
         group, self._erase_group = self._erase_group, None
         if group and (group["removed"] or group["created"]):
-            added = [self.canvas.strokes[i] for i in sorted(group["created"]) if i in self.canvas.strokes]
-            self.history.record(ReplaceStrokes(list(group["removed"].values()), added))
+            added = [target.canvas.strokes[i] for i in sorted(group["created"]) if i in target.canvas.strokes]
+            target.history.record(ReplaceStrokes(list(group["removed"].values()), added))
             self.log["erase_strokes"] += 1
         drag, self._drag = self._drag, None
         if drag and (drag["dx"] or drag["dy"]):
-            self.history.record(MoveStrokes(drag["ids"], drag["dx"], drag["dy"]))
+            target.history.record(MoveStrokes(drag["ids"], drag["dx"], drag["dy"]))
             self.log["moves"] += 1
         loop, self.loop = self.loop, None
         if loop is not None:
-            self.selection = select_in_loop(self.canvas, loop)
+            self.selection = select_in_loop(target.canvas, loop)
             self.log["selections"] += 1
             xs, ys = [p[0] for p in loop], [p[1] for p in loop]
             self.selection_log.append({"t": round(self.now, 3), "ids": list(self.selection),
@@ -287,7 +413,7 @@ class DrawingController:
         self.active, self.selected = None, None
 
     def _erase_at(self, point) -> None:
-        removed, created = self.canvas.erase(point, self.eraser_radius)
+        removed, created = self.target.canvas.erase(point, self.eraser_radius)
         group = self._erase_group
         for s in removed:
             if s.id in group["created"]:
@@ -302,9 +428,11 @@ class DrawingController:
         """Every frame, with the engine's cursor (None: no hand)."""
         self.now = t
         button = None
-        if cursor is not None:
+        if cursor is not None and self._on_panel(cursor):  # an open panel covers what lies under it (D62)
             button = ((self.panel_layout.hit(cursor) if self.panel is not None else None)
-                      or (self.board_layout.hit(cursor) if self.board_open else None) or self.toolbar.hit(cursor))
+                      or (self.board_layout.hit(cursor) if self.board_open else None))
+        elif cursor is not None:
+            button = (self._lines_hit(cursor) if self.lines_active else None) or self.toolbar.hit(cursor)
         d = self.dwell
         if button is None:
             self.dwell = None
@@ -325,6 +453,9 @@ class DrawingController:
         if name.startswith("board:"):
             self._board_action(name[6:])
             return
+        if name.startswith("lines:"):
+            self._lines_action(name[6:])
+            return
         button = self.toolbar.button(name)
         if button.kind == "ai":                        # one panel at a time (D59)
             self.panel = None if self.panel is not None else {"state": "menu", "since": self.now}
@@ -333,9 +464,18 @@ class DrawingController:
             self.board_open = not self.board_open
             self.panel = None if self.board_open else self.panel
         elif button.kind == "tool":
+            if name == "lines" and self.view == "doc" and self.reference is not None:
+                self.show_notice("Smart Lines are on whiteboard pages: PAGES, then SHOW BOARD.")
+                self.log["lines:refused_doc"] += 1
+                return
+            if (name == "lines") != self.lines_active:     # D62: the tools' target changes
+                self._leave_target()
+                self._cancel_edit("left")
             self.tool = name
-        elif button.kind == "colour":
-            self.colour, self.tool = name, "pen"
+        elif button.kind == "colour":                  # a colour selects PEN (D62: LINES keeps writing lines)
+            self.colour = name
+            if self.tool != "lines":
+                self.tool = "pen"
         elif button.kind == "width":
             self.width = name
         elif name == "undo":
@@ -382,6 +522,7 @@ class DrawingController:
         elif action == "view":                         # board <-> document: neither is closed nor changed
             self.view = "board" if doc else "doc"
             self.log[f"view:{self.view}"] += 1
+            self._pause_lines()
         elif action == "closedoc":                     # its annotations are kept (given back if it is reopened)
             self._close_reference()
             self.view = "board"
@@ -390,19 +531,269 @@ class DrawingController:
     # -- actions (toolbar and keyboard) ------------------------------------------------------------------
 
     def undo(self) -> None:
-        if self.history.undo(self.canvas) is not None:
+        target = self.target
+        self._cancel_edit("undo")
+        if target.history.undo(target.canvas) is not None:
             self.log["undo"] += 1
+            self._after_lines_change()
+        else:
+            self._lines_nothing("undo", "Nothing to undo in Smart Lines. To undo drawing on the page, choose PEN.")
 
     def redo(self) -> None:
-        if self.history.redo(self.canvas) is not None:
+        target = self.target
+        self._cancel_edit("redo")
+        if target.history.redo(target.canvas) is not None:
             self.log["redo"] += 1
+            self._after_lines_change()
+        else:
+            self._lines_nothing("redo", "Nothing to redo in Smart Lines. To redo drawing on the page, choose PEN.")
 
     def clear(self) -> None:
-        removed = self.canvas.clear()
-        self.selection = []
+        """CLEAR: the shown page's ink; with LINES only the unfinished line (completed lines are kept)."""
+        target = self.target
+        self._cancel_edit("clear")
+        removed = target.canvas.clear()
+        if not self.lines_active:
+            self.selection = []
         if removed:
-            self.history.record(ReplaceStrokes(removed, [], name="clear"))
+            target.history.record(ReplaceStrokes(removed, [], name="clear"))
             self.log["clear"] += 1
+        else:
+            self._lines_nothing("clear", "With LINES, CLEAR clears only the line being written, and it is empty. "
+                                         "To clear the page, choose PEN.")
+
+    def _lines_nothing(self, action: str, text: str) -> None:
+        """D66: UNDO / REDO / CLEAR with LINES act on the Smart Lines only; when there is nothing to act on, say so
+        on the wall (in the wall test a CLEAR with LINES did nothing, silently, while the page had ink)."""
+        if self.lines_active:
+            self.show_notice(text)
+            self.log[f"lines:nothing_to_{action}"] += 1
+
+    # -- Smart Lines (D62) ------------------------------------------------------------------------------
+
+    def review_line(self):
+        """The line the review bar is about (D64), on the current whiteboard page while LINES is in use: the one
+        being edited, else the one picked in the notes area, else the first line waiting for the teacher (a
+        suggestion, or not recognised), else the newest one still being read; None: no review bar."""
+        if not self.lines_active:
+            return None
+        sheet = self.sheet()
+        for chosen in (self.line_edit, self.review_pick):
+            if chosen is not None and chosen["sheet"] is sheet and chosen["line"] in sheet.lines:
+                return chosen["line"]
+        waiting = next((line for line in sheet.lines if line.status in ("check", "failed")), None)
+        if waiting is not None:
+            return waiting
+        reading = [line for line in sheet.lines if line.status == "recognizing"]
+        return reading[-1] if reading else None
+
+    def _lines_enabled(self, name: str, sheet: LineSheet, line) -> bool:
+        visible = self.lines_layout.visible
+        if name == "lines:complete":
+            return bool(sheet.canvas.strokes)
+        if name == "lines:up":
+            return sheet.first_shown(visible) > 0
+        if name == "lines:down":
+            return sheet.first_shown(visible) < sheet.max_scroll(visible)
+        if name.startswith("lines:row:"):
+            return int(name[10:]) < len(sheet.lines) - sheet.first_shown(visible)
+        if line is None or self.line_edit is not None:
+            return False
+        reading, decision, status = line.reading or {}, line.decision or {}, line.status
+        if name == "lines:ok":                         # the suggestion (also over a kept ink or another decision)
+            return bool(reading.get("ok")) and not (status == "confirmed" and decision["text"] == reading["text"])
+        if name == "lines:written":                    # the literal reading, when it is not the suggestion
+            return (bool(reading.get("ok")) and reading["written"] != reading["text"]
+                    and not (status == "confirmed" and decision["text"] == reading["written"]))
+        if name == "lines:ink":
+            return status != "ink"
+        if name == "lines:retry":
+            return self.recognition and status != "recognizing"
+        return name == "lines:edit"
+
+    def lines_enabled(self, name: str) -> bool:
+        """Whether a Smart Lines button can act now (the renderer greys out the others)."""
+        return self._lines_enabled(name, self.sheet(), self.review_line())
+
+    def _lines_hit(self, point):
+        """The Smart Lines button under the point: DONE, SCROLL UP / DOWN, a review button (while the review bar is
+        shown, not while a line is typed) or a line shown in the notes area."""
+        layout, controls, sheet = self.lines_layout, self.lines_controls, self.sheet()
+        button = controls.hit(point)
+        if button is None and controls.in_bar(point) and self.review_line() is not None:
+            return None if self.line_edit is not None else next(
+                (b for b in controls.review_buttons if b.contains(point)), None)
+        if button is None:
+            shown = len(sheet.lines) - sheet.first_shown(layout.visible)
+            button = next((b for b in layout.rows[:shown] if b.contains(point)), None)
+        return button
+
+    @property
+    def lines_controls(self):
+        """Where the Smart Lines buttons are now (D65): kept clear of an open panel (the AI panel lies over DONE and
+        the review buttons in the layout's own places), else the layout's own. Nothing under a panel can be pressed
+        through it (`update_pointer`)."""
+        if self.panel is not None and self.panel_layout is not None:
+            return self.lines_layout.beside(self.panel_layout.rect)
+        if self.board_open:
+            return self.lines_layout.beside(self.board_layout.rect)
+        return self.lines_layout.controls
+
+    def lines_view(self) -> tuple:
+        """What the Smart Lines controls show now, hashable (the renderer caches their drawing by it): the enabled
+        buttons, the first line shown, the number of lines and the review bar (None, or the line's number, status,
+        main text, note and the text being typed, None when not editing)."""
+        sheet, layout, line = self.sheet(), self.lines_layout, self.review_line()
+        names = [b.name for b in layout.controls.buttons] + list(REVIEW)
+        enabled = frozenset(n for n in names if self._lines_enabled(n, sheet, line))
+        bar = None
+        if line is not None:
+            reading, status = line.reading or {}, line.status
+            note = ""
+            if status == "recognizing":
+                main = "reading the handwriting..."
+            elif status == "failed":
+                main = f"not recognised - {reading.get('error') or 'nothing readable'}"
+            elif status == "ink":
+                main = "kept as handwriting"
+                note = f"(suggestion: {reading['text']})" if reading.get("ok") else ""
+            else:
+                main = line.text or ""
+                literal = reading.get("written", "") if reading.get("ok") else ""
+                note = f"(written: {literal})" if literal and literal != main else ""
+            typed = self.line_edit["text"] if self.line_edit is not None else None
+            bar = (sheet.lines.index(line) + 1, status, main, note, typed)
+        return enabled, sheet.first_shown(layout.visible), len(sheet.lines), bar
+
+    def _lines_action(self, action: str) -> None:
+        if not self.lines_active:
+            return
+        sheet, visible = self.sheet(), self.lines_layout.visible
+        if action == "complete":
+            self._pause_line_stroke()                  # nothing live is left half in the unfinished line
+            if not sheet.canvas.strokes:
+                self.show_notice("Nothing written in the writing area yet.")
+                self.log["lines:complete_empty"] += 1
+                return
+            sheet.history.do(CompleteLine(sheet), sheet.canvas)
+            sheet.scroll_to_end(visible)
+            self.log["lines:complete"] += 1
+        elif action in ("up", "down"):
+            moved = sheet.scroll_by(-1 if action == "up" else 1, visible)
+            self.log[f"lines:{action}" if moved else "lines:scroll_limit"] += 1
+        elif action.startswith("row:"):                # D64: this line in the review bar
+            k = sheet.first_shown(visible) + int(action[4:])
+            if k < len(sheet.lines):
+                self.review_pick = {"sheet": sheet, "line": sheet.lines[k]}
+                self.log["lines:pick"] += 1
+        else:                                          # D64: the review buttons
+            line = self.review_line()
+            if line is None or not self._lines_enabled(f"lines:{action}", sheet, line):
+                self.log["lines:review_disabled"] += 1
+                return
+            self._pause_line_stroke()
+            if action == "edit":
+                self._start_edit(sheet, line)
+                return
+            if action == "retry":                      # the line stays in the bar while it is read again
+                sheet.history.do(RetryLine(sheet, line), sheet.canvas)
+            else:
+                reading = line.reading or {}
+                kind, text = {"ok": ("ok", reading.get("text")), "written": ("as_written", reading.get("written")),
+                              "ink": ("ink", None)}[action]
+                sheet.history.do(ReviewLine(sheet, line, kind, text), sheet.canvas)
+                self.review_pick = None
+            self.log[f"lines:{action}"] += 1
+
+    def _start_edit(self, sheet: LineSheet, line) -> None:
+        if self.asking:
+            self.show_notice("Finish the AI question first: Enter sends it, Esc cancels.")
+            self.log["lines:edit_refused_ask"] += 1
+            return
+        reading = line.reading or {}
+        text = line.text or reading.get("text") or reading.get("written") or ""
+        self.line_edit = {"sheet": sheet, "line": line, "text": text[:TEXT_MAX]}
+        self.log["lines:edit"] += 1
+
+    def _edit_key(self, key: int) -> None:
+        edit = self.line_edit
+        if key in (13, 10):
+            text = edit["text"].strip()
+            if not text:
+                return
+            self.line_edit = None
+            sheet, line = edit["sheet"], edit["line"]
+            if line not in sheet.lines:                # undone meanwhile
+                self.log["lines:edit_lost"] += 1
+                return
+            sheet.history.do(ReviewLine(sheet, line, "edit", text), sheet.canvas)
+            self.review_pick = None
+            self.log["lines:edit_saved"] += 1
+        elif key == 27:
+            self._cancel_edit("cancelled")
+        elif key == 8:
+            edit["text"] = edit["text"][:-1]
+        elif 32 <= key < 127 and len(edit["text"]) < TEXT_MAX:
+            edit["text"] += chr(key)
+
+    def _cancel_edit(self, why: str) -> None:
+        if self.line_edit is not None:
+            self.line_edit = None
+            self.log[f"lines:edit_{why}"] += 1
+
+    # -- reading the lines (D64) ------------------------------------------------------------------------
+
+    def take_line_jobs(self) -> list[tuple[int, bytes, dict]]:
+        """Recognition requests to send now: (request, PNG, context) for every completed line, on any whiteboard
+        page, with neither a reading nor the teacher's decision and no request awaited (a new line, a retry, a
+        decision undone before its reading came, a line from a board file). Without a reader, such a line is marked
+        not recognised instead."""
+        jobs = []
+        for k, page in enumerate(self.board.pages):
+            sheet = page.lines
+            for line in [] if sheet is None else sheet.lines:
+                if line.reading is not None or line.decision is not None or line.request is not None:
+                    continue
+                if not self.recognition:
+                    line.reading = {"ok": False, "written": "", "text": "", "error": AI_OFF}
+                    sheet.changed()
+                    continue
+                self._request_no += 1
+                line.request = self._request_no
+                self._requests[line.request] = (sheet, line)
+                jobs.append((line.request, png_bytes(strokes_image(line.strokes)), {"page": k + 1, "line": line.id}))
+                self.log["lines:requests"] += 1
+        return jobs
+
+    def take_line_cancels(self) -> list[int]:
+        """Requests sent but no longer wanted (the line was decided or retried meanwhile): the reader may skip them."""
+        out = [n for n, (_, line) in self._requests.items() if line.request != n and n not in self._cancelled]
+        self._cancelled.update(out)
+        return out
+
+    def line_result(self, request: int, reading: dict | None) -> None:
+        """A reading from the reader (None: the request was skipped). Used only when its line still awaits exactly
+        this request; a line undone meanwhile keeps it (it is shown again on redo)."""
+        entry = self._requests.pop(request, None)
+        self._cancelled.discard(request)
+        if entry is None:
+            return
+        sheet, line = entry
+        if reading is None:
+            self.log["lines:skipped"] += 1
+        elif line.request != request:                  # after an edit, a decision, a retry or its undo
+            self.log["lines:stale_results"] += 1
+        else:
+            line.reading, line.request = dict(reading), None
+            sheet.changed()
+            self.log["lines:read" if reading.get("ok") else "lines:not_read"] += 1
+
+    def _after_lines_change(self) -> None:
+        """After an undo / redo with LINES: keep the newest completed line in view when lines come and go."""
+        if self.lines_active:
+            sheet = self.sheet()
+            if sheet.scroll > sheet.max_scroll(self.lines_layout.visible):
+                sheet.scroll_to_end(self.lines_layout.visible)
 
     # -- AI panel (D51) ----------------------------------------------------------------------------------
 
@@ -423,13 +814,22 @@ class DrawingController:
         return "AI on the selection" if source == "selection" else "AI on the whole canvas"
 
     @property
-    def typing(self) -> bool:
+    def asking(self) -> bool:
         """ASK is waiting for its question from the laptop keyboard (D61)."""
         return self.panel is not None and self.panel["state"] == "asking"
 
+    @property
+    def typing(self) -> bool:
+        """The laptop keyboard types text now: an ASK question (D61) or a Smart Line being edited (D64)."""
+        return self.asking or self.line_edit is not None
+
     def type_key(self, key: int) -> None:
-        """A key typed while `typing`: Enter sends the question, Esc cancels it, Backspace deletes a character."""
-        if not self.typing:
+        """A key typed while `typing` (to the line being edited first): Enter sends the question / saves the line,
+        Esc cancels it, Backspace deletes a character."""
+        if self.line_edit is not None:
+            self._edit_key(key)
+            return
+        if not self.asking:
             return
         question = self.panel["question"]
         if key in (13, 10):
@@ -456,7 +856,10 @@ class DrawingController:
             if self.ai_source() != "document" and not self.canvas.strokes:
                 self.panel = {"state": "error", "since": self.now, "action": action,
                               "message": "Nothing written to read yet."}
-            elif not self.typing:
+            elif self.line_edit is not None:           # D64: one text typed at a time
+                self.panel = {"state": "error", "since": self.now, "action": action,
+                              "message": "Finish the line being edited first: Enter saves it, Esc cancels."}
+            elif not self.asking:
                 self.panel = {"state": "asking", "since": self.now, "action": "ask", "question": ""}
             return
         self._ask_ai(action)
@@ -493,7 +896,7 @@ class DrawingController:
     def ai_answer(self, answer) -> None:
         """An answer from the AI worker (an AIAnswer). Shown if the panel is still open and not taking a question."""
         self.log["ai_answers" if answer.ok else "ai_errors"] += 1
-        if self.panel is None or self.typing:
+        if self.panel is None or self.asking:
             return
         asked = self.panel
         self.panel = {"state": "answer" if answer.ok else "error", "since": self.now, "action": answer.action,

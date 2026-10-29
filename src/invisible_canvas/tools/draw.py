@@ -14,6 +14,15 @@ D61: with a document shown, the AI reads the shown page (the picture, or the PDF
 question typed on the laptop keyboard (shown live in the panel; Enter sends, Esc cancels; while it is typed the keys
 below type text instead).
 
+D62: Smart Lines: the LINES tool writes one line at a time in a fixed writing zone; COMPLETE LINE moves it, as
+written, into the numbered notes area at the top (it scrolls when full). Layout from `[smart_lines]`; saved with the
+board; report `smart_lines`.
+
+D64: with the AI on, each completed line is read in the background by the local model (`[ai] local_model`, free)
+as a literal and a corrected text; the teacher confirms one, edits it (typed on the laptop, as ASK), keeps the ink
+or retries. Line images and readings are saved under data/ai/lines/; the report has each line's status and the
+frame rate while lines were read (`line_recognition`).
+
 Keyboard (laptop): o open a file, z undo, y redo, s save, c twice clear, ESC quit. Before tracking, the setup check runs
 (a moved setup is recalibrated automatically and validated first, D39). On exit the current page is saved to
 data/canvas/ (strokes JSON + PNG), every page to a board file (D59: board-*.json + a PNG per page), and a report
@@ -32,10 +41,13 @@ import numpy as np
 
 from ..ai.client import AIAnswer, ClaudeAssistant
 from ..ai.local import LocalAssistant
+from ..ai.recognize import LineRecognizer, RecognitionWorker
 from ..ai.worker import AIWorker
 from ..calibration.store import check_compatible, load_calibration
 from ..calibration.watch import SetupWatch, expected_corners
+from ..canvas import text as typeset
 from ..canvas.board import Board
+from ..canvas.lines import LinesLayout, render_sheet
 from ..canvas.model import Canvas
 from ..canvas.reference import Reference, ReferenceError, annotations_dict, annotations_from
 from ..canvas.render import CanvasRenderer
@@ -136,6 +148,14 @@ def board_data(controller: DrawingController) -> dict:
     return data
 
 
+def line_report(line) -> dict:
+    """D64: one Smart Line for the report: its status, the teacher's decision and text, and the reading."""
+    reading, decision = line.reading or {}, line.decision or {}
+    return {"id": line.id, "status": line.status, "decision": decision.get("kind"), "text": line.text,
+            "written": reading.get("written"), "suggestion": reading.get("text") if reading.get("ok") else None,
+            "error": reading.get("error") or None, "latency_s": reading.get("latency_s")}
+
+
 def save_board(config: Config, controller: DrawingController) -> Path:
     """D59: the board file (`board_data`), and a PNG of each page next to it."""
     folder = config.root / "data" / "canvas"
@@ -145,7 +165,10 @@ def save_board(config: Config, controller: DrawingController) -> Path:
     path.write_text(json.dumps(board_data(controller)), encoding="utf-8")
     board = controller.board
     for k, page in enumerate(board.pages):
-        cv2.imwrite(str(folder / f"{base.name}-p{k + 1}.png"), CanvasRenderer(board.size)._strokes(page.canvas))
+        notes = None                                   # D62: the page's completed Smart Lines under its ink
+        if page.lines is not None and page.lines.lines:
+            notes = render_sheet(page.lines, controller.lines_layout, show_zone=False)
+        cv2.imwrite(str(folder / f"{base.name}-p{k + 1}.png"), CanvasRenderer(board.size)._strokes(page.canvas, notes))
     return path
 
 
@@ -235,7 +258,7 @@ def save_canvas(config: Config, canvas: Canvas, renderer: CanvasRenderer) -> tup
 def run(config: Config, args) -> int:
     calibration = load_calibration(config.calibration_dir)
     ai_on = bool(getattr(args, "ai", False) or config.ai.enabled) and not getattr(args, "no_ai", False)
-    worker = None
+    worker = line_worker = None
     if ai_on:
         try:
             assistant = LocalAssistant(config.ai) if config.ai.backend == "local" else ClaudeAssistant(config.ai)
@@ -243,6 +266,8 @@ def run(config: Config, args) -> int:
         except ImportError as e:
             print(f"the AI needs the anthropic package ({e}): pip install -e .[ai]")
             return 2
+        # D64: Smart Lines are read by the local model (free), whatever the AI panel's backend
+        line_worker = RecognitionWorker(LineRecognizer(config.ai), save_dir=config.root / "data" / "ai" / "lines")
     try:
         tracker = HandTracker(**TRACKER_OPTIONS)
     except HandTrackingError as e:
@@ -260,7 +285,17 @@ def run(config: Config, args) -> int:
         size = s.canvas_size
         board, board_data = load_board(config, args, size)
         toolbar, renderer = Toolbar(size, ai=ai_on), CanvasRenderer(size)
-        controller = DrawingController(board.page.canvas, toolbar, board=board)
+        sl = config.smart_lines
+        try:                                           # D62: checked against this canvas, its toolbar (D65: panels)
+            lines_layout = LinesLayout(size, toolbar.top, sl.zone, sl.notes, sl.line_height, sl.line_spacing,
+                                       sl.numbering, sl.font, sl.text_size)
+            controller = DrawingController(board.page.canvas, toolbar, board=board, lines_layout=lines_layout)
+        except ValueError as e:
+            print(f"[smart_lines] in the config: {e}")
+            return 2
+        if not typeset.available(sl.font):
+            print(f"[smart_lines] font {sl.font} not found in {typeset.FONT_DIR}: the notes use Pillow's own font")
+        controller.recognition = line_worker is not None
         restore_reference(controller, board_data)
         engine, points = InteractionEngine(), HandPoints(mapper)
         light = HandLight() if args.light else None
@@ -309,6 +344,15 @@ def run(config: Config, args) -> int:
                         controller.ai_answer(AIAnswer(action, ok=False, error="Still busy with the previous request."))
                 for answer in worker.poll():
                     controller.ai_answer(answer)
+            if line_worker is not None:                    # D64: Smart Lines to the reader, readings back
+                for request in controller.take_line_cancels():
+                    line_worker.cancel(request)
+                for request, png, context in controller.take_line_jobs():
+                    line_worker.submit(request, png, context)
+                for request, reading in line_worker.poll():
+                    controller.line_result(request, reading)
+            else:
+                controller.take_line_jobs()                # the AI is off: new lines are marked not recognised
             ta = time.perf_counter()
             lit = None if light is None else light.update(frame.timestamp, projector_landmarks(mapper, obs))
             img = renderer.render(controller.canvas, controller, toolbar, mode=step.mode, cursor=step.cursor, light=lit)
@@ -321,7 +365,8 @@ def run(config: Config, args) -> int:
             shapes[shape.shape if shape else None] += 1
             records.append({"t": frame.timestamp - start, "mode": step.mode, "hand": obs is not None,
                             "inference_ms": (t1 - t0) * 1000, "pipeline_ms": (t2 - frame.timestamp) * 1000,
-                            "ai_busy": bool(worker is not None and worker.busy)})
+                            "ai_busy": bool(worker is not None and worker.busy),
+                            "lines_busy": bool(line_worker is not None and line_worker.busy)})
             td = time.perf_counter()
             stage_ms = {"queue": (t0 - frame.timestamp) * 1000, "inference": (t1 - t0) * 1000,
                         "hand": (th - t1) * 1000, "engine": (te - th) * 1000, "controller": (tc - te) * 1000,
@@ -341,8 +386,10 @@ def run(config: Config, args) -> int:
                          "stroke_id": None if controller.active is None else controller.active.id,
                          "blocked": controller.blocked,                  # D56: why the pointing draws nothing
                          "ai_busy": records[-1]["ai_busy"],              # an AI request was running (S3, §9.13)
+                         "lines_busy": records[-1]["lines_busy"],        # D64: a Smart Line was being read
                          "page": controller.board.current + 1,           # D59
                          "view": controller.view,                        # D60: board or doc
+                         "tool": controller.tool,                        # D62: lines (Smart Lines) or another
                          "candidate": engine._candidate, "buffered": len(engine._buffer),
                          "queue_ms": round(stage_ms["queue"], 2), "inference_ms": round(stage_ms["inference"], 2),
                          "pipeline_ms": round((t2 - frame.timestamp) * 1000, 2),
@@ -375,7 +422,9 @@ def run(config: Config, args) -> int:
                     "AI: off" if worker is None else
                     f"AI: {'working' if worker.busy else 'ready'} ({len(worker.answers)} answers)",
                     f"ASK - type the question, Enter sends, Esc cancels: {controller.panel['question']}_"
-                    if controller.typing else "",
+                    if controller.asking else
+                    f"EDIT the line - type it, Enter saves, Esc cancels: {controller.line_edit['text']}_"
+                    if controller.line_edit is not None else "",
                     HELP, "keys: o open a file  z undo  y redo  s save  c c clear  ESC quit"])
             moved = watch.update(frame.timestamp, frame.image) if time.perf_counter() >= watch_from else None
             if moved is not None:                          # D58: the projector or the camera moved
@@ -423,6 +472,8 @@ def run(config: Config, args) -> int:
         s.projector.show(patterns.blank(size))
     if worker is not None:
         worker.close(timeout=0.2)                      # a request still running is abandoned (daemon thread)
+    if line_worker is not None:
+        line_worker.close(timeout=0.2)                 # lines still unread are read again on --resume (D64)
 
     json_path, png_path = save_canvas(config, controller.canvas, renderer)
     board_path = save_board(config, controller)
@@ -453,6 +504,25 @@ def run(config: Config, args) -> int:
             "pages": controller.reference.count, "page": controller.reference.current + 1, "view": controller.view,
             "annotated_pages": sorted(k + 1 for k, p in controller.reference.annotations.items() if p.canvas.strokes)},
         "closed_documents_with_annotations": [kept["path"] for kept in controller.kept_annotations.values()],
+        "smart_lines": [{"page": k + 1, "lines": len(p.lines.lines), "line_ids": [line.id for line in p.lines.lines],
+                         "line_strokes": [len(line.strokes) for line in p.lines.lines],
+                         "unfinished_strokes": len(p.lines.canvas.strokes),                   # D62
+                         "status": dict(Counter(line.status for line in p.lines.lines)),     # D64
+                         "line_details": [line_report(line) for line in p.lines.lines]}
+                        for k, p in enumerate(controller.board.pages) if p.lines is not None and p.lines.has_content],
+        "line_recognition": None if line_worker is None else {                                       # D64
+            "model": config.ai.local_model, "requests": controller.log["lines:requests"],
+            "readings": len(line_worker.readings), "read": controller.log["lines:read"],
+            "not_read": controller.log["lines:not_read"], "stale_ignored": controller.log["lines:stale_results"],
+            "skipped": controller.log["lines:skipped"],
+            "latency_s": _percentiles([r["latency_s"] for r in line_worker.readings]),
+            "busy_frames": sum(r["lines_busy"] for r in records),
+            "busy_processing_fps": segment_fps([r["t"] for r in records if r["lines_busy"]]),
+            "idle_processing_fps": segment_fps([r["t"] for r in records if not r["lines_busy"]]),
+            "busy_pipeline_ms": _percentiles([r["pipeline_ms"] for r in records if r["lines_busy"]]),
+            "busy_inference_ms": _percentiles([r["inference_ms"] for r in records if r["lines_busy"]]),
+            "idle_inference_ms": _percentiles([r["inference_ms"] for r in records if not r["lines_busy"]]),
+        },
         "canvas": {"json": str(json_path), "png": str(png_path), "saved_during_run": saved_paths},
         "trace": str(save_dir / "trace.jsonl") if args.trace else None,
         "light": bool(args.light),
@@ -499,6 +569,12 @@ def run(config: Config, args) -> int:
         if ai["busy_frames"]:
             print(f"while AI requests ran: {ai['busy_frames']} frames, {ai['busy_processing_fps']:.1f} fps, "
                   f"pipeline p95 {ai['busy_pipeline_ms']['p95']:.1f} ms")
+    rec = report["line_recognition"]
+    if rec is not None and rec["requests"]:
+        print(f"Smart Lines read: {rec['requests']} requests, {rec['read']} read, {rec['not_read']} not read, "
+              f"{rec['stale_ignored']} late readings ignored"
+              + (f"; while reading {rec['busy_frames']} frames at {rec['busy_processing_fps']:.1f} fps "
+                 f"(otherwise {rec['idle_processing_fps']:.1f})" if rec["busy_frames"] else ""))
     print(f"canvas: {json_path} (+ .png)")
     print(f"report: {save_report(config, 'draw', report)}")
     if controller.reference is not None:               # D60: let go of the document file

@@ -6,6 +6,8 @@ and at most 80 px wide (about 8 x 6 cm on the 2026-10 wall), narrower when more 
 D51: the SELECT tool (loop selection) and, only when AI is switched on, the AI button in its own group.
 D59: the PAGES button (the board panel: pages, and documents D60) in that last group, always there; with the AI
 button the buttons are 65 px wide (the longest label, ERASER, is 61 px).
+D62: the LINES tool (Smart Lines) with the other tools; with the AI button the buttons are 61 px wide (the renderer
+draws a label that would touch the button's edges slightly smaller).
 """
 
 from __future__ import annotations
@@ -19,7 +21,7 @@ COLOURS = {          # BGR, dark ink on the white canvas
     "green": (40, 150, 40),
 }
 WIDTHS = {"thin": 4.0, "medium": 8.0, "thick": 14.0}
-TOOLS = ("pen", "eraser", "move", "select")
+TOOLS = ("pen", "eraser", "move", "select", "lines")
 ACTIONS = ("undo", "redo", "clear")
 DWELL_S = 1.0
 CLEAR_DWELL_S = 2.0

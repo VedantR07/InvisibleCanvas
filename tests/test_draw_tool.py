@@ -479,6 +479,164 @@ def test_pages_by_dwell_are_saved_and_resumed(tmp_path, monkeypatch):
     assert report["board"]["current"] == 2
 
 
+# -- D62: Smart Lines ------------------------------------------------------------------------------------------------
+
+def test_smart_lines_by_dwell_are_saved_and_resumed(tmp_path, monkeypatch):
+    from invisible_canvas.canvas.lines import LinesLayout
+    from invisible_canvas.canvas.toolbar import Toolbar
+    tb = Toolbar((1280, 720))
+    lines_button = tb.button("lines").centre
+    complete = LinesLayout((1280, 720), tb.top).buttons[0].centre
+
+    def schedule(s, mapper):
+        if s < 1.2:
+            return OTHER, lines_button                             # LINES
+        if s < 1.4:
+            return OTHER, (300.0, 480.0)
+        if s < 2.0:
+            return POINT, (300.0 + 300 * (s - 1.4), 480.0)         # a line in the writing zone
+        if s < 3.0:
+            return OTHER, (600.0, 480.0)                           # pen lifts
+        if s < 4.2:
+            return OTHER, complete                                 # COMPLETE LINE
+        if s < 4.4:
+            return OTHER, (300.0, 520.0)
+        if s < 5.0:
+            return POINT, (300.0 + 300 * (s - 4.4), 520.0)         # the next line, left unfinished
+        return OTHER, (600.0, 520.0)
+
+    code, config, _ = run_tool(draw_tool, tmp_path, monkeypatch, ["draw", "--seconds", "6.2", "--trace"], schedule)
+    report, trace = draw_report(config)
+    assert code == 0 and report["actions"]["press:lines"] == 1 and report["actions"]["lines:complete"] == 1
+    expected = {"page": 1, "lines": 1, "line_ids": [1], "line_strokes": [1], "unfinished_strokes": 1,
+                "status": {"failed": 1}}                                           # D64: the AI is off here
+    (entry,) = report["smart_lines"]
+    assert {k: entry[k] for k in expected} == expected and "AI is off" in entry["line_details"][0]["error"]
+    assert report["line_recognition"] is None
+    assert report["strokes_on_canvas"] == 0 and report["tool_at_end"] == "lines"   # no freehand ink
+    assert any(line["tool"] == "lines" for line in trace)
+    saved = json.load(open(report["board"]["json"], encoding="utf-8"))
+    assert len(saved["smart_lines"][0]["lines"]) == 1 and len(saved["smart_lines"][0]["unfinished"]) == 1
+
+    time.sleep(1.1)                                                                # a new report / board stamp
+    code, config, _ = run_tool(draw_tool, tmp_path, monkeypatch, ["draw", "--seconds", "0.4", "--resume"],
+                               lambda s, mapper: (OTHER, (640.0, 300.0)))
+    report = json.loads(sorted(config.reports_dir.glob("draw-*.json"))[-1].read_text())
+    (entry,) = report["smart_lines"]
+    assert code == 0 and {k: entry[k] for k in expected} == expected
+
+
+def test_a_smart_line_is_read_in_the_background_and_confirmed_with_ok(tmp_path, monkeypatch):
+    # D64 end to end with a fake reader (no Ollama): LINES, a line, DONE; the reading comes back while the frames
+    # go on; OK by dwell. The report, the board file and data/ai/lines/ have it.
+    from invisible_canvas.canvas.lines import LinesLayout
+    from invisible_canvas.canvas.toolbar import Toolbar
+    tb = Toolbar((1280, 720), ai=True)
+    lines_button = tb.button("lines").centre
+    layout = LinesLayout((1280, 720), tb.top)
+    done, ok_button = layout.button("lines:complete").centre, layout.button("lines:ok").centre
+    read = []
+
+    class FakeRecognizer:
+        def __init__(self, cfg):
+            pass
+
+        def read(self, png):
+            read.append(png)
+            time.sleep(0.4)                                       # the frame loop keeps running meanwhile
+            return {"ok": True, "written": "CAT", "text": "CAT", "error": "", "model": "fake", "latency_s": 0.4}
+
+    monkeypatch.setattr(draw_tool, "LineRecognizer", FakeRecognizer)
+    monkeypatch.setattr(draw_tool, "LocalAssistant", RecordingAssistant)      # the AI panel's backend (not used)
+
+    def schedule(s, mapper):
+        if s < 1.2:
+            return OTHER, lines_button
+        if s < 1.4:
+            return OTHER, (300.0, 480.0)
+        if s < 2.0:
+            return POINT, (300.0 + 300 * (s - 1.4), 480.0)         # a line in the writing zone
+        if s < 3.0:
+            return OTHER, (600.0, 480.0)
+        if s < 4.2:
+            return OTHER, done                                     # DONE: read in the background
+        if s < 5.0:
+            return OTHER, (600.0, 480.0)
+        if s < 6.2:
+            return OTHER, ok_button                                # OK: the teacher accepts the suggestion
+        return OTHER, (600.0, 480.0)
+
+    code, config, _ = run_tool(draw_tool, tmp_path, monkeypatch, ["draw", "--seconds", "6.6", "--ai", "--trace"],
+                               schedule)
+    report, trace = draw_report(config)
+    assert code == 0 and report["actions"]["lines:complete"] == 1 and report["actions"]["lines:ok"] == 1
+    (entry,) = report["smart_lines"]
+    assert entry["status"] == {"confirmed": 1}
+    detail = entry["line_details"][0]
+    assert (detail["decision"], detail["text"], detail["written"], detail["suggestion"]) == ("ok", "CAT", "CAT", "CAT")
+    rec = report["line_recognition"]
+    assert (rec["requests"], rec["readings"], rec["read"], rec["stale_ignored"]) == (1, 1, 1, 0)
+    assert len(read) == 1 and read[0][:4] == b"\x89PNG"
+    assert rec["busy_frames"] > 5 and rec["busy_processing_fps"] > 30            # the loop did not wait
+    assert sum(line["lines_busy"] for line in trace) == rec["busy_frames"]
+    saved = json.load(open(report["board"]["json"], encoding="utf-8"))["smart_lines"][0]["lines"][0]
+    assert saved["decision"] == {"kind": "ok", "text": "CAT"} and saved["reading"]["written"] == "CAT"
+    assert len(list((config.root / "data" / "ai" / "lines").glob("*-p1-l1.json"))) == 1
+
+
+def test_smart_lines_done_and_ok_work_beside_the_open_ai_panel(tmp_path, monkeypatch):
+    # D65 end to end: the AI panel opened first and left open; LINES, a line, DONE and OK by dwell where they stand
+    # beside the panel. Their own places lie under the panel (nothing pressed there).
+    from invisible_canvas.canvas.lines import LinesLayout
+    from invisible_canvas.canvas.panel import AIPanel
+    from invisible_canvas.canvas.toolbar import Toolbar
+    tb = Toolbar((1280, 720), ai=True)
+    layout, panel = LinesLayout((1280, 720), tb.top), AIPanel((1280, 720), tb.top)
+    beside = layout.beside(panel.rect)
+    done, ok_button = beside.button("lines:complete").centre, beside.button("lines:ok").centre
+    assert panel.contains(layout.button("lines:complete").centre) and not panel.contains(done)
+
+    class FakeRecognizer:
+        def __init__(self, cfg):
+            pass
+
+        def read(self, png):
+            time.sleep(0.2)
+            return {"ok": True, "written": "SUN", "text": "SUN", "error": "", "model": "fake", "latency_s": 0.2}
+
+    monkeypatch.setattr(draw_tool, "LineRecognizer", FakeRecognizer)
+    monkeypatch.setattr(draw_tool, "LocalAssistant", RecordingAssistant)
+
+    def schedule(s, mapper):
+        if s < 1.2:
+            return OTHER, tb.button("ai").centre                   # the AI panel opens and stays open
+        if s < 1.3:
+            return OTHER, (300.0, 480.0)
+        if s < 2.5:
+            return OTHER, tb.button("lines").centre
+        if s < 2.7:
+            return OTHER, (300.0, 480.0)
+        if s < 3.3:
+            return POINT, (300.0 + 300 * (s - 2.7), 480.0)         # a line, left of the panel
+        if s < 4.3:
+            return OTHER, (500.0, 480.0)
+        if s < 5.5:
+            return OTHER, done                                     # DONE beside the panel
+        if s < 6.1:
+            return OTHER, (500.0, 480.0)
+        if s < 7.3:
+            return OTHER, ok_button                                # OK beside the panel
+        return OTHER, (500.0, 480.0)
+
+    code, config, _ = run_tool(draw_tool, tmp_path, monkeypatch, ["draw", "--seconds", "7.7", "--ai"], schedule)
+    report = json.loads(sorted(config.reports_dir.glob("draw-*.json"))[-1].read_text())
+    actions = report["actions"]
+    assert code == 0 and actions["press:ai"] == 1 and "press:ai:close" not in actions        # open throughout
+    assert actions["lines:complete"] == 1 and actions["lines:ok"] == 1
+    (entry,) = report["smart_lines"]
+    assert entry["status"] == {"confirmed": 1} and entry["line_details"][0]["text"] == "SUN"
+
+
 # -- D60: documents --------------------------------------------------------------------------------------------------
 
 def open_file_schedule(after_open, ai=False):

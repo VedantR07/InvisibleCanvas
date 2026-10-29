@@ -87,6 +87,19 @@ class AIConfig:
 
 
 @dataclass(frozen=True)
+class SmartLinesConfig:
+    """D62: Smart Lines geometry on the projector canvas (projector px) and the notes' look. The layout itself
+    (inside the canvas, above the toolbar, room for its buttons) is checked when `draw` builds it."""
+    zone: list                     # [x0, y0, x1, y1] the fixed writing zone
+    notes: list                    # [x0, y0, x1, y1] the notes area (completed lines)
+    line_height: int               # px of one completed line in the notes area
+    line_spacing: int              # px between completed lines
+    numbering: str                 # "1." | "1)" | "(1)" | "none"
+    font: str                      # D64: TrueType font of the typeset notes (the Windows font folder, or a path)
+    text_size: int                 # px of the typeset notes' text (at most line_height)
+
+
+@dataclass(frozen=True)
 class Config:
     camera: CameraConfig
     projector: ProjectorConfig
@@ -95,6 +108,7 @@ class Config:
     surface: SurfaceConfig
     paths: PathsConfig
     ai: AIConfig
+    smart_lines: SmartLinesConfig
     root: Path
 
     @property
@@ -114,6 +128,7 @@ _SECTIONS = {
     "surface": SurfaceConfig,
     "paths": PathsConfig,
     "ai": AIConfig,
+    "smart_lines": SmartLinesConfig,
 }
 
 
@@ -166,6 +181,17 @@ def _check(config: Config) -> None:
         raise ConfigError(f"[ai] effort must be one of {', '.join(AI_EFFORTS)}")
     if not ai.model.strip():
         raise ConfigError("[ai] model must not be empty")
+    lines = config.smart_lines
+    for name in ("zone", "notes"):
+        rect = getattr(lines, name)
+        if len(rect) != 4 or not all(type(v) is int for v in rect) or not (rect[0] < rect[2] and rect[1] < rect[3]):
+            raise ConfigError(f"[smart_lines] {name} must be [x0, y0, x1, y1] (integers, x0 < x1, y0 < y1)")
+    if lines.numbering not in ("1.", "1)", "(1)", "none"):
+        raise ConfigError('[smart_lines] numbering must be "1.", "1)", "(1)" or "none"')
+    if not 16 <= lines.line_height <= 200 or not 0 <= lines.line_spacing <= 100:
+        raise ConfigError("[smart_lines] line_height must be 16-200 and line_spacing 0-100")
+    if not lines.font.lower().endswith((".ttf", ".otf", ".ttc")) or not 12 <= lines.text_size <= lines.line_height:
+        raise ConfigError("[smart_lines] font must be a .ttf / .otf / .ttc file and text_size 12 up to line_height")
     if ai.max_tokens < 1024 or ai.timeout_s <= 0:
         raise ConfigError("[ai] max_tokens must be >= 1024 and timeout_s > 0")
     if config.camera.backend not in ("dshow", "msmf", "any"):

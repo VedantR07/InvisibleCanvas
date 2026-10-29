@@ -17,6 +17,12 @@ says how to draw again. The hint is kept away from the hand: projected text on t
 D59 / D60: the board panel (page buttons, grey when they cannot act) or else the page label at the top left; a
 document page under the ink (`controller.background`; the strokes cache is kept per page and background); messages
 on the wall (`controller.notice`).
+
+D62: Smart Lines. The notes area, the writing zone and the unfinished line come with `controller.background` (drawn
+by `canvas/lines.py`, cached until they change); while LINES is in use the renderer adds DONE, SCROLL UP / DOWN and
+(D64) the review bar, typeset with Pillow only when what they show changes and copied over each frame, with their
+hold-to-press progress (grey when they cannot act). A stroke refused outside the zone gets its own hint. D65: where
+an open panel would cover them, they are drawn beside it (`controller.lines_controls`).
 """
 
 from __future__ import annotations
@@ -26,6 +32,7 @@ import numpy as np
 
 from ..display.handlight import LightParams, paint
 from ..interaction.engine import DRAW, HOVER
+from .lines import render_controls
 from .model import Canvas, Stroke
 from .panel import clip_lines, wrap
 from .toolbar import COLOURS, WIDTHS, Toolbar
@@ -40,6 +47,7 @@ FONT = cv2.FONT_HERSHEY_SIMPLEX
 RING_RADIUS = int(LightParams().margin_px) + 13   # D50 ring cursor: just outside the light around the fingertip
 BLOCKED = (90, 90, 90)                # D56: the "not drawing" cursor
 BLOCKED_HINT = "Not drawing: open your hand, then point to draw"
+ZONE_HINT = "Not drawing here: move your fingertip into the writing area to write"  # D62, D66
 ASK_PROMPT = "Type your question on the laptop keyboard. Enter sends it, Esc cancels."   # D61
 PAGE_LINES = 2                        # D61: lines of "what the AI read" shown for a document page
 
@@ -92,6 +100,8 @@ class CanvasRenderer:
         if loop is not None and len(loop) >= 2:
             cv2.polylines(img, [np.round(np.asarray(loop)).astype(np.int32)], False, HIGHLIGHT, 2, cv2.LINE_AA)
         self._toolbar(img, toolbar, controller)
+        if getattr(controller, "lines_active", False):                  # D62: under the panels
+            self._lines_controls(img, controller)
         if getattr(controller, "panel", None) is not None and controller.panel_layout is not None:
             self._panel(img, controller)
         board = getattr(controller, "board", None)
@@ -137,9 +147,12 @@ class CanvasRenderer:
                 t = int(WIDTHS[b.name])
                 cv2.line(img, (x0 + 22, cy), (x1 - 22, cy), COLOURS[controller.colour], t, cv2.LINE_AA)
             else:
-                label = b.name.upper()
-                (tw, th), _ = cv2.getTextSize(label, FONT, 0.5, 2)
-                cv2.putText(img, label, (cx - tw // 2, cy + th // 2), FONT, 0.5, (60, 60, 60), 2, cv2.LINE_AA)
+                label, scale = b.name.upper(), 0.5
+                (tw, th), _ = cv2.getTextSize(label, FONT, scale, 2)
+                if tw > x1 - x0 - 4:                                    # D62: narrower buttons
+                    scale *= (x1 - x0 - 4) / tw
+                    (tw, th), _ = cv2.getTextSize(label, FONT, scale, 2)
+                cv2.putText(img, label, (cx - tw // 2, cy + th // 2), FONT, scale, (60, 60, 60), 2, cv2.LINE_AA)
             progress = controller.dwell_progress
             if progress is not None and progress[0] == b.name:          # hold-to-press feedback
                 fill = int((x1 - x0) * progress[1])
@@ -225,6 +238,17 @@ class CanvasRenderer:
             if enabled and progress is not None and progress[0] == b.name:
                 cv2.rectangle(img, (bx0, by1 - 9), (bx0 + int((bx1 - bx0) * progress[1]), by1 - 1), HIGHLIGHT, -1)
 
+    def _lines_controls(self, img: np.ndarray, controller) -> None:
+        """D62 / D64: DONE, the scroll track with SCROLL UP / DOWN and the review bar, typeset once and cached
+        (`canvas/lines.py`), copied over the frame; then the hold-to-press progress of the button held."""
+        controls = controller.lines_controls                            # D65: beside an open panel
+        for x, y, patch in render_controls(controller.lines_layout, controller.lines_view(), controls):
+            img[y:y + patch.shape[0], x:x + patch.shape[1]] = patch
+        progress = controller.dwell_progress
+        if progress is not None and progress[0].startswith("lines:") and controller.lines_enabled(progress[0]):
+            x0, y0, x1, y1 = controls.button(progress[0]).rect
+            cv2.rectangle(img, (x0 + 4, y1 - 7), (x0 + 4 + int((x1 - x0 - 8) * progress[1]), y1 - 3), HIGHLIGHT, -1)
+
     def _notice(self, img: np.ndarray, text: str) -> None:
         """D60: a message box at the top centre (wrapped to two lines at most), framed red."""
         lines = wrap(text, 760, 0.65, 2)[:2]
@@ -242,15 +266,16 @@ class CanvasRenderer:
         right = self.size[0]
         if getattr(controller, "panel", None) is not None and controller.panel_layout is not None:
             right = controller.panel_layout.rect[0]
+        hint = ZONE_HINT if getattr(controller, "blocked", None) == "zone" else BLOCKED_HINT
         scale = 0.7
-        (tw, th), _ = cv2.getTextSize(BLOCKED_HINT, FONT, scale, 2)
+        (tw, th), _ = cv2.getTextSize(hint, FONT, scale, 2)
         if tw + 40 > right:
             scale *= (right - 40) / (tw + 40)
-            (tw, th), _ = cv2.getTextSize(BLOCKED_HINT, FONT, scale, 2)
+            (tw, th), _ = cv2.getTextSize(hint, FONT, scale, 2)
         x0 = max((right - tw) // 2 - 16, 0)
         cv2.rectangle(img, (x0, 8), (x0 + tw + 32, 8 + th + 24), (255, 255, 255), -1)
         cv2.rectangle(img, (x0, 8), (x0 + tw + 32, 8 + th + 24), BLOCKED, 2)
-        cv2.putText(img, BLOCKED_HINT, (x0 + 16, 8 + 12 + th), FONT, scale, (40, 40, 40), 2, cv2.LINE_AA)
+        cv2.putText(img, hint, (x0 + 16, 8 + 12 + th), FONT, scale, (40, 40, 40), 2, cv2.LINE_AA)
 
     @staticmethod
     def _blocked_cursor(img: np.ndarray, cursor, radius: int) -> None:

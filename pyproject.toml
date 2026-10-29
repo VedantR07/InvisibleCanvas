@@ -20,6 +20,9 @@ dependencies = [
     # D60: PDF pages rendered by PDFium (free: Apache-2.0 / BSD-3-Clause, no dependencies).
     # Tested with 4.30.0; <5: a new major version may change the API.
     "pypdfium2>=4.30,<5",
+    # D64: Smart Lines text typeset in Segoe UI (OpenCV's fonts are ASCII only). Free (MIT-CMU); 12.3.0 was
+    # already installed (through matplotlib) and is the version tested.
+    "pillow>=12,<13",
 ]
 
 [project.optional-dependencies]

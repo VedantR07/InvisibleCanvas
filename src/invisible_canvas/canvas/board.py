@@ -4,6 +4,8 @@ A board is an ordered list of pages; each page has its own canvas (strokes) and 
 drawing, erasing, moving, clearing, undo and redo always act on the page that is shown and never on another.
 A new page is inserted after the current one, blank, and becomes current. The board file keeps every page's
 strokes and which page was current; a single-canvas file (`canvas-*.json`, before D59) loads as one page.
+D62: a page can also have Smart Lines (`Page.lines`, made when first used); the board file keeps them under the
+optional key "smart_lines" (one entry per page, null without them), so board files without it still load.
 """
 
 from __future__ import annotations
@@ -11,6 +13,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 from .history import History
+from .lines import LineSheet
 from .model import Canvas
 
 FORMAT = "invisible-canvas/board"
@@ -21,6 +24,7 @@ VERSION = 1
 class Page:
     canvas: Canvas
     history: History = field(default_factory=History)
+    lines: LineSheet | None = None                     # D62: Smart Lines on this page
 
 
 class Board:
@@ -67,8 +71,12 @@ class Board:
         return True
 
     def to_dict(self) -> dict:
-        return {"format": FORMAT, "version": VERSION, "size": list(self.size), "current": self.current,
-                "pages": [p.canvas.to_dict() for p in self.pages]}
+        d = {"format": FORMAT, "version": VERSION, "size": list(self.size), "current": self.current,
+             "pages": [p.canvas.to_dict() for p in self.pages]}
+        if any(p.lines is not None and p.lines.has_content for p in self.pages):
+            d["smart_lines"] = [p.lines.to_dict() if p.lines is not None and p.lines.has_content else None
+                                for p in self.pages]
+        return d
 
     @classmethod
     def from_dict(cls, d: dict) -> Board:
@@ -80,6 +88,9 @@ class Board:
             board = cls(tuple(d["size"]), canvases[0])
             board.pages += [Page(c) for c in canvases[1:]]
             board.current = min(max(int(d.get("current", 0)), 0), len(board.pages) - 1)
+            for page, sheet in zip(board.pages, d.get("smart_lines") or []):
+                if sheet:
+                    page.lines = LineSheet.from_dict(sheet, board.size)
             return board
         canvas = Canvas.from_dict(d)                     # raises on anything else
         return cls(canvas.size, canvas)

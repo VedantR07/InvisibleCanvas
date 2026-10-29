@@ -139,7 +139,8 @@ def test_toolbar_layout_fits_the_bottom_band():
     for tb, n in ((Toolbar(SIZE), 4), (Toolbar(SIZE, ai=True), 5)):          # D51: AI button only when AI is on
         check_toolbar(tb, len(TOOLS) + len(COLOURS) + len(WIDTHS) + n)         # D59: PAGES always
     assert "select" in TOOLS and Toolbar(SIZE, ai=True).button("ai").kind == "ai"
-    assert Toolbar(SIZE).button("pages").kind == "board" and Toolbar(SIZE, ai=True).button_w == 65
+    assert Toolbar(SIZE).button("pages").kind == "board" and Toolbar(SIZE, ai=True).button_w == 61   # D62: + LINES
+    assert "lines" in TOOLS and Toolbar(SIZE).button("lines").kind == "tool"
     assert not any(b.name == "ai" for b in Toolbar(SIZE).buttons)
 
 

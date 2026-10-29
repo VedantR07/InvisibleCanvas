@@ -72,7 +72,11 @@ def select_in_loop(canvas: Canvas, loop, min_inside: float = MIN_INSIDE) -> list
 
 def selection_image(canvas: Canvas, ids=None) -> np.ndarray | None:
     """BGR image of the given strokes (all strokes when `ids` is None or empty); None when there is no ink."""
-    strokes = [canvas.strokes[i] for i in (ids or list(canvas.strokes)) if i in canvas.strokes]
+    return strokes_image([canvas.strokes[i] for i in (ids or list(canvas.strokes)) if i in canvas.strokes])
+
+
+def strokes_image(strokes) -> np.ndarray | None:
+    """The same image for a list of strokes (D64: a completed Smart Line for its recognition)."""
     strokes = [s for s in strokes if s.points]
     if not strokes:
         return None
