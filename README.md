@@ -77,6 +77,13 @@ python -m pytest                          # unit tests
   only read, never changed. `SHOW BOARD` goes back to the whiteboard (the document stays open, `SHOW DOC` returns
   to it) and `CLOSE DOC` closes it; nothing on the whiteboard is touched. A file that cannot be opened (damaged,
   protected, not supported) gives a message on the wall and drawing goes on.
+- **Zoom on a document (D72).** While a document is shown, a zoom bar sits at the bottom right above the toolbar
+  (left of the AI panel while it is open): `-` and `+` step through 100 % (the page whole), 125, 150, 200, 250, 300
+  and 400 %, keeping the middle of the view in place, and `FIT` shows the whole page again; hold the cursor on them
+  as on the toolbar. To see the rest of a zoomed page, choose MOVE and drag the page (start where there is no ink;
+  on ink, MOVE moves the ink as before); a slim scroll bar shows which part is seen. What you write stays on the same
+  words at every zoom. A page turn keeps the zoom and starts at the top of the next page; the zoom is saved with the
+  board. The AI still reads the whole page.
 - **The AI on documents (D61).** With a document shown, the AI panel reads the page itself (the picture, or the PDF
   page rendered at 1600 px); its title says what it reads ("AI on PDF page 3 of 12", "AI on the selection", "AI
   on the whole canvas"). The six actions work on the page. **ASK**: type a question on the laptop keyboard; it

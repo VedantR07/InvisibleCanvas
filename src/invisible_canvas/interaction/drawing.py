@@ -59,6 +59,13 @@ pointing stroke that starts anywhere else waits (`blocked` "zone") and begins wh
 instead of being refused until the lift (the hand rising into the zone from below while pointing started its strokes
 just below it); a line stroke that leaves the zone ends there and begins again when it comes back. UNDO / REDO /
 CLEAR with LINES say so on the wall when there is nothing for them in the Smart Lines.
+
+D72: zoom on a document. While a document is shown, the zoom bar (ZOOM OUT, ZOOM IN, FIT; pressed like the toolbar,
+left of the AI panel while it is open) zooms the page (`Reference.zoom_in` ...). Its annotations stay in the page's
+own coordinates (the wall px of the page shown whole), so a pointing stroke's wall points are converted to them
+(`page_view`) before any tool uses them: ink stays on the same words at every zoom, the pen's width and the eraser's
+reach are divided by the zoom so they look the same on the wall as they are drawn. With MOVE, a stroke that starts
+on the zoomed page where no ink is drags the page (`_pan`, wall px; not an undo step); on ink, it moves the ink.
 """
 
 from __future__ import annotations
@@ -72,7 +79,7 @@ from ..canvas.lines import (
     REVIEW, TEXT_MAX, CompleteLine, LineSheet, LinesLayout, RetryLine, ReviewLine, render_sheet,
 )
 from ..canvas.model import Canvas, Stroke
-from ..canvas.panel import BOARD_LABELS, QUESTION_MAX, AIPanel, BoardPanel
+from ..canvas.panel import BOARD_LABELS, QUESTION_MAX, AIPanel, BoardPanel, ZoomBar
 from ..canvas.reference import ReferenceError, document_key
 from ..canvas.selection import close_loop, png_bytes, select_in_loop, selection_image, strokes_image
 
@@ -118,6 +125,8 @@ class DrawingController:
         for panel in (self.panel_layout, self.board_layout):           # D65: room beside each panel (ValueError)
             if panel is not None:
                 self.lines_layout.beside(panel.rect)
+        self._zoom_bars = {None: ZoomBar(canvas.size, toolbar.top)}    # D72: by its right edge (None: its own)
+        self._pan: dict | None = None                  # D72: {"from": wall point, "origin"}: dragging the page
         # {"state": menu|asking|thinking|answer|error, "since", "action", "answer", "source", "title", "question"}
         self.panel: dict | None = None
         self.ai_jobs: list[tuple[str, bytes, dict]] = []    # (action, PNG, context), D61
@@ -183,6 +192,59 @@ class DrawingController:
         sheet, review = self.sheet(), self.review_line()
         return render_sheet(sheet, self.lines_layout, self.lines_active or bool(sheet.canvas.strokes),
                             self.lines_active, None if review is None else review.id, self._notes_right())
+
+    @property
+    def doc_shown(self) -> bool:
+        return self.view == "doc" and self.reference is not None
+
+    @property
+    def page_view(self):
+        """D72: where the shown document page lies on the wall at its zoom (a PageView), or None where a page's
+        coordinates are the wall's (the whiteboard, a document page shown whole)."""
+        if not self.doc_shown:
+            return None
+        view = self.reference.view(self.board.size, self.toolbar.top)
+        return None if view.identity else view
+
+    @property
+    def zoom_bar(self) -> ZoomBar | None:
+        """D72: the zoom bar while a document is shown; left of an open panel that would cover it."""
+        if not self.doc_shown:
+            return None
+        bar = self._zoom_bars[None]
+        covering = (self.panel_layout.rect if self.panel is not None and self.panel_layout is not None
+                    else self.board_layout.rect if self.board_open else None)
+        x0, y0, x1, y1 = bar.rect
+        if covering is None or not (covering[0] < x1 and x0 < covering[2] and covering[1] < y1 and y0 < covering[3]):
+            return bar
+        right = covering[0] - 12
+        if right not in self._zoom_bars:
+            self._zoom_bars[right] = ZoomBar(self.board.size, self.toolbar.top, right=right)
+        return self._zoom_bars[right]
+
+    def zoom_enabled(self, name: str) -> bool:
+        """D72: whether a zoom button can act now (the renderer greys out the others)."""
+        if not self.doc_shown:
+            return False
+        ref = self.reference
+        return {"zoom:in": ref.can_zoom_in, "zoom:out": ref.can_zoom_out, "zoom:fit": ref.zoom != 1.0}[name]
+
+    def zoom_label(self) -> str:
+        return f"{round(self.reference.zoom * 100)}%" if self.doc_shown else ""
+
+    def _zoom_action(self, action: str) -> None:
+        if not self.zoom_enabled(f"zoom:{action}"):    # 100 % or 400 %: greyed out
+            self.log["zoom_limit"] += 1
+            return
+        self._leave_target()                           # anything live ends where it was drawn
+        frame, ref = (self.board.size, self.toolbar.top), self.reference
+        if action == "in":
+            ref.zoom_in(*frame)
+        elif action == "out":
+            ref.zoom_out(*frame)
+        else:
+            ref.set_zoom(1.0, *frame)
+        self.log[f"doc:zoom_{action}"] += 1
 
     def _notes_right(self) -> int | None:
         """D71: where the notes end while an open panel lies over their right part: left of the panel, and of the
@@ -289,8 +351,10 @@ class DrawingController:
             handler(e)
 
     def _on_panel(self, point) -> bool:
+        bar = self.zoom_bar                            # D72: never drawn on, as a panel
         return ((self.panel is not None and self.panel_layout.contains(point))
-                or (self.board_open and self.board_layout.contains(point)))
+                or (self.board_open and self.board_layout.contains(point))
+                or (bar is not None and bar.contains(point)))
 
     def _ui_at(self, point) -> str | None:
         """The UI area a point lies on, where nothing is drawn: "toolbar" (the band, D46) or "panel" (D51; D62: the
@@ -316,7 +380,7 @@ class DrawingController:
             self.log["line_starts_outside_zone"] += 1
             self.blocked = "zone"
             self._note("outside_zone", e.point)
-            self.active = self._drag = self.loop = None
+            self.active = self._drag = self.loop = self._pan = None
             return
         ui = "no-point" if e.point is None else self._ui_at(e.point)
         if ui is not None:
@@ -324,28 +388,37 @@ class DrawingController:
             self._refused, self.blocked = True, ui
             self._note("refused_no_point" if e.point is None else "refused_band" if ui == "toolbar"
                        else "refused_panel", e.point)
-            self.active = self._drag = self.loop = None
+            self.active = self._drag = self.loop = self._pan = None
             return
         self._begin(e.point)
 
     def _begin(self, point) -> None:
-        """The current tool's start of a stroke at `point`."""
+        """The current tool's start of a stroke at the wall point `point` (D72: in a zoomed document page's own
+        coordinates from here on)."""
+        wall, view = point, self.page_view
+        scale = 1.0 if view is None else view.scale
+        if view is not None:
+            point = view.to_page(point)
         if self.tool == "select":
             self.loop = [point]
-            self._note("select", point)
+            self._note("select", wall)
         elif self.tool in ("pen", "lines"):
-            self.active = Stroke(self.target.canvas.new_id(), COLOURS[self.colour], WIDTHS[self.width])
+            self.active = Stroke(self.target.canvas.new_id(), COLOURS[self.colour], WIDTHS[self.width] / scale)
             self.active.append(point)
-            self._note("added" if self.active.points else "not_appended", point)
+            self._note("added" if self.active.points else "not_appended", wall)
         elif self.tool == "eraser":
             self._erase_group = {"removed": {}, "created": set()}
             self._erase_at(point)
-            self._note("eraser", point)
+            self._note("eraser", wall)
         else:
-            sid = self.target.canvas.hit_test(point)
+            sid = self.target.canvas.hit_test(point, 12.0 / scale)        # 12 px on the wall at any zoom
             self.selected = sid
             self._drag = None if sid is None else {"ids": [sid], "last": point, "dx": 0.0, "dy": 0.0}
-            self._note("move" if sid is not None else "move_nothing", point)
+            if sid is None and view is not None:       # D72: no ink here: drag the zoomed page
+                self._pan = {"from": wall, "origin": view.origin}
+                self._note("pan", wall)
+                return
+            self._note("move" if sid is not None else "move_nothing", wall)
 
     def _stroke_point(self, e) -> None:
         if self.blocked == "zone":                     # D66: a line stroke waiting for the zone
@@ -377,22 +450,29 @@ class DrawingController:
             self.blocked = ui
             self.log[f"strokes_ended_on_{ui}"] += 1
             return
+        if self._pan is not None:                      # D72: the page follows the fingertip (wall px)
+            (fx, fy), (ox, oy) = self._pan["from"], self._pan["origin"]
+            self.reference.place((ox + e.point[0] - fx, oy + e.point[1] - fy), self.board.size, self.toolbar.top)
+            self._note("pan", e.point)
+            return
+        view = self.page_view                          # D72: a zoomed page's own coordinates (notes: the wall's)
+        point = e.point if view is None else view.to_page(e.point)
         if self.tool == "select" and self.loop is not None:
-            self.loop.append(e.point)
+            self.loop.append(point)
             self._note("select", e.point)
         elif self.tool in ("pen", "lines") and self.active is not None:
             n = len(self.active.points)
-            self.active.append(e.point)
+            self.active.append(point)
             self._note("added" if len(self.active.points) > n                  # Stroke.append skips a repeat
                        else "duplicate" if all(math.isfinite(float(v)) for v in e.point) else "not_appended", e.point)
         elif self.tool == "eraser" and self._erase_group is not None:
-            self._erase_at(e.point)
+            self._erase_at(point)
             self._note("eraser", e.point)
         elif self.tool == "move" and self._drag is not None:
             d = self._drag
-            dx, dy = e.point[0] - d["last"][0], e.point[1] - d["last"][1]
+            dx, dy = point[0] - d["last"][0], point[1] - d["last"][1]
             self.target.canvas.move(d["ids"], dx, dy)
-            d["dx"], d["dy"], d["last"] = d["dx"] + dx, d["dy"] + dy, e.point
+            d["dx"], d["dy"], d["last"] = d["dx"] + dx, d["dy"] + dy, point
             self._note("move", e.point)
         else:                                          # no branch took the point (diagnostics only)
             self._note(f"ignored_{self.tool}", e.point)
@@ -417,6 +497,9 @@ class DrawingController:
         if drag and (drag["dx"] or drag["dy"]):
             target.history.record(MoveStrokes(drag["ids"], drag["dx"], drag["dy"]))
             self.log["moves"] += 1
+        if self._pan is not None:                      # D72: a view change, not an undo step
+            self._pan = None
+            self.log["doc:pans"] += 1
         loop, self.loop = self.loop, None
         if loop is not None:
             self.selection = select_in_loop(target.canvas, loop)
@@ -428,7 +511,8 @@ class DrawingController:
         self.active, self.selected = None, None
 
     def _erase_at(self, point) -> None:
-        removed, created = self.target.canvas.erase(point, self.eraser_radius)
+        view = self.page_view                          # D72: the same reach on the wall at any zoom
+        removed, created = self.target.canvas.erase(point, self.eraser_radius / (1.0 if view is None else view.scale))
         group = self._erase_group
         for s in removed:
             if s.id in group["created"]:
@@ -444,8 +528,10 @@ class DrawingController:
         self.now = t
         button = None
         if cursor is not None and self._on_panel(cursor):  # an open panel covers what lies under it (D62)
+            bar = self.zoom_bar                            # D72
             button = ((self.panel_layout.hit(cursor) if self.panel is not None else None)
-                      or (self.board_layout.hit(cursor) if self.board_open else None))
+                      or (self.board_layout.hit(cursor) if self.board_open else None)
+                      or (bar.hit(cursor) if bar is not None else None))
         elif cursor is not None:
             button = (self._lines_hit(cursor) if self.lines_active else None) or self.toolbar.hit(cursor)
         d = self.dwell
@@ -470,6 +556,9 @@ class DrawingController:
             return
         if name.startswith("lines:"):
             self._lines_action(name[6:])
+            return
+        if name.startswith("zoom:"):                   # D72
+            self._zoom_action(name[5:])
             return
         button = self.toolbar.button(name)
         if button.kind == "ai":                        # one panel at a time (D59)

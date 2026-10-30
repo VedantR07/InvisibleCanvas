@@ -1,4 +1,5 @@
-"""The projected AI panel (brain.md D51, §9.11). Pure layout and text fitting.
+"""The projected AI panel (brain.md D51, §9.11), the board panel (D59) and the document zoom bar (D72). Pure
+layout and text fitting.
 
 The panel sits at the right of the canvas above the toolbar: eight buttons in three columns (seven actions, CLOSE
 at the bottom right; D54 added EXPLORE and D61 ASK without shrinking the answer area: CLOSE takes the last row's
@@ -100,6 +101,50 @@ class BoardPanel:
         if point is None:
             return None
         return next((b for b in self.buttons if b.contains(point)), None)
+
+
+class ZoomBar:
+    """D72: the zoom control shown with a document, a rounded bar at the bottom right just above the toolbar (left
+    of `right` when a panel lies there): a magnifier, ZOOM OUT, the zoom level, ZOOM IN, then FIT. Pressed by
+    holding the cursor on a button like the toolbar."""
+
+    HEIGHT, BUTTON, BUTTON_H, ICON, LEVEL, FIT, PAD, GAP = 62, 52, 46, 34, 82, 66, 8, 6
+
+    def __init__(self, size: tuple[int, int], toolbar_top: int, right: int | None = None, margin: int = 16):
+        x1 = size[0] - margin if right is None else right
+        y1 = toolbar_top - 14                            # inside the white margin's edge (D58)
+        width = (2 * self.PAD + self.ICON + 3 * self.GAP + 2 * self.BUTTON + self.LEVEL + 21 + self.FIT)
+        x0, y0 = x1 - width, y1 - self.HEIGHT
+        by0 = y0 + (self.HEIGHT - self.BUTTON_H) // 2
+        by1 = by0 + self.BUTTON_H
+        self.rect = (x0, y0, x1, y1)
+        x = x0 + self.PAD
+        self.icon = (x + self.ICON // 2, (y0 + y1) // 2 - 3)
+        x += self.ICON + self.GAP
+        out = (x, by0, x + self.BUTTON, by1)
+        x += self.BUTTON + self.GAP
+        self.level = (x, by0, x + self.LEVEL, by1)
+        x += self.LEVEL + self.GAP
+        zoom_in = (x, by0, x + self.BUTTON, by1)
+        x += self.BUTTON + 10
+        self.divider = x
+        x += 11
+        self.buttons = [Button("zoom:out", "zoom", out), Button("zoom:in", "zoom", zoom_in),
+                        Button("zoom:fit", "zoom", (x, by0, x + self.FIT, by1))]
+
+    def contains(self, point) -> bool:
+        if point is None:
+            return False
+        x0, y0, x1, y1 = self.rect
+        return x0 <= point[0] < x1 and y0 <= point[1] < y1
+
+    def hit(self, point) -> Button | None:
+        if point is None:
+            return None
+        return next((b for b in self.buttons if b.contains(point)), None)
+
+    def button(self, name: str) -> Button:
+        return next(b for b in self.buttons if b.name == name)
 
 
 class AIPanel:

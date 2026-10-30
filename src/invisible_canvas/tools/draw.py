@@ -454,6 +454,7 @@ def run(config: Config, args) -> int:
                          "light_on": records[-1]["light_on"],            # D68: the light on the hand switched on
                          "page": controller.board.current + 1,           # D59
                          "view": controller.view,                        # D60: board or doc
+                         "zoom": controller.reference.zoom if controller.doc_shown else None,   # D72
                          "tool": controller.tool,                        # D62: lines (Smart Lines) or another
                          "candidate": engine._candidate, "buffered": len(engine._buffer),
                          "queue_ms": round(stage_ms["queue"], 2), "inference_ms": round(stage_ms["inference"], 2),
@@ -568,6 +569,7 @@ def run(config: Config, args) -> int:
         "reference": None if controller.reference is None else {                                    # D60
             "path": str(controller.reference.path), "kind": controller.reference.kind,
             "pages": controller.reference.count, "page": controller.reference.current + 1, "view": controller.view,
+            "zoom_at_end": controller.reference.zoom,                                                # D72
             "annotated_pages": sorted(k + 1 for k, p in controller.reference.annotations.items() if p.canvas.strokes)},
         "closed_documents_with_annotations": [kept["path"] for kept in controller.kept_annotations.values()],
         "smart_lines": [{"page": k + 1, "lines": len(p.lines.lines), "line_ids": [line.id for line in p.lines.lines],

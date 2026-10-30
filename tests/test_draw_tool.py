@@ -776,6 +776,7 @@ def test_a_document_is_opened_by_dwell_annotated_and_reported(tmp_path, monkeypa
     assert code == 0 and report["actions"]["doc:open"] == 1 and ref["kind"] == "image" and ref["view"] == "doc"
     assert ref["annotated_pages"] == [1] and report["board"]["strokes_per_page"] == [0]   # on the document only
     assert any(line["view"] == "doc" for line in trace)
+    assert ref["zoom_at_end"] == 1.0 and {line["zoom"] for line in trace if line["view"] == "doc"} == {1.0}   # D72
     assert np.allclose(shown[-1][360, 640], [0, 0, 220], atol=3) or (shown[-1][360, 640] != 255).any()
     saved = json.load(open(report["board"]["json"], encoding="utf-8"))
     assert saved["reference"]["path"] == str(path) and saved["view"] == "doc"

@@ -27,6 +27,11 @@ an open panel would cover them, they are drawn beside it (`controller.lines_cont
 D71 (the user's mockup): the toolbar's rounded buttons with Segoe UI Semibold labels, the colours and the widths each
 in a rounded group, the tool, colour and width in use outlined purple; the band is typeset once per state and copied
 over each frame. The page label in a rounded pill. The buttons' places are unchanged.
+
+D72: a zoomed document page (`controller.page_view`): its annotations, the stroke being drawn, the selection and the
+SELECT loop are kept in the page's own coordinates and drawn at the zoom, inside the page's window only; the zoom bar
+(typeset once per state, in the D71 look) with its hold-to-press progress, and a slim scroll bar along each side the
+page goes beyond the window. A page shown whole is drawn exactly as before.
 """
 
 from __future__ import annotations
@@ -37,7 +42,7 @@ import numpy as np
 from ..display.handlight import paint
 from ..interaction.engine import DRAW, HOVER
 from . import text as typeset
-from .lines import render_controls
+from .lines import EDGE, EDGE_OFF, INK, LABEL, LABEL_OFF, PANEL_EDGE, PANEL_FILL, THUMB, TRACK, render_controls
 from .model import Canvas, Stroke
 from .panel import clip_lines, wrap
 from .toolbar import COLOURS, WIDTHS, Toolbar
@@ -64,14 +69,28 @@ ASK_PROMPT = "Type your question on the laptop keyboard. Enter sends it, Esc can
 PAGE_LINES = 2                        # D61: lines of "what the AI read" shown for a document page
 
 
-def draw_stroke(img: np.ndarray, stroke: Stroke, colour=None, extra: int = 0) -> None:
-    a = np.round(stroke.array()).astype(np.int32)
+def draw_stroke(img: np.ndarray, stroke: Stroke, colour=None, extra: int = 0, view=None, shift=(0, 0)) -> None:
+    """A stroke; with a `view` (D72) one in a zoomed document page's coordinates, drawn at the zoom on an image whose
+    top-left is the wall point `shift`."""
+    a, width = stroke.array(), stroke.width
+    if view is not None:
+        a, width = view.to_wall(a) - shift, width * view.scale
+    a = np.round(a).astype(np.int32)
     colour = colour or stroke.color
-    thickness = max(int(round(stroke.width)) + extra, 1)
+    thickness = max(int(round(width)) + extra, 1)
     if len(a) == 1:
         cv2.circle(img, tuple(int(v) for v in a[0]), max(thickness // 2, 1), colour, -1, cv2.LINE_AA)
     else:
         cv2.polylines(img, [a], False, colour, thickness, cv2.LINE_AA)
+
+
+def ink_area(img: np.ndarray, view) -> tuple[np.ndarray, tuple[int, int]]:
+    """Where a page's ink is drawn and the wall point of its top-left: the whole frame, or (D72) a zoomed document
+    page's window (ink beyond it is not seen; the white margin stays white for the setup watch, D58)."""
+    if view is None:
+        return img, (0, 0)
+    x0, y0, x1, y1 = view.window
+    return img[y0:y1, x0:x1], (x0, y0)
 
 
 class CanvasRenderer:
@@ -85,37 +104,50 @@ class CanvasRenderer:
         self.redraws = 0
         self._band: tuple | None = None                # D71: (state, the toolbar band typeset)
         self._label: tuple | None = None               # D71: (label, pill image, its shape)
+        self._view = None                              # D72: the cache's page view (None: wall coordinates)
+        self._zoom: tuple | None = None                # D72: (state, the zoom bar typeset, its shape)
 
-    def _strokes(self, canvas: Canvas, under: np.ndarray | None = None) -> np.ndarray:
+    def _strokes(self, canvas: Canvas, under: np.ndarray | None = None, view=None) -> np.ndarray:
         if (self._cache is None or canvas is not self._canvas or canvas.version != self._version
-                or under is not self._under):
+                or under is not self._under or view != self._view):
             w, h = self.size
             img = under.copy() if under is not None else np.full((h, w, 3), self.background, dtype=np.uint8)
+            ink, shift = ink_area(img, view)
             for s in canvas.strokes.values():
-                draw_stroke(img, s)
+                draw_stroke(ink, s, view=view, shift=shift)
             self._cache, self._canvas, self._version, self._under = img, canvas, canvas.version, under
+            self._view = view
             self.redraws += 1
         return self._cache
 
     def render(self, canvas: Canvas, controller, toolbar: Toolbar, *, mode: str, cursor, status: str = "",
                light: np.ndarray | None = None) -> np.ndarray:
-        img = self._strokes(canvas, getattr(controller, "background", None)).copy()     # D60: a document page under it
+        view = getattr(controller, "page_view", None)                   # D72: a zoomed document page
+        img = self._strokes(canvas, getattr(controller, "background", None), view).copy()   # D60: a document page
+        ink, shift = ink_area(img, view)
         if controller.selected is not None and controller.selected in canvas.strokes:
             s = canvas.strokes[controller.selected]
-            x0, y0, x1, y1 = (int(round(v)) for v in s.bounds())
-            cv2.rectangle(img, (x0 - 6, y0 - 6), (x1 + 6, y1 + 6), HIGHLIGHT, 2, cv2.LINE_AA)
+            x0, y0, x1, y1 = s.bounds()
+            if view is not None:
+                (x0, y0), (x1, y1) = view.to_wall([(x0, y0), (x1, y1)]) - shift
+            x0, y0, x1, y1 = (int(round(v)) for v in (x0, y0, x1, y1))
+            cv2.rectangle(ink, (x0 - 6, y0 - 6), (x1 + 6, y1 + 6), HIGHLIGHT, 2, cv2.LINE_AA)
         for sid in getattr(controller, "selection", ()):               # D51: halo, then the ink on top
             if sid in canvas.strokes:
-                draw_stroke(img, canvas.strokes[sid], SELECTION_HALO, extra=12)
-                draw_stroke(img, canvas.strokes[sid])
+                draw_stroke(ink, canvas.strokes[sid], SELECTION_HALO, extra=12, view=view, shift=shift)
+                draw_stroke(ink, canvas.strokes[sid], view=view, shift=shift)
         if controller.active is not None and controller.active.points:
-            draw_stroke(img, controller.active)
+            draw_stroke(ink, controller.active, view=view, shift=shift)
         loop = getattr(controller, "loop", None)
         if loop is not None and len(loop) >= 2:
-            cv2.polylines(img, [np.round(np.asarray(loop)).astype(np.int32)], False, HIGHLIGHT, 2, cv2.LINE_AA)
+            points = np.asarray(loop) if view is None else view.to_wall(loop) - shift
+            cv2.polylines(ink, [np.round(points).astype(np.int32)], False, HIGHLIGHT, 2, cv2.LINE_AA)
         self._toolbar(img, toolbar, controller)
         if getattr(controller, "lines_active", False):                  # D62: under the panels
             self._lines_controls(img, controller)
+        bar = getattr(controller, "zoom_bar", None)
+        if bar is not None:                                             # D72: under the panels
+            self._zoom_bar(img, controller, bar, view)
         if getattr(controller, "panel", None) is not None and controller.panel_layout is not None:
             self._panel(img, controller)
         board = getattr(controller, "board", None)
@@ -212,6 +244,75 @@ class CanvasRenderer:
         region = img[8:8 + patch.shape[0], 12:12 + patch.shape[1]]
         h, w = region.shape[:2]
         region[shape[:h, :w]] = patch[:h, :w][shape[:h, :w]]
+
+    def _zoom_bar(self, img: np.ndarray, controller, bar, view) -> None:
+        """D72: the zoom bar, typeset once per state and copied over the frame in its rounded shape, the hold-to-press
+        progress; while zoomed, the scroll bars."""
+        if view is not None:
+            self._scroll_bars(img, view, bar)
+        state = (bar.rect, controller.zoom_label(), tuple(controller.zoom_enabled(b.name) for b in bar.buttons))
+        if self._zoom is None or self._zoom[0] != state:
+            self._zoom = (state, *self._zoom_patch(bar, state[1], state[2]))
+        _, patch, shape = self._zoom
+        x0, y0 = bar.rect[:2]
+        region = img[y0:y0 + patch.shape[0], x0:x0 + patch.shape[1]]
+        region[shape] = patch[shape]
+        progress = controller.dwell_progress
+        if progress is not None and progress[0].startswith("zoom:") and controller.zoom_enabled(progress[0]):
+            bx0, by0, bx1, by1 = bar.button(progress[0]).rect
+            cv2.rectangle(img, (bx0 + 4, by1 - 7), (bx0 + 4 + int((bx1 - bx0 - 8) * progress[1]), by1 - 3),
+                          HIGHLIGHT, -1)
+
+    @staticmethod
+    def _zoom_patch(bar, label: str, enabled: tuple) -> tuple[np.ndarray, np.ndarray]:
+        """The zoom bar (a magnifier, -, the zoom level, +, FIT) and its rounded shape, in the bar's own px."""
+        x0, y0, x1, y1 = bar.rect
+        w, h = x1 - x0, y1 - y0
+        patch, shape = np.full((h, w, 3), 255, np.uint8), np.zeros((h, w, 3), np.uint8)
+
+        def local(r):
+            return r[0] - x0, r[1] - y0, r[2] - x0, r[3] - y0
+
+        on = dict(zip((b.name for b in bar.buttons), enabled))
+        ops = [("rrect", (0, 0, w - 1, h - 1), 14, PANEL_FILL, PANEL_EDGE, 2)]
+        for b in bar.buttons:
+            ops.append(("rrect", local(b.rect), 10, (255, 255, 255), EDGE if on[b.name] else EDGE_OFF, 2))
+        lx0, ly0, lx1, ly1 = local(bar.level)
+        ops.append(("text", ((lx0 + lx1) // 2, (ly0 + ly1) // 2), label, typeset.font(LABEL_FONT, 21), INK, "mm"))
+        fx0, fy0, fx1, fy1 = local(bar.button("zoom:fit").rect)
+        ops.append(("text", ((fx0 + fx1) // 2, (fy0 + fy1) // 2), "FIT", typeset.font(LABEL_FONT, 17),
+                    LABEL if on["zoom:fit"] else LABEL_OFF, "mm"))
+        typeset.draw(patch, ops)
+        typeset.draw(shape, [("rrect", (0, 0, w - 1, h - 1), 14, (255, 255, 255), None)])
+        cx, cy = bar.icon[0] - x0, bar.icon[1] - y0                      # the magnifier
+        cv2.circle(patch, (cx, cy), 10, LABEL, 3, cv2.LINE_AA)
+        cv2.line(patch, (cx + 7, cy + 7), (cx + 14, cy + 14), LABEL, 4, cv2.LINE_AA)
+        cv2.line(patch, (bar.divider - x0, ly0 + 6), (bar.divider - x0, ly1 - 6), PANEL_EDGE, 2)
+        for name in ("zoom:out", "zoom:in"):                             # - and + as bars: crisp at any size
+            bx0, by0, bx1, by1 = local(bar.button(name).rect)
+            mx, my, colour = (bx0 + bx1) // 2, (by0 + by1) // 2, LABEL if on[name] else LABEL_OFF
+            cv2.rectangle(patch, (mx - 10, my - 2), (mx + 10, my + 1), colour, -1)
+            if name == "zoom:in":
+                cv2.rectangle(patch, (mx - 2, my - 10), (mx + 1, my + 10), colour, -1)
+        return patch, shape[:, :, 0] > 127
+
+    @staticmethod
+    def _scroll_bars(img: np.ndarray, view, bar) -> None:
+        """D72: which part of the zoomed page is seen: a slim track and thumb along the right side (the page taller
+        than the window) and along the bottom (wider), short of the zoom bar."""
+        wx0, wy0, wx1, wy1 = view.window
+        (ox, oy), (pw, ph) = view.origin, view.size
+        for k, (lo, hi, o, n) in enumerate(((wy0, wy1, oy, ph), (wx0, wx1, ox, pw))):
+            if n <= hi - lo:
+                continue
+            t0, t1 = lo + 10, (bar.rect[1] if k == 0 else bar.rect[0]) - 12
+            a, b = (int(round(t0 + (t1 - t0) * (v - o) / n)) for v in (lo, hi))
+            if k == 0:
+                cv2.line(img, (wx1 - 10, t0), (wx1 - 10, t1), TRACK, 6, cv2.LINE_AA)
+                cv2.line(img, (wx1 - 10, a), (wx1 - 10, b), THUMB, 6, cv2.LINE_AA)
+            else:
+                cv2.line(img, (t0, wy1 - 10), (t1, wy1 - 10), TRACK, 6, cv2.LINE_AA)
+                cv2.line(img, (a, wy1 - 10), (b, wy1 - 10), THUMB, 6, cv2.LINE_AA)
 
     def _panel(self, img: np.ndarray, controller) -> None:
         layout, panel = controller.panel_layout, controller.panel
