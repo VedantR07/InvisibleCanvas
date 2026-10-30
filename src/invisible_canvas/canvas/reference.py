@@ -17,6 +17,7 @@ teaching and for the AI (D61), with its own annotation layer per page. The file 
   the wall; None: centred across, from the top). Page coordinates are the wall px of the page fitted whole, so the
   annotations (kept in them) stay on the same words at every zoom; `view` converts between the two. A zoom keeps the
   window's centre on the same place of the page; a page turn keeps the zoom and starts at the top.
+- D74: a part of the page for the AI (`ai_png(region)`, the region as fractions of the page: `region_fraction`).
 """
 
 from __future__ import annotations
@@ -36,6 +37,8 @@ MARGIN = 12            # projector px of white around the page (the setup watch 
 AI_MAX_SIDE = 1600     # px: the longer side of the page image the AI reads (D61)
 POINTS_PER_INCH = 72.0
 ZOOMS = (1.0, 1.25, 1.5, 2.0, 2.5, 3.0, 4.0)     # D72: of the page fitted whole
+MIN_REGION_PX = 12     # D74: page px (the page fitted whole) a selected part must span on the page, across and down
+MAX_REGION_SCALE = 6   # D74: a selected part of a PDF is rendered at most 6x the scale of the whole page for the AI
 
 
 class ReferenceError(Exception):
@@ -289,12 +292,56 @@ class Reference:
         self.origin = placed
         return True
 
-    def ai_png(self) -> bytes:
-        """The current page for the AI (D61): PNG, longer side at most AI_MAX_SIDE px."""
-        ok, buf = cv2.imencode(".png", self.page_image(AI_MAX_SIDE))
+    def ai_png(self, region: tuple[float, float, float, float] | None = None) -> bytes:
+        """The current page for the AI (D61): PNG, longer side at most AI_MAX_SIDE px. D74: with a `region` (fractions
+        of the page: x0, y0, x1, y1), only that part, as sharp as the page allows: a PDF's part rendered by PDFium at
+        that size (up to MAX_REGION_SCALE times the whole page's), a picture's part cut from the picture itself."""
+        image = self.page_image(AI_MAX_SIDE) if region is None else self._region_image(region)
+        ok, buf = cv2.imencode(".png", image)
         if not ok:
             raise ReferenceError(f"{self.path.name}: the page could not be prepared for the AI.")
         return buf.tobytes()
+
+    def _region_image(self, region) -> np.ndarray:
+        fx0, fy0, fx1, fy1 = region
+        if self.kind == "image":
+            h, w = self._image.shape[:2]
+            x0, y0 = int(fx0 * w), int(fy0 * h)
+            x1, y1 = max(int(np.ceil(fx1 * w)), x0 + 1), max(int(np.ceil(fy1 * h)), y0 + 1)
+            part = self._image[y0:y1, x0:x1]
+            scale = AI_MAX_SIDE / max(part.shape[:2])
+            if scale >= 1.0:
+                return part
+            size = (max(int(round(part.shape[1] * scale)), 1), max(int(round(part.shape[0] * scale)), 1))
+            return cv2.resize(part, size, interpolation=cv2.INTER_AREA)
+        try:
+            page = self._document[self.current]
+            w_pt, h_pt = page.get_size()
+            part_w, part_h = (fx1 - fx0) * w_pt, (fy1 - fy0) * h_pt
+            scale = min(AI_MAX_SIDE / max(part_w, part_h), MAX_REGION_SCALE * AI_MAX_SIDE / max(w_pt, h_pt))
+            crop = (fx0 * w_pt, (1.0 - fy1) * h_pt, (1.0 - fx1) * w_pt, fy0 * h_pt)   # left, bottom, right, top
+            bitmap = page.render(scale=scale, crop=crop)
+            return np.ascontiguousarray(bitmap.to_numpy()[:, :, :3])
+        except Exception:
+            raise ReferenceError(f"{self.path.name}: the selected part of page {self.current + 1} could not be "
+                                 f"rendered.") from None
+
+    def page_rect(self, size: tuple[int, int], area_height: int) -> tuple[int, int, int, int]:
+        """D74: the page in page coordinates (the page fitted whole): x0, y0, x1, y1."""
+        fitted, x0, y0 = self._fitted(size, area_height)
+        return x0, y0, x0 + fitted.shape[1], y0 + fitted.shape[0]
+
+    def region_fraction(self, rect, size: tuple[int, int],
+                        area_height: int) -> tuple[float, float, float, float] | None:
+        """D74: a box in page coordinates as fractions of the page (x0, y0, x1, y1), cut to the page; None when less
+        than MIN_REGION_PX of it lies on the page either way."""
+        px0, py0, px1, py1 = self.page_rect(size, area_height)
+        x0, y0 = max(rect[0], px0), max(rect[1], py0)
+        x1, y1 = min(rect[2], px1), min(rect[3], py1)
+        if x1 - x0 < MIN_REGION_PX or y1 - y0 < MIN_REGION_PX:
+            return None
+        w, h = px1 - px0, py1 - py0
+        return (x0 - px0) / w, (y0 - py0) / h, (x1 - px0) / w, (y1 - py0) / h
 
     # -- annotations --------------------------------------------------------------------------------------------
 

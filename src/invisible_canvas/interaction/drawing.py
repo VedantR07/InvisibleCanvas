@@ -66,6 +66,11 @@ own coordinates (the wall px of the page shown whole), so a pointing stroke's wa
 (`page_view`) before any tool uses them: ink stays on the same words at every zoom, the pen's width and the eraser's
 reach are divided by the zoom so they look the same on the wall as they are drawn. With MOVE, a stroke that starts
 on the zoomed page where no ink is drags the page (`_pan`, wall px; not an undo step); on ink, it moves the ink.
+
+D74: SELECT on a document chooses a part of the page (`doc_region`: the box around the loop, in the page's own
+coordinates, for the page it was drawn on); the AI then reads only that part (the page's own content, rendered for
+it), and the panel's title says so. A loop off the page or a slip chooses nothing (the whole page again); a page turn,
+SHOW BOARD, CLOSE DOC, another document and CLEAR drop it; a zoom keeps it.
 """
 
 from __future__ import annotations
@@ -81,7 +86,7 @@ from ..canvas.lines import (
 from ..canvas.model import Canvas, Stroke
 from ..canvas.panel import BOARD_LABELS, QUESTION_MAX, AIPanel, BoardPanel, ZoomBar
 from ..canvas.reference import ReferenceError, document_key
-from ..canvas.selection import close_loop, png_bytes, select_in_loop, selection_image, strokes_image
+from ..canvas.selection import close_loop, loop_region, png_bytes, select_in_loop, selection_image, strokes_image
 
 AI_OFF = "The AI is off (draw --no-ai): EDIT or KEEP INK."
 from ..canvas.toolbar import COLOURS, WIDTHS, Toolbar
@@ -127,6 +132,7 @@ class DrawingController:
                 self.lines_layout.beside(panel.rect)
         self._zoom_bars = {None: ZoomBar(canvas.size, toolbar.top)}    # D72: by its right edge (None: its own)
         self._pan: dict | None = None                  # D72: {"from": wall point, "origin"}: dragging the page
+        self.doc_region: dict | None = None            # D74: {"page", "rect"}: a part of a document page for the AI
         # {"state": menu|asking|thinking|answer|error, "since", "action", "answer", "source", "title", "question"}
         self.panel: dict | None = None
         self.ai_jobs: list[tuple[str, bytes, dict]] = []    # (action, PNG, context), D61
@@ -222,6 +228,14 @@ class DrawingController:
             self._zoom_bars[right] = ZoomBar(self.board.size, self.toolbar.top, right=right)
         return self._zoom_bars[right]
 
+    @property
+    def region(self) -> tuple[float, float, float, float] | None:
+        """D74: the part of the shown document page chosen with SELECT (page coordinates), or None: the whole page."""
+        r = self.doc_region
+        if r is None or not self.doc_shown or r["page"] != self.reference.current:
+            return None
+        return r["rect"]
+
     def zoom_enabled(self, name: str) -> bool:
         """D72: whether a zoom button can act now (the renderer greys out the others)."""
         if not self.doc_shown:
@@ -305,6 +319,7 @@ class DrawingController:
         self._leave_target()
         self._cancel_edit("left")
         self.selection, self.selected = [], None
+        self.doc_region = None                         # D74: it belongs to the page it was drawn on
 
     def _leave_target(self) -> None:
         """Before `target` changes (D62: into or out of LINES): what is live ends where it was drawn, and a pointing
@@ -502,12 +517,24 @@ class DrawingController:
             self.log["doc:pans"] += 1
         loop, self.loop = self.loop, None
         if loop is not None:
-            self.selection = select_in_loop(target.canvas, loop)
+            region = None
+            if self.doc_shown:                         # D74: a part of the page, not the ink on it
+                self.selection = []
+                box = loop_region(loop)
+                frame = (self.board.size, self.toolbar.top)
+                if box is not None and self.reference.region_fraction(box, *frame) is not None:
+                    px0, py0, px1, py1 = self.reference.page_rect(*frame)
+                    region = (max(box[0], px0), max(box[1], py0), min(box[2], px1), min(box[3], py1))
+                self.doc_region = None if region is None else {"page": self.reference.current, "rect": region}
+                self.log["doc:selections" if region is not None else "doc:selection_none"] += 1
+            else:
+                self.selection = select_in_loop(target.canvas, loop)
             self.log["selections"] += 1
             xs, ys = [p[0] for p in loop], [p[1] for p in loop]
             self.selection_log.append({"t": round(self.now, 3), "ids": list(self.selection),
                                        "loop_bounds": [round(min(xs)), round(min(ys)), round(max(xs)), round(max(ys))],
-                                       "points": len(loop), "closed_points": len(close_loop(loop))})
+                                       "points": len(loop), "closed_points": len(close_loop(loop)),
+                                       **({"region": [round(v) for v in region]} if region is not None else {})})
         self.active, self.selected = None, None
 
     def _erase_at(self, point) -> None:
@@ -658,7 +685,7 @@ class DrawingController:
         self._cancel_edit("clear")
         removed = target.canvas.clear()
         if not self.lines_active:
-            self.selection = []
+            self.selection, self.doc_region = [], None
         if removed:
             target.history.record(ReplaceStrokes(removed, [], name="clear"))
             self.log["clear"] += 1
@@ -914,7 +941,8 @@ class DrawingController:
             return panel["title"]
         source = self.ai_source()
         if source == "document":
-            return "AI on the image" if self.reference.kind == "image" else f"AI on {self.reference.label()}"
+            shown = "the image" if self.reference.kind == "image" else self.reference.label()
+            return f"AI on part of {shown}" if self.region is not None else f"AI on {shown}"   # D74: a selected part
         return "AI on the selection" if source == "selection" else "AI on the whole canvas"
 
     @property
@@ -972,12 +1000,16 @@ class DrawingController:
         source, title = self.ai_source(), self.ai_title()
         context = {"source": source}
         if source == "document":                       # D61: the page itself, as the model's image
+            region = None if self.region is None else self.reference.region_fraction(
+                self.region, self.board.size, self.toolbar.top)              # D74: only the selected part
             try:
-                png = self.reference.ai_png()
+                png = self.reference.ai_png() if region is None else self.reference.ai_png(region)
             except ReferenceError as e:
                 self.panel = {"state": "error", "since": self.now, "action": action, "message": str(e)}
                 return
             context["page"] = self.view_label()
+            if region is not None:
+                context["region"] = [round(v, 4) for v in region]
         else:
             image = selection_image(self.canvas, [i for i in self.selection if i in self.canvas.strokes])
             if image is None:

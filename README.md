@@ -84,6 +84,11 @@ python -m pytest                          # unit tests
   on ink, MOVE moves the ink as before); a slim scroll bar shows which part is seen. What you write stays on the same
   words at every zoom. A page turn keeps the zoom and starts at the top of the next page; the zoom is saved with the
   board. The AI still reads the whole page.
+- **The AI on part of a document (D74).** With a document shown, SELECT draws a loop around a part of the page (a
+  paragraph, a diagram, a table): it is framed in magenta, also while zoomed, and the AI panel ("AI on part of PDF
+  page 2 of 12") then works on that part only, rendered sharply from the page itself (your ink on it is not sent).
+  A loop off the page (or a slip) goes back to the whole page; a page turn, SHOW BOARD, CLOSE DOC and CLEAR drop
+  the selection.
 - **The AI on documents (D61).** With a document shown, the AI panel reads the page itself (the picture, or the PDF
   page rendered at 1600 px); its title says what it reads ("AI on PDF page 3 of 12", "AI on the selection", "AI
   on the whole canvas"). The six actions work on the page. **ASK**: type a question on the laptop keyboard; it

@@ -90,6 +90,9 @@ SYSTEM_DOCUMENT = (
     "small panel: plain text, no markdown, at most about 80 words. If the page shows nothing you can read or "
     "recognise, say so in the result."
 )
+# D74: added only when the teacher selected a part of the page (whole-page requests are unchanged)
+SYSTEM_REGION = (" The image is only the part of the page that the teacher selected: in the task, 'this page' means "
+                 "that part.")
 
 SCHEMA = {
     "type": "object",
@@ -130,6 +133,8 @@ def is_document(context: dict | None) -> bool:
 
 
 def system_for(context: dict | None) -> str:
+    if is_document(context) and (context or {}).get("region"):       # D74: a part of the page the teacher selected
+        return SYSTEM_DOCUMENT + SYSTEM_REGION
     return SYSTEM_DOCUMENT if is_document(context) else SYSTEM
 
 

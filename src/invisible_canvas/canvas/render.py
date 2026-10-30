@@ -32,6 +32,8 @@ D72: a zoomed document page (`controller.page_view`): its annotations, the strok
 SELECT loop are kept in the page's own coordinates and drawn at the zoom, inside the page's window only; the zoom bar
 (typeset once per state, in the D71 look) with its hold-to-press progress, and a slim scroll bar along each side the
 page goes beyond the window. A page shown whole is drawn exactly as before.
+
+D74: the part of a document page chosen with SELECT, framed in magenta (at the zoom, inside the page's window).
 """
 
 from __future__ import annotations
@@ -138,6 +140,13 @@ class CanvasRenderer:
                 draw_stroke(ink, canvas.strokes[sid], view=view, shift=shift)
         if controller.active is not None and controller.active.points:
             draw_stroke(ink, controller.active, view=view, shift=shift)
+        region = getattr(controller, "region", None)
+        if region is not None:                                          # D74: the part of the page the AI reads
+            corners = np.asarray([region[:2], region[2:]], dtype=np.float64)
+            if view is not None:
+                corners = view.to_wall(corners) - shift
+            (x0, y0), (x1, y1) = np.round(corners).astype(int)
+            cv2.rectangle(ink, (int(x0) - 4, int(y0) - 4), (int(x1) + 4, int(y1) + 4), HIGHLIGHT, 3, cv2.LINE_AA)
         loop = getattr(controller, "loop", None)
         if loop is not None and len(loop) >= 2:
             points = np.asarray(loop) if view is None else view.to_wall(loop) - shift
@@ -319,7 +328,10 @@ class CanvasRenderer:
         x0, y0, x1, y1 = layout.rect
         cv2.rectangle(img, (x0, y0), (x1, y1), (250, 250, 250), -1)
         cv2.rectangle(img, (x0, y0), (x1, y1), (150, 150, 150), 2)
-        cv2.putText(img, controller.ai_title(), (x0 + 14, y0 + 32), FONT, 0.7, PANEL_TEXT, 2, cv2.LINE_AA)   # D61
+        title, scale = controller.ai_title(), 0.7                        # D61; D74: smaller if it would not fit
+        while scale > 0.5 and cv2.getTextSize(title, FONT, scale, 2)[0][0] > x1 - x0 - 28:
+            scale -= 0.05
+        cv2.putText(img, title, (x0 + 14, y0 + 32), FONT, scale, PANEL_TEXT, 2, cv2.LINE_AA)
         progress = controller.dwell_progress
         for b in layout.buttons:
             bx0, by0, bx1, by1 = b.rect
@@ -339,7 +351,9 @@ class CanvasRenderer:
         rows: list[tuple[str, float, tuple, int]] = []
         document = panel.get("source", controller.ai_source()) == "document"
         if state == "menu":
-            text = "Choose what the AI should do with this page." if document else "Choose what the AI should do with it."
+            text = ("Choose what the AI should do with the selected part." if getattr(controller, "region", None)
+                    else "Choose what the AI should do with this page." if document
+                    else "Choose what the AI should do with it.")                       # D74: a selected part
             rows = [(line, 0.6, PANEL_MUTED, 1) for line in wrap(text, width, 0.6)]
         elif state == "asking":                                         # D61: the question as it is typed
             rows = [(line, 0.55, PANEL_MUTED, 1) for line in wrap(ASK_PROMPT, width, 0.55)]

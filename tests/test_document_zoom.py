@@ -218,16 +218,20 @@ def test_move_where_no_ink_is_drags_the_zoomed_page_and_is_not_an_undo_step(tmp_
     assert ctl.page_view.origin == (top[0], top[1] - 100)
 
 
-def test_a_select_loop_while_zoomed_selects_the_ink_inside_it(tmp_path):
+def test_a_select_loop_while_zoomed_chooses_the_part_of_the_page_around_the_ink(tmp_path):
+    # D74: on a document SELECT chooses a part of the page (it selected the ink inside the loop before D74)
     ctl = doc_controller(Reference.open(write_pdf(tmp_path / "lesson.pdf")))
     zoom_to(ctl, 2.0)
     stroke(ctl, [(500.0, 300.0), (560.0, 300.0)])
     stroke(ctl, [(900.0, 500.0), (960.0, 500.0)])
-    inside, outside = list(ctl.canvas.strokes)
+    inside, outside = (ctl.canvas.strokes[i] for i in ctl.canvas.strokes)
     ctl.press("select")
     loop = [(530 + 80 * np.cos(a), 300 + 50 * np.sin(a)) for a in np.linspace(0, 2 * np.pi, 40)]
     stroke(ctl, loop)
-    assert ctl.selection == [inside]
+    x0, y0, x1, y1 = ctl.region
+    assert ctl.selection == []
+    assert all(x0 <= x <= x1 and y0 <= y <= y1 for x, y in inside.points)
+    assert not any(x0 <= x <= x1 and y0 <= y <= y1 for x, y in outside.points)
 
 
 def test_the_zoom_bar_is_shown_with_a_document_pressed_by_holding_and_never_drawn_on(tmp_path):

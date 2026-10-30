@@ -5,7 +5,8 @@ word written with several strokes is selected stroke by stroke; a stroke crossin
 majority). The loop is first closed at its tightest point (D53, `close_loop`), so the path of the finger moving to
 where the loop begins, and any run-on past the start, are not part of it. The selection image shows the strokes in
 their own colours on white, cropped to them with a margin and scaled so the longer side is at most `MAX_SIDE` px
-(and handwriting is not tiny); PNG for the API.
+(and handwriting is not tiny); PNG for the API. D74: on a document the loop chooses a part of the page instead
+(`loop_region`: the box around the closed loop).
 """
 
 from __future__ import annotations
@@ -50,6 +51,15 @@ def close_loop(points, part: float = CLOSE_PART) -> np.ndarray:
     if d[i, j] >= np.linalg.norm(pts[0] - pts[-1]):
         return pts
     return pts[i:n - k + j + 1]
+
+
+def loop_region(loop) -> tuple[float, float, float, float] | None:
+    """D74: the box around a loop closed at its tightest point (x0, y0, x1, y1), or None for a slip (as
+    `select_in_loop`): on a document, the part of the page the AI reads."""
+    pts = close_loop(loop)
+    if loop_area(pts) < MIN_LOOP_AREA:
+        return None
+    return float(pts[:, 0].min()), float(pts[:, 1].min()), float(pts[:, 0].max()), float(pts[:, 1].max())
 
 
 def select_in_loop(canvas: Canvas, loop, min_inside: float = MIN_INSIDE) -> list[int]:
