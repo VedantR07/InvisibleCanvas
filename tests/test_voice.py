@@ -459,6 +459,42 @@ def test_the_panel_is_pressed_by_holding_and_never_drawn_on():
     assert x0 > AREA[2] and y1 < Toolbar(SIZE).top                            # beside the writing area
 
 
+def test_scroll_and_delete_are_shown_only_when_they_can_act():
+    # wall test 1: "delete, scroll up and down were of no use" (greyed, the area not yet full)
+    ctl = voice_controller()
+    ctl.press("voice")
+    names = lambda: [b.name for b in ctl.voice_buttons]                          # noqa: E731
+    assert names() == ["voice:pause", "voice:done", "voice:cancel", "voice:commands", "voice:mic"]
+    short = ctl.voice_rect
+    assert short[3] < ctl.voice_panel.rect[3]                                      # the panel ends after MIC
+    up = ctl.voice_panel.button("voice:up")
+    assert not ctl._on_panel(up.centre)                                            # not there: the page is
+    for _ in range(4):
+        say(ctl, LONG)                                                             # more than the area holds
+    assert "voice:up" in names() and "voice:down" not in names() and ctl.voice_rect[3] > short[3]
+    ctl.press("voice:up")
+    assert ctl.voice_scroll == 3 and "voice:down" in names()
+    ctl.voice_selected = [0]                                                       # V2: words chosen with SELECT
+    assert "voice:delete" in names()
+
+
+def test_the_vocabulary_is_given_to_the_recognizer_and_must_be_words():
+    from invisible_canvas.config import ConfigError, config_from_dict
+    from invisible_canvas.voice.listener import WhisperTranscriber
+    assert WhisperTranscriber("m", vocabulary=["Pratik", " Jamshedpur ", "", "Invisible Canvas"]).prompt == \
+        "Pratik, Jamshedpur, Invisible Canvas."
+    assert WhisperTranscriber("m").prompt is None
+    import copy
+    import tomllib
+    from invisible_canvas.config import DEFAULT_CONFIG_PATH
+    with open(DEFAULT_CONFIG_PATH, "rb") as f:
+        data = tomllib.load(f)
+    assert config_from_dict(copy.deepcopy(data)).voice.vocabulary[0] == "Pratik"
+    data["voice"]["vocabulary"] = ["Pratik", 7]
+    with pytest.raises(ConfigError, match="vocabulary"):
+        config_from_dict(data)
+
+
 def test_the_panel_and_the_text_are_drawn_and_the_text_stays_after_voice_writing():
     ctl = voice_controller()
     ctl.press("voice")

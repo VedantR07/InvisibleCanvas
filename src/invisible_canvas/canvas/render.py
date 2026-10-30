@@ -69,11 +69,12 @@ BLOCKED_HINT = "Not drawing: open your hand, then point to draw"
 ZONE_HINT = "Not drawing here: move your fingertip into the writing area to write"  # D62, D66
 ASK_PROMPT = "Type your question on the laptop keyboard. Enter sends it, Esc cancels."   # D61
 # D75: the voice panel's states (label, colour BGR)
-VOICE_STATES = {"off": ("Starting...", (130, 130, 130)), "loading": ("Loading speech...", (130, 130, 130)),
-                "listening": ("Listening", (40, 150, 40)), "hearing": ("Hearing you...", (40, 40, 200)),
-                "writing": ("Writing...", (160, 60, 10)), "paused": ("Paused", (130, 130, 130)),
+VOICE_STATES = {"off": ("Starting...", (110, 110, 110)), "loading": ("Loading speech...", (110, 110, 110)),
+                "listening": ("Listening", (30, 120, 30)), "hearing": ("Hearing you...", (40, 40, 200)),
+                "writing": ("Writing...", (160, 60, 10)), "paused": ("Paused", (110, 110, 110)),
                 "unavailable": ("Microphone unavailable", (40, 40, 200)), "error": ("Error", (40, 40, 200))}
 VOICE_TRACK, VOICE_LEVEL = (225, 220, 216), (40, 150, 40)
+VOICE_TEXT = (80, 60, 50)              # the microphone line and reasons (wall test 1: the grey was faint)
 PAGE_LINES = 2                        # D61: lines of "what the AI read" shown for a document page
 
 
@@ -319,17 +320,18 @@ class CanvasRenderer:
         """D75: the voice panel (typeset once per state and copied over the frame in its rounded shape), then the
         loudness bar (the gate marked) and the hold-to-press progress."""
         layout, status = controller.voice_panel, controller.voice_status
-        state = (status["state"], status["detail"], status["device"], controller.voice_paused,
-                 tuple((controller.voice_label(b.name), controller.voice_enabled(b.name)) for b in layout.buttons))
+        buttons, rect = controller.voice_buttons, controller.voice_rect     # wall test 1: only the useful ones
+        state = (status["state"], status["detail"], status["device"], controller.voice_paused, rect,
+                 tuple((b.name, controller.voice_label(b.name), controller.voice_enabled(b.name)) for b in buttons))
         if self._voice is None or self._voice[0] != state:
-            self._voice = (state, *self._voice_patch(layout, controller, status))
+            self._voice = (state, *self._voice_patch(layout, controller, status, buttons, rect))
         _, patch, shape = self._voice
-        x0, y0, x1, _ = layout.rect
+        x0, y0, x1, _ = rect
         region = img[y0:y0 + patch.shape[0], x0:x1]
         region[shape] = patch[shape]
         sx0, sy0, sx1, sy1 = layout.status
         if status["state"] in ("listening", "hearing", "writing") and not controller.voice_paused:
-            y = sy0 + 64
+            y = sy0 + 62
             frac = min(max((status["level"] + 60.0) / 40.0, 0.0), 1.0)          # -60 .. -20 dBFS
             cv2.rectangle(img, (sx0, y), (sx1, y + 6), VOICE_TRACK, -1)
             cv2.rectangle(img, (sx0, y), (sx0 + int((sx1 - sx0) * frac), y + 6), VOICE_LEVEL, -1)
@@ -343,19 +345,20 @@ class CanvasRenderer:
                           HIGHLIGHT, -1)
 
     @staticmethod
-    def _voice_patch(layout, controller, status) -> tuple[np.ndarray, np.ndarray]:
-        x0, y0, x1, y1 = layout.rect
+    def _voice_patch(layout, controller, status, buttons, rect) -> tuple[np.ndarray, np.ndarray]:
+        x0, y0, x1, y1 = rect
         w, h = x1 - x0, y1 - y0
         patch, shape = np.full((h, w, 3), 255, np.uint8), np.zeros((h, w, 3), np.uint8)
         sx0, sy0, sx1, _ = (v - o for v, o in zip(layout.status, (x0, y0, x0, y0)))
         state = "paused" if controller.voice_paused and status["state"] in ("listening", "hearing", "writing") \
             else status["state"]
         label, colour = VOICE_STATES.get(state, (state, PANEL_MUTED))
-        title, text, small = typeset.font(LABEL_FONT, 20), typeset.font(LABEL_FONT, 17), typeset.font(LABEL_FONT, 13)
+        # wall test 1: the state and the microphone faint on the wall: larger and darker
+        title, text, small = typeset.font(LABEL_FONT, 21), typeset.font(LABEL_FONT, 22), typeset.font(LABEL_FONT, 16)
         ops = [("rrect", (0, 0, w - 1, h - 1), 14, PANEL_FILL, PANEL_EDGE, 2),
-               ("text", (sx0, sy0 + 10), "VOICE", title, INK, "lm"),
-               ("rrect", (sx0, sy0 + 31, sx0 + 13, sy0 + 44), 7, colour, None),
-               ("text", (sx0 + 22, sy0 + 38), label, text, colour, "lm")]
+               ("text", (sx0, sy0 + 9), "VOICE", title, INK, "lm"),
+               ("rrect", (sx0, sy0 + 28, sx0 + 16, sy0 + 44), 8, colour, None),
+               ("text", (sx0 + 26, sy0 + 36), label, text, colour, "lm")]
         if state in ("unavailable", "error") and status["detail"]:
             words, line, lines = status["detail"].split(), "", []
             for word in words:                                          # the reason, on two lines at most
@@ -366,13 +369,13 @@ class CanvasRenderer:
                     line = f"{line} {word}".strip()
             lines.append(line)
             for k, part in enumerate(lines[:2]):
-                ops.append(("text", (sx0, sy0 + 62 + 16 * k), typeset.fit(part, small, sx1 - sx0), small, PANEL_MUTED,
+                ops.append(("text", (sx0, sy0 + 62 + 18 * k), typeset.fit(part, small, sx1 - sx0), small, VOICE_TEXT,
                             "lm"))
         elif status["device"]:
             ops.append(("text", (sx0, sy0 + 84), typeset.fit("Mic: " + status["device"], small, sx1 - sx0), small,
-                        PANEL_MUTED, "lm"))
+                        VOICE_TEXT, "lm"))
         label_font = typeset.font(LABEL_FONT, 15)
-        for b in layout.buttons:
+        for b in buttons:
             on = controller.voice_enabled(b.name)
             bx0, by0, bx1, by1 = (b.rect[0] - x0, b.rect[1] - y0, b.rect[2] - x0, b.rect[3] - y0)
             ops.append(("rrect", (bx0, by0, bx1 - 1, by1 - 1), 10, (255, 255, 255), EDGE if on else EDGE_OFF, 2))

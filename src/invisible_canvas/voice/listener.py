@@ -19,6 +19,7 @@
 
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 import time
@@ -35,6 +36,7 @@ HOLD_DB = 8.0                  # once an utterance began, frames down to the gat
 START_FRAMES = 2               # speech frames in a row that begin an utterance
 MIN_SPEECH_FRAMES = 8          # speech frames an utterance needs (240 ms) to be written
 STATES = ("off", "loading", "listening", "hearing", "writing", "unavailable", "error")
+logging.getLogger("faster_whisper").setLevel(logging.WARNING)    # wall test 1: a console line per utterance
 
 
 def dbfs(frame: np.ndarray) -> float:
@@ -93,10 +95,14 @@ class WhisperTranscriber:
     """faster-whisper on the CPU (step V0: `base.en`, int8, 2 threads: 99 % of the user's words, 0.57 s per
     utterance). Loaded on first use, in the worker thread."""
 
-    def __init__(self, model: str, threads: int = 2, root: Path | None = None):
+    def __init__(self, model: str, threads: int = 2, root: Path | None = None, vocabulary=()):
         path = Path(model)
         self.path = path if path.is_absolute() or root is None else root / path
         self.threads = threads
+        # wall test 1: names and places misheard ("Pratik" -> "Pertik", "Invisible Canvas" -> "a visible catalyst");
+        # the words given to Whisper as the text that came before, so it expects them
+        words = [str(w).strip() for w in vocabulary if str(w).strip()]
+        self.prompt = (", ".join(words) + ".") if words else None
         self._model = None
         self._lock = threading.Lock()
         self.load_s: float | None = None
@@ -123,7 +129,8 @@ class WhisperTranscriber:
         if self._model is None:
             self.load()
         parts, _ = self._model.transcribe(audio, language="en", beam_size=1, vad_filter=False,
-                                          condition_on_previous_text=False, without_timestamps=True)
+                                          condition_on_previous_text=False, without_timestamps=True,
+                                          initial_prompt=self.prompt)
         return " ".join(p.text.strip() for p in parts).strip()
 
 

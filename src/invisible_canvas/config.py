@@ -111,6 +111,7 @@ class VoiceConfig:
     pause_ms: int                  # this long without speech ends an utterance
     max_utterance_s: float         # a longer utterance is cut
     commands: bool                 # voice commands on at the start (the panel switches them)
+    vocabulary: list               # names and words the recognizer should expect (people, places, the project)
     area: list                     # [x0, y0, x1, y1] the writing area (projector px)
     font: str                      # the typed text's font (the Windows font folder, or a path)
     text_size: int                 # px
@@ -219,6 +220,8 @@ def _check(config: Config) -> None:
             and 2.0 <= voice.max_utterance_s <= 30.0 and 14 <= voice.text_size <= 72):
         raise ConfigError("[voice] threads 1-8, gate_dbfs -80 to -10, pause_ms 200-3000, max_utterance_s 2-30 and "
                           "text_size 14-72")
+    if not all(isinstance(w, str) for w in voice.vocabulary):
+        raise ConfigError("[voice] vocabulary must be a list of words or names (strings)")
     if ai.max_tokens < 1024 or ai.timeout_s <= 0:
         raise ConfigError("[ai] max_tokens must be >= 1024 and timeout_s > 0")
     if config.camera.backend not in ("dshow", "msmf", "any"):

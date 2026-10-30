@@ -105,6 +105,8 @@ from ..voice.commands import match as voice_command
 VOICE_LABELS = {"voice:done": "DONE", "voice:cancel": "CANCEL", "voice:mic": "MIC", "voice:delete": "DELETE",
                 "voice:up": "SCROLL UP", "voice:down": "SCROLL DOWN"}
 VOICE_CONFIRM_S = 6.0                                  # D75: "clear current line" said again within this
+# D75 wall test 1 ("delete, scroll up and down were of no use"): shown only when they can act
+VOICE_WHEN_USEFUL = ("voice:up", "voice:down", "voice:delete")
 
 AI_OFF = "The AI is off (draw --no-ai): EDIT or KEEP INK."
 from ..canvas.toolbar import COLOURS, WIDTHS, Toolbar
@@ -426,7 +428,8 @@ class DrawingController:
         return ((self.panel is not None and self.panel_layout.contains(point))
                 or (self.board_open and self.board_layout.contains(point))
                 or (bar is not None and bar.contains(point))
-                or (self.voice_open and self.voice_panel.contains(point)))                # D75
+                or (self.voice_open and point is not None and self.voice_rect[0] <= point[0] < self.voice_rect[2]
+                    and self.voice_rect[1] <= point[1] < self.voice_rect[3]))                  # D75: as shown
 
     def _ui_at(self, point) -> str | None:
         """The UI area a point lies on, where nothing is drawn: "toolbar" (the band, D46) or "panel" (D51; D62: the
@@ -616,7 +619,8 @@ class DrawingController:
             button = ((self.panel_layout.hit(cursor) if self.panel is not None else None)
                       or (self.board_layout.hit(cursor) if self.board_open else None)
                       or (bar.hit(cursor) if bar is not None else None)
-                      or (self.voice_panel.hit(cursor) if self.voice_open else None))      # D75
+                      or (next((b for b in self.voice_buttons if b.contains(cursor)), None)
+                          if self.voice_open else None))                                   # D75: the shown buttons
         elif cursor is not None:
             button = (self._lines_hit(cursor) if self.lines_active else None) or self.toolbar.hit(cursor)
         d = self.dwell
@@ -782,9 +786,29 @@ class DrawingController:
         page = self.board.page
         self._voice_began.setdefault(id(page), (page, tuple(self.page_voice().tokens)))
 
-    def voice_enabled(self, name: str) -> bool:
+    def _voice_lines(self) -> list:
+        """The shown page's typed text laid out (kept until the text changes)."""
         text = self.board.page.voice
-        lines = [] if text is None else self.voice_layout.lines(text.tokens)
+        if text is None:
+            return []
+        key = (id(text), text.version)
+        if getattr(self, "_voice_lines_cache", (None,))[0] != key:
+            self._voice_lines_cache = (key, self.voice_layout.lines(text.tokens))
+        return self._voice_lines_cache[1]
+
+    @property
+    def voice_buttons(self) -> list:
+        """The voice panel's buttons shown now: SCROLL UP / DOWN and DELETE only when they can act."""
+        return [b for b in self.voice_panel.buttons if b.name not in VOICE_WHEN_USEFUL or self.voice_enabled(b.name)]
+
+    @property
+    def voice_rect(self) -> tuple[int, int, int, int]:
+        """The voice panel as shown: down to its last button shown."""
+        x0, y0, x1, _ = self.voice_panel.rect
+        return x0, y0, x1, max(b.rect[3] for b in self.voice_buttons) + 12
+
+    def voice_enabled(self, name: str) -> bool:
+        lines = self._voice_lines()
         return {"voice:up": self.voice_scroll < self.voice_layout.max_scroll(lines),
                 "voice:down": self.voice_scroll > 0,
                 "voice:delete": bool(self.voice_selected)}.get(name, True)
@@ -815,8 +839,7 @@ class DrawingController:
         elif action == "mic":
             self.voice_requests.append("mic")
         elif action in ("up", "down"):
-            text = self.page_voice()
-            top = self.voice_layout.max_scroll(self.voice_layout.lines(text.tokens))
+            top = self.voice_layout.max_scroll(self._voice_lines())
             self.voice_scroll = min(max(self.voice_scroll + (3 if action == "up" else -3), 0), top)
         elif action == "delete":                       # V2: the words chosen with SELECT
             self._voice_touch()

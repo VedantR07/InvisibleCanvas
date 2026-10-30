@@ -113,11 +113,14 @@ text_size = 30
 enabled = true
 device = "Realtek"           # a part of the microphone's name ("" = Windows' default input): the jack mic (Headset)
 model = "models/whisper/base.en"
-threads = 2
+threads = 1                  # wall test 1: 23 fps while transcribing with 2 (on battery); 1: 0.87 s per utterance
 gate_dbfs = -42.0
 pause_ms = 700
 max_utterance_s = 15.0
 commands = true
+# Names and words to expect (wall test 1: "Pratik" -> "Pertik", "Invisible Canvas" -> "a visible catalyst"):
+# given to the recognizer as text said before. Edit freely.
+vocabulary = ["Pratik", "Jamshedpur", "Invisible Canvas"]
 # Left of the voice panel (300 px wide at the top right), below the page label, above the toolbar (y < 648).
 area = [40, 60, 952, 632]
 font = "segoeui.ttf"

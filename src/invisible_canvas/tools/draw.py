@@ -338,7 +338,7 @@ def run(config: Config, args) -> int:
     voice = None                                       # D75: voice writing (the microphone opens on VOICE)
     if config.voice.enabled and not getattr(args, "no_voice", False):
         v = config.voice
-        transcriber = WhisperTranscriber(v.model, v.threads, root=config.root)
+        transcriber = WhisperTranscriber(v.model, v.threads, root=config.root, vocabulary=v.vocabulary)
         voice = VoiceListener(transcriber, gate_dbfs=v.gate_dbfs, pause_ms=v.pause_ms,
                               max_utterance_s=v.max_utterance_s)
         threading.Thread(target=transcriber.preload, name="voice-preload", daemon=True).start()   # off the loop
