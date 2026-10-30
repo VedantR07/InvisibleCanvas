@@ -131,6 +131,8 @@ def test_the_view_follows_the_end_and_scrolls_back_without_drawing_outside_the_a
     ("Delete the last sentence.", "delete_sentence"), ("Undo.", "undo"), ("Clear current line.", "clear_line"),
     ("Stop listening.", "pause"), ("Resume listening!", "resume"), ("Full stop.", "full_stop"),
     ("Comma.", "comma"), ("New lines.", "new_line"),
+    ("Scratch that.", "scratch"), ("Scratch date.", "scratch"), ("Scratch back.", "scratch"),
+    ("Scratch the deck.", "scratch"), ("Scratch the paint off the wall.", None), ("Scratching is bad.", None),
     ("Draw a new line under the title.", None), ("And do.", None), ("Photosynthesis is the process.", None),
     ("New line please and then the next one.", None), ("", None)])
 def test_a_command_only_when_the_whole_utterance_is_one(said, command):

@@ -64,4 +64,11 @@ def match(text: str) -> str | None:
     if said in COMMANDS:
         return COMMANDS[said]
     best = max(COMMANDS, key=lambda c: SequenceMatcher(None, said, c).ratio())
-    return COMMANDS[best] if SequenceMatcher(None, said, best).ratio() >= MATCH else None
+    if SequenceMatcher(None, said, best).ratio() >= MATCH:
+        return COMMANDS[best]
+    # wall test 2026-10-31 04:10: "that" misheard ("Scratch date.", "Scratch back.", "Scratch down.", "Scratch deck.")
+    # 5 times out of 21: a short utterance (at most 3 words) that begins with "scratch" is the command
+    words = said.split()
+    if len(words) <= 3 and SequenceMatcher(None, words[0], "scratch").ratio() >= MATCH:
+        return "scratch"
+    return None
