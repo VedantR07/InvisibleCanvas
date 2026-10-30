@@ -1346,6 +1346,13 @@ Resolved on 2026-10-08: Python install (D12), surface orientation (D13), camera 
 
 ### 13.2 Test log
 
+**2026-10-31 (03:04–03:11): D75 voice writing wall test 2 (after the fixes) — names right, 33 utterances written once, the compact panel readable; 1.2 s to text and 26 fps while transcribing on battery** (on battery, 43 %)
+- `draw --seconds 600 --trace --save-every 1 --no-recalibrate` (user "lets go"; report `draw-20261031-031052.json`, `data/diagnostics/draw-20261031-030356/`): setup 0.20 px, brightness 177; 400 s, ended by the user; VOICE once, the jack mic "Microphone (Realtek(R) Audio)" throughout; 33 utterances, 33 written, 0 errors, 0 duplicates; 145 words on the page; UNDO 3 times on the typed text (`voice:undo` 3); COMMANDS switched twice; PEN over the text (5 strokes).
+- **Names right with the vocabulary:** "Pratik here.", "So basically I have from Jamshedpur.", "So my project is Invisible Canvas."; everyday sentences mostly right ("Thank God you are listening to me.", "We can do something very interesting.", "Finally, this thing is working."), some casual phrases misheard ("Cut it here, deciding a dry board.", "It's been training, so I needed an umbrella.").
+- **Times / frame rate (1 thread):** text 1,210 ms after the end of the utterance (median; p95 1,474, max 1,965; 775 ms with 2 threads in test 1); 26.2 fps while transcribing (23.1 with 2 threads), 31.5 fps with voice writing on, 33.7 fps over the session (on battery); hand losses low (lower band 3.3 per 1000 hand frames).
+- **On the wall** (t0305.9): a full paragraph in the frame, clear and wrapped at whole words; the panel shorter (PAUSE, DONE, CANCEL, COMMANDS ON, MIC), "Listening" and the microphone line readable.
+- Not exercised: the voice commands (none said), stop / resume listening, scrolling a full area, a second page, another voice in the room.
+
 **2026-10-31 (02:50–03:10): D75 fixes after voice wall test 1 — software** (on battery)
 - The recorded reading through the app's segmenter: 2 threads 98 % / 0.58 s per utterance; 1 thread 98 % / 0.86 s; 1 thread with the vocabulary 99 % / 0.87 s, no hint word inserted (scratch `v1b_threads.py`).
 - Full suite: 756 passed, 22 skipped, 0 failed (02:53–03:03, 9 min 37 s).
