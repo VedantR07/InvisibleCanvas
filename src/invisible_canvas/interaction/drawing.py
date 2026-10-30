@@ -86,6 +86,7 @@ from __future__ import annotations
 import math
 from collections import Counter
 
+import cv2
 import numpy as np
 
 from ..canvas.board import Board
@@ -96,10 +97,14 @@ from ..canvas.lines import (
 from ..canvas.model import Canvas, Stroke
 from ..canvas.panel import BOARD_LABELS, QUESTION_MAX, AIPanel, BoardPanel, VoicePanel, ZoomBar
 from ..canvas.reference import ReferenceError, document_key
-from ..canvas.selection import close_loop, loop_region, png_bytes, select_in_loop, selection_image, strokes_image
+from ..canvas.selection import (
+    MIN_LOOP_AREA, close_loop, loop_area, loop_region, png_bytes, select_in_loop, selection_image, strokes_image,
+)
 from ..canvas.voice_text import VoiceLayout, VoiceText
 from ..canvas.voice_text import render as render_voice
+from ..canvas.voice_text import text_image as voice_text_image
 from ..voice.commands import MARKS
+from ..voice.commands import correction as voice_correction
 from ..voice.commands import match as voice_command
 
 VOICE_LABELS = {"voice:done": "DONE", "voice:cancel": "CANCEL", "voice:mic": "MIC", "voice:delete": "DELETE",
@@ -589,12 +594,14 @@ class DrawingController:
                 self.log["doc:selections" if region is not None else "doc:selection_none"] += 1
             else:
                 self.selection = select_in_loop(target.canvas, loop)
+                self.voice_selected = self._words_in_loop(loop)                 # D75 V2: typed words too
             self.log["selections"] += 1
             xs, ys = [p[0] for p in loop], [p[1] for p in loop]
             self.selection_log.append({"t": round(self.now, 3), "ids": list(self.selection),
                                        "loop_bounds": [round(min(xs)), round(min(ys)), round(max(xs)), round(max(ys))],
                                        "points": len(loop), "closed_points": len(close_loop(loop)),
-                                       **({"region": [round(v) for v in region]} if region is not None else {})})
+                                       **({"region": [round(v) for v in region]} if region is not None else {}),
+                                       **({"words": len(self.voice_selected)} if self.voice_selected else {})})
         self.active, self.selected = None, None
 
     def _erase_at(self, point) -> None:
@@ -777,9 +784,21 @@ class DrawingController:
         if not self.voice_open:
             return
         self.voice_open, self._voice_confirm, self._voice_began = False, None, {}
-        self.voice_selected = []
-        self.voice_requests.append("stop")
+        self.voice_requests.append("stop")             # (chosen words stay chosen: the AI panel may read them)
         self.log["voice:close"] += 1
+
+    def _words_in_loop(self, loop) -> list[int]:
+        """D75 V2: the typed words shown whose middle lies inside a SELECT loop (closed at its tightest point, D53)."""
+        text = self.board.page.voice
+        if text is None or not text.has_content:
+            return []
+        pts = close_loop(loop)
+        if loop_area(pts) < MIN_LOOP_AREA:
+            return []
+        contour = pts.astype(np.float32).reshape(-1, 1, 2)
+        chosen = {index for index, (x0, y0, x1, y1) in self.voice_layout.word_boxes(text.tokens, self.voice_scroll)
+                  if cv2.pointPolygonTest(contour, ((x0 + x1) / 2, (y0 + y1) / 2), False) >= 0}
+        return sorted(chosen)
 
     def _voice_touch(self) -> None:
         """Before the first change to a page in this voice writing: what it had (for CANCEL)."""
@@ -855,8 +874,18 @@ class DrawingController:
         self._voice_seen.add(number)
         entry = {"t": round(self.now, 3), "n": number, "text": text, "latency_ms": latency_ms}
         command = voice_command(text) if self.voice_commands else None
+        fix = voice_correction(text) if self.voice_commands and command is None else None
         if not self.voice_active:
             entry["ignored"] = "closed"
+        elif fix is not None:                          # "I mean ...": the last phrase replaced
+            entry["command"], entry["replacement"] = "correct", fix
+            if self.voice_paused:
+                entry["ignored"] = "paused"
+            else:
+                self._voice_touch()
+                if self.page_voice().replace_last(fix):
+                    self.voice_scroll, self.voice_selected = 0, []
+                    self.log["voice:corrections"] += 1
         elif command is not None:
             entry["command"] = command
             if self.voice_paused and command != "resume":
@@ -869,6 +898,7 @@ class DrawingController:
             self._voice_touch()
             if self.page_voice().write(text):
                 self.voice_scroll = 0                  # follow the end of the text
+                self.voice_selected = []               # the words chosen by place: the text changed
                 self.log["voice:phrases"] += 1
         self.log["voice:ignored" if "ignored" in entry else "voice:used"] += 1
         self.voice_log.append(entry)
@@ -882,6 +912,10 @@ class DrawingController:
             self.voice_paused = False
             return
         text = self.page_voice()
+        if command == "delete_selection":              # V2: the words chosen with SELECT
+            self._voice_action("delete")
+            return
+        self.voice_selected = []                       # every other edit moves the words
         if command == "undo":
             text.undo()
             return
@@ -900,13 +934,15 @@ class DrawingController:
             text.punctuate(MARKS[command])
         else:
             {"new_line": text.new_line, "new_paragraph": text.new_paragraph, "delete_word": text.delete_last_word,
-             "delete_sentence": text.delete_last_sentence, "clear_line": text.clear_line}[command]()
+             "delete_sentence": text.delete_last_sentence, "clear_line": text.clear_line,
+             "scratch": text.scratch}[command]()
         self.voice_scroll = 0
 
     # -- actions (toolbar and keyboard) ------------------------------------------------------------------
 
     def undo(self) -> None:
         if self.voice_active:                          # D75: the typed text while voice writing is on
+            self.voice_selected = []
             if self.page_voice().undo():
                 self.log["undo"] += 1
                 self.log["voice:undo"] += 1
@@ -921,6 +957,7 @@ class DrawingController:
 
     def redo(self) -> None:
         if self.voice_active:                          # D75
+            self.voice_selected = []
             if self.page_voice().redo():
                 self.log["redo"] += 1
                 self.log["voice:redo"] += 1
@@ -1191,10 +1228,16 @@ class DrawingController:
     # -- AI panel (D51) ----------------------------------------------------------------------------------
 
     def ai_source(self) -> str:
-        """What an AI action reads now: "document" (the shown page, D61), "selection" or "canvas"."""
+        """What an AI action reads now: "document" (the shown page, D61), "voice" (D75 V2: the typed words chosen with
+        SELECT, else the page's typed text when nothing is selected), "selection" or "canvas"."""
         if self.view == "doc" and self.reference is not None:
             return "document"
-        return "selection" if any(i in self.canvas.strokes for i in self.selection) else "canvas"
+        if self.voice_selected:
+            return "voice"
+        if any(i in self.canvas.strokes for i in self.selection):
+            return "selection"
+        text = self.board.page.voice
+        return "voice" if text is not None and text.has_content else "canvas"
 
     def ai_title(self) -> str:
         """The panel's title: what the AI reads, or read for the request shown (the page may have changed since)."""
@@ -1205,6 +1248,8 @@ class DrawingController:
         if source == "document":
             shown = "the image" if self.reference.kind == "image" else self.reference.label()
             return f"AI on part of {shown}" if self.region is not None else f"AI on {shown}"   # D74: a selected part
+        if source == "voice":                          # D75 V2
+            return "AI on the selected words" if self.voice_selected else "AI on the typed text"
         return "AI on the selection" if source == "selection" else "AI on the whole canvas"
 
     @property
@@ -1272,6 +1317,12 @@ class DrawingController:
             context["page"] = self.view_label()
             if region is not None:
                 context["region"] = [round(v, 4) for v in region]
+        elif source == "voice":                        # D75 V2: the typed text itself, set clean for the model
+            tokens = self.page_voice().tokens
+            if self.voice_selected:
+                tokens = [tokens[i] for i in self.voice_selected if i < len(tokens)]
+            png = png_bytes(voice_text_image(tokens))
+            context["words"] = sum(1 for t in tokens if t.strip())
         else:
             image = selection_image(self.canvas, [i for i in self.selection if i in self.canvas.strokes])
             if image is None:

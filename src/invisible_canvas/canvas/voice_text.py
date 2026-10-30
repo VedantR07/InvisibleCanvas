@@ -35,6 +35,7 @@ class VoiceText:
         self._undo: list[tuple] = []
         self._redo: list[tuple] = []
         self.version = 0
+        self._last: tuple | None = None        # (first token, end, version): the last phrase written, while unchanged
 
     @property
     def has_content(self) -> bool:
@@ -62,7 +63,44 @@ class VoiceText:
     def write(self, text: str) -> bool:
         """A transcribed phrase, after what is there (its words split at white space)."""
         words = text.split()
-        return bool(words) and self._set(self.tokens + words)
+        start = len(self.tokens)
+        if not (words and self._set(self.tokens + words)):
+            return False
+        self._last = (start, len(self.tokens), self.version)
+        return True
+
+    def _phrase(self) -> tuple[int, int] | None:
+        """Where the last phrase written lies, if nothing changed since; else the last sentence (back to the previous
+        sentence's end or paragraph)."""
+        if self._last is not None and self._last[2] == self.version:
+            return self._last[0], self._last[1]
+        i = self._last_word()
+        if i is None:
+            return None
+        j = i - 1
+        while j >= 0 and not (self.tokens[j] == NEW_PARAGRAPH
+                              or (self.tokens[j] not in BREAKS and self.tokens[j].endswith(SENTENCE_END))):
+            j -= 1
+        k = j + 1
+        while k < i and self.tokens[k] in BREAKS:
+            k += 1
+        return k, i + 1
+
+    def replace_last(self, text: str) -> bool:
+        """"I mean ...": the last phrase written (or the last sentence) replaced by `text`, as one step."""
+        words, span = text.split(), self._phrase()
+        if not words or span is None:
+            return False
+        a, b = span
+        if not self._set(self.tokens[:a] + words + self.tokens[b:]):
+            return False
+        self._last = (a, a + len(words), self.version)
+        return True
+
+    def scratch(self) -> bool:
+        """"Scratch that": the last phrase written (or the last sentence) and the breaks after it."""
+        span = self._phrase()
+        return span is not None and self._set(self.tokens[:span[0]])
 
     def punctuate(self, mark: str) -> bool:
         """`mark` (one of PUNCTUATION) at the end of the last word, replacing the punctuation it ended with."""
@@ -226,6 +264,26 @@ class VoiceLayout:
             for dx, piece, index in line.words:
                 out.append((index, (x0 + dx, top, x0 + dx + int(round(self._w(piece))), top + self.line_height)))
         return out
+
+
+def text_image(tokens, width: int = 1200, font: str = "segoeui.ttf", size: int = 34,
+               max_side: int = 1600) -> np.ndarray:
+    """D75 V2: typed text for the AI: all its lines (not only those the area shows), black on white, `width` px wide;
+    a very long text is reduced so its longer side is at most `max_side`."""
+    layout = VoiceLayout((0, 0, width, 10 ** 6), font, size)
+    lines = layout.lines(list(tokens))
+    while lines and not lines[-1].words:
+        lines.pop()
+    h = 2 * layout.pad + max(len(lines), 1) * layout.line_height
+    img = np.full((h, width, 3), 255, np.uint8)
+    typeset.draw(img, [("text", (layout.pad, layout.pad + row * layout.line_height + layout.line_height // 2),
+                        " ".join(p for _, p, _ in line.words), layout.font, (0, 0, 0), "lm")
+                       for row, line in enumerate(lines) if line.words])
+    if h > max_side:
+        import cv2
+        scale = max_side / h
+        img = cv2.resize(img, (max(int(width * scale), 1), max_side), interpolation=cv2.INTER_AREA)
+    return img
 
 
 def render(img: np.ndarray, text: VoiceText | None, layout: VoiceLayout, *, active: bool, scroll: int = 0,

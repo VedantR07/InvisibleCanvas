@@ -93,6 +93,9 @@ SYSTEM_DOCUMENT = (
 # D74: added only when the teacher selected a part of the page (whole-page requests are unchanged)
 SYSTEM_REGION = (" The image is only the part of the page that the teacher selected: in the task, 'this page' means "
                  "that part.")
+# D75 V2: added for the typed text written on the board by voice (or the words of it the teacher selected)
+SYSTEM_TYPED = (" The image is text the teacher dictated onto the whiteboard (or the words of it the teacher "
+                "selected): in the task, 'this page' means that text.")
 
 SCHEMA = {
     "type": "object",
@@ -132,9 +135,16 @@ def is_document(context: dict | None) -> bool:
     return (context or {}).get("source") == "document"
 
 
+def is_printed(context: dict | None) -> bool:
+    """A page's printed content: a document (D61), or the typed text written by voice (D75 V2)."""
+    return (context or {}).get("source") in ("document", "voice")
+
+
 def system_for(context: dict | None) -> str:
     if is_document(context) and (context or {}).get("region"):       # D74: a part of the page the teacher selected
         return SYSTEM_DOCUMENT + SYSTEM_REGION
+    if (context or {}).get("source") == "voice":                       # D75 V2: the typed text
+        return SYSTEM_DOCUMENT + SYSTEM_TYPED
     return SYSTEM_DOCUMENT if is_document(context) else SYSTEM
 
 
@@ -142,7 +152,7 @@ def task_for(action: str, context: dict | None = None) -> str:
     """The task of one request (D61): the action on writing or on a document page; ASK with its typed question."""
     if action not in ACTIONS:
         raise ValueError(f"unknown action {action!r}")
-    task = (DOCUMENT_ACTIONS if is_document(context) else ACTIONS)[action]
+    task = (DOCUMENT_ACTIONS if is_printed(context) else ACTIONS)[action]
     if action != "ask":
         return task
     question = " ".join(str((context or {}).get("question", "")).split())

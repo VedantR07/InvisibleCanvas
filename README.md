@@ -95,6 +95,11 @@ python -m pytest                          # unit tests
   listening", "comma", "full stop", "question mark". PAUSE / RESUME, DONE (keeps the text), CANCEL (puts back what
   the pages had when voice writing began). While the panel is open UNDO / REDO / CLEAR act on the typed text. Each
   page keeps its own text, saved with the board. Whiteboard pages only; `draw --no-voice` hides the button.
+  Corrections: "I mean ..." (or "sorry, I mean", "no, I meant", "correction ...") replaces the last phrase written
+  with what follows; "scratch that" deletes it. SELECT around typed words chooses them (highlighted): DELETE (it
+  appears on the voice panel) or "delete selection" removes only them; the AI panel then reads the chosen words
+  ("AI on the selected words"), or the page's whole typed text when nothing is chosen ("AI on the typed text").
+  SCROLL UP / DOWN and DELETE show only when they can act. `[voice] vocabulary` lists names to expect.
 - **The AI on part of a document (D74).** With a document shown, SELECT draws a loop around a part of the page (a
   paragraph, a diagram, a table): it is framed in magenta, also while zoomed, and the AI panel ("AI on part of PDF
   page 2 of 12") then works on that part only, rendered sharply from the page itself (your ink on it is not sent).

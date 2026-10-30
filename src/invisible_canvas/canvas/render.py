@@ -430,10 +430,12 @@ class CanvasRenderer:
         width = right - left
         state = panel["state"]
         rows: list[tuple[str, float, tuple, int]] = []
-        document = panel.get("source", controller.ai_source()) == "document"
+        source = panel.get("source", controller.ai_source())
+        document = source == "document"
         if state == "menu":
             text = ("Choose what the AI should do with the selected part." if getattr(controller, "region", None)
                     else "Choose what the AI should do with this page." if document
+                    else "Choose what the AI should do with the typed text." if source == "voice"     # D75 V2
                     else "Choose what the AI should do with it.")                       # D74: a selected part
             rows = [(line, 0.6, PANEL_MUTED, 1) for line in wrap(text, width, 0.6)]
         elif state == "asking":                                         # D61: the question as it is typed

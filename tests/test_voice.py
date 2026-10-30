@@ -518,3 +518,109 @@ def test_the_panel_and_the_text_are_drawn_and_the_text_stays_after_voice_writing
     ctl.canvas.add(ink)
     img = renderer.render(ctl.canvas, ctl, ctl.toolbar, mode=HOVER, cursor=None)
     assert (img[100, 150] < 60).all()                                          # the ink over the text
+
+
+# -- corrections, "scratch that" (user request 2026-10-31) ------------------------------------------------------------
+
+@pytest.mark.parametrize("said, fixed", [
+    ("I mean the capital of India is New Delhi.", "The capital of India is New Delhi."),
+    ("Sorry, I mean New Delhi.", "New Delhi."), ("No, I meant Friday.", "Friday."),
+    ("Correction: the water cycle.", "The water cycle."), ("I mean.", None), ("I mean", None),
+    ("I am meaning to say this.", None), ("The meaning of this is clear.", None)])
+def test_a_correction_starts_the_utterance_and_says_what_was_meant(said, fixed):
+    from invisible_canvas.voice.commands import correction
+    assert correction(said) == fixed
+
+
+def test_i_mean_replaces_the_last_phrase_and_scratch_that_deletes_it():
+    ctl = voice_controller()
+    ctl.press("voice")
+    say(ctl, "Good morning.", "The capital of India is Mumbai.")
+    say(ctl, "I mean the capital of India is New Delhi.")
+    assert " ".join(ctl.page_voice().words) == "Good morning. The capital of India is New Delhi."
+    assert ctl.voice_log[-1]["command"] == "correct" and ctl.log["voice:corrections"] == 1
+    say(ctl, "Undo.")
+    assert ctl.page_voice().words[-1] == "Mumbai."                          # the phrase replaced comes back
+    say(ctl, "Redo.", "New line.", "I mean Delhi is the capital.")           # after a command: the last sentence
+    assert ctl.page_voice().tokens == ["Good", "morning.", "Delhi", "is", "the", "capital.", NEW_LINE]   # line kept
+    say(ctl, "Homework is due on Friday.", "Scratch that.")
+    assert ctl.page_voice().words[-1] == "capital."
+    ctl.press("voice:commands")                                              # commands off: dictation
+    say(ctl, "I mean it.")
+    assert ctl.page_voice().words[-3:] == ["I", "mean", "it."]
+
+
+# -- SELECT + DELETE of typed words (V2) -------------------------------------------------------------------------------
+
+def test_select_chooses_typed_words_and_delete_removes_only_them():
+    ctl = voice_controller()
+    ctl.press("voice")
+    say(ctl, "Plants make food. Water cycles. Clouds form rain.")
+    stroke(ctl, [(200.0, 300.0), (260.0, 300.0)])                           # ink under the typed line
+    boxes = dict(ctl.voice_layout.word_boxes(ctl.page_voice().tokens))
+    words = ctl.page_voice().tokens
+    pick = [i for i, w in enumerate(words) if w in ("Water", "cycles.")]
+    x0 = min(boxes[i][0] for i in pick) - 10
+    x1 = max(boxes[i][2] for i in pick) + 10
+    y0, y1 = boxes[pick[0]][1] - 6, boxes[pick[0]][3] + 6
+    ctl.press("select")
+    stroke(ctl, [(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0 + 1)])
+    assert ctl.voice_selected == pick and ctl.selection == []                # the words, not the ink
+    assert "voice:delete" in [b.name for b in ctl.voice_buttons]
+    ctl.press("voice:delete")
+    assert ctl.page_voice().words == ["Plants", "make", "food.", "Clouds", "form", "rain."]
+    assert ctl.voice_selected == [] and len(ctl.canvas.strokes) == 1         # the ink kept
+    ctl.press("undo")
+    assert "Water" in ctl.page_voice().words                                 # one undo step
+    ctl.press("select")
+    stroke(ctl, [(x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0 + 1)])
+    say(ctl, "Delete selection.")                                            # by voice
+    assert "Water" not in ctl.page_voice().words
+    ctl.press("select")
+    stroke(ctl, [(x0 - 200, y0), (x1, y0), (x1, y1), (x0 - 200, y1), (x0 - 200, y0 + 1)])
+    assert ctl.voice_selected
+    say(ctl, "More text.")                                                   # the text changes: the choice is dropped
+    assert ctl.voice_selected == []
+
+
+# -- the AI on typed text (V2) ----------------------------------------------------------------------------------------
+
+def test_the_ai_reads_the_typed_text_or_the_selected_words_with_the_printed_page_prompts():
+    import cv2
+    from invisible_canvas.ai.client import SYSTEM, SYSTEM_DOCUMENT, SYSTEM_TYPED, system_for, task_for
+    ctl = voice_controller()
+    assert ctl.ai_source() == "canvas"                                        # no typed text: as before
+    ctl.press("voice")
+    say(ctl, "Photosynthesis is the process by which plants make their own food.")
+    ctl.press("ai")                                                          # the AI panel closes voice writing
+    assert not ctl.voice_open and ctl.ai_source() == "voice" and ctl.ai_title() == "AI on the typed text"
+    ctl.press("ai:summarize")
+    _, png, context = ctl.take_ai_jobs()[-1]
+    image = cv2.imdecode(np.frombuffer(png, np.uint8), cv2.IMREAD_GRAYSCALE)
+    assert context == {"source": "voice", "words": 11} and (image < 100).sum() > 500   # dark text on white
+    assert system_for(context) == SYSTEM_DOCUMENT + SYSTEM_TYPED and "this page" in task_for("summarize", context)
+    assert system_for({"source": "selection"}) == SYSTEM                     # handwriting unchanged
+    ctl.panel = None
+    boxes = dict(ctl.voice_layout.word_boxes(ctl.page_voice().tokens))
+    x0, y0, x1, y1 = boxes[0]
+    ctl.press("select")
+    stroke(ctl, [(x0 - 8, y0 - 4), (x1 + 8, y0 - 4), (x1 + 8, y1 + 4), (x0 - 8, y1 + 4), (x0 - 8, y0 - 3)])
+    assert ctl.ai_title() == "AI on the selected words"
+    ctl.press("ai")
+    ctl.press("ai:explain")
+    assert ctl.take_ai_jobs()[-1][2]["words"] == 1
+    ctl.panel = None
+    stroke(ctl, [(100.0, 600.0), (160.0, 600.0)])                            # SELECT: a loop around ink only
+    ctl.press("pen")
+    stroke(ctl, [(300.0, 560.0), (360.0, 560.0)])
+    ctl.press("select")
+    stroke(ctl, [(280.0, 540.0), (380.0, 540.0), (380.0, 580.0), (280.0, 580.0), (280.0, 541.0)])
+    assert ctl.ai_source() == "selection" and ctl.voice_selected == []       # the handwriting, as before
+
+
+def test_a_long_typed_text_for_the_ai_is_kept_within_its_size():
+    from invisible_canvas.canvas.voice_text import text_image
+    small = text_image("A short sentence.".split())
+    assert small.shape[1] == 1200 and small.shape[0] < 200
+    big = text_image((LONG + " ").split() * 12)
+    assert max(big.shape[:2]) == 1600
