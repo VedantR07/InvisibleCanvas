@@ -327,8 +327,9 @@ class CanvasRenderer:
             self._voice = (state, *self._voice_patch(layout, controller, status, buttons, rect))
         _, patch, shape = self._voice
         x0, y0, x1, _ = rect
-        region = img[y0:y0 + patch.shape[0], x0:x1]
-        region[shape] = patch[shape]
+        # copyto with a mask: the boolean-index copy took ~3 ms a frame for this panel (wall tests 1-2: render 2.3 ->
+        # 4.5-5.6 ms with voice writing on)
+        np.copyto(img[y0:y0 + patch.shape[0], x0:x1], patch, where=shape[:, :, None])
         sx0, sy0, sx1, sy1 = layout.status
         if status["state"] in ("listening", "hearing", "writing") and not controller.voice_paused:
             y = sy0 + 62
