@@ -34,6 +34,11 @@ tighter / looser (D70), ESC quit. Before tracking, the setup check runs (a moved
 and validated first, D39). On exit the current page is saved to data/canvas/ (strokes JSON + PNG), every page to a
 board file (D59: board-*.json + a PNG per page), and a report to data/reports/draw-*.json. `--load FILE` continues a
 board (or a single canvas) file, `--resume` the newest board.
+
+D73 (frame rate): after each frame only the work the projection needs waits for the next camera frame. The laptop's
+operator window is refreshed at most `OPERATOR_HZ` times a second (it was every second frame: a 1080p frame scaled
+into it, ~8 ms each time), and the keys are read without waiting (`cv2.pollKey`; the `cv2.waitKey(1)` it replaces
+blocked for a timer tick, often several ms on Windows). Tracking, the engine and the projection are unchanged.
 """
 
 from __future__ import annotations
@@ -76,6 +81,7 @@ from .tracking_session import (
 TITLE = "SETUP CHECK before drawing"
 RECHECK_TITLE = "SETUP CHECK: the projection moved"
 HELP = "index finger = use the tool | open hand or fist = cursor only | hold the cursor on a button 1 s to press it"
+OPERATOR_HZ = 10.0     # D73: refreshes of the laptop's operator window per second (the projection: every frame)
 # D58: the projector or camera moved during the session
 MOVED_TEXT = ("The projector or camera moved: recalibrating.", "Keep hands and objects out of the projection.")
 MOVED_WARNING = ("The projector or camera moved: the cursor may be off.", "Restart to recalibrate.")
@@ -377,6 +383,7 @@ def run(config: Config, args) -> int:
             return ([str(p) for p in save_canvas(config, controller.canvas, renderer)]
                     + [str(save_board(config, controller))])
 
+        last_operator = float("-inf")                  # D73: when the operator window was last refreshed
         while True:
             frame = s.camera.wait_frame(seq, 2.0)
             if frame is None:
@@ -473,7 +480,8 @@ def run(config: Config, args) -> int:
                 save_dir.mkdir(parents=True, exist_ok=True)
                 cv2.imwrite(str(save_dir / f"t{frame.timestamp - start:06.1f}_{step.mode}.jpg"), frame.image,
                             [cv2.IMWRITE_JPEG_QUALITY, 90])
-            if len(records) % 2 == 0:
+            if time.perf_counter() - last_operator >= 1.0 / OPERATOR_HZ:   # D73: the laptop's view, not every frame
+                last_operator = time.perf_counter()
                 view = frame.image.copy()
                 if obs is not None:
                     draw_skeleton(view, obs.landmarks)
@@ -524,7 +532,7 @@ def run(config: Config, args) -> int:
                         watch_from = float("inf")              # something keeps triggering it: stop watching
                     seq, last_t0 = current_seq(s), None
                 setup_events.append(event)
-            keys.append(cv2.waitKey(1))
+            keys.append(cv2.pollKey())                     # D73: without waiting (waitKey(1) blocked a timer tick)
             now = time.perf_counter()
             diag.stages["post"].add((now - t2) * 1000)
             if args.seconds and now - start >= args.seconds:
