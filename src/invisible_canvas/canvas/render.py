@@ -167,6 +167,11 @@ class CanvasRenderer:
             self._zoom_bar(img, controller, bar, view)
         if getattr(controller, "voice_open", False):                    # D75
             self._voice_panel(img, controller)
+        progress = getattr(controller, "dwell_progress", None)
+        if progress is not None and progress[0] in ("voice:up", "voice:down") and controller.voice_enabled(progress[0]):
+            ax0, ay0, ax1, ay1 = next(b.rect for b in controller.voice_arrows if b.name == progress[0])   # the column
+            cv2.rectangle(img, (ax0 + 4, ay1 - 7), (ax0 + 4 + int((ax1 - ax0 - 8) * progress[1]), ay1 - 3),
+                          HIGHLIGHT, -1)
         if getattr(controller, "panel", None) is not None and controller.panel_layout is not None:
             self._panel(img, controller)
         board = getattr(controller, "board", None)
@@ -340,7 +345,7 @@ class CanvasRenderer:
             gx = sx0 + int((sx1 - sx0) * min(max((gate + 60.0) / 40.0, 0.0), 1.0))
             cv2.line(img, (gx, y - 3), (gx, y + 9), INK, 2)
         progress = controller.dwell_progress
-        if progress is not None and progress[0].startswith("voice:") and controller.voice_enabled(progress[0]):
+        if progress is not None and progress[0] in {b.name for b in buttons} and controller.voice_enabled(progress[0]):
             bx0, by0, bx1, by1 = layout.button(progress[0]).rect
             cv2.rectangle(img, (bx0 + 4, by1 - 7), (bx0 + 4 + int((bx1 - bx0 - 8) * progress[1]), by1 - 3),
                           HIGHLIGHT, -1)

@@ -103,8 +103,8 @@ class BoardPanel:
         return next((b for b in self.buttons if b.contains(point)), None)
 
 
-VOICE_ROWS = (("voice:pause", "voice:done"), ("voice:cancel", "voice:commands"), ("voice:mic", "voice:delete"),
-              ("voice:up", "voice:down"))
+# (scrolling: the scroll column at the writing area's right edge, `VoiceLayout.up` / `down`)
+VOICE_ROWS = (("voice:pause", "voice:done"), ("voice:cancel", "voice:commands"), ("voice:mic", "voice:delete"))
 
 
 class VoicePanel:

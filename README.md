@@ -88,7 +88,8 @@ python -m pytest                          # unit tests
   (`[voice] device`, a part of its name: the jack mic set to *Headset* in the Realtek Audio Console is "Microphone
   (Realtek(R) Audio)"; MIC on the panel switches microphones; `draw --mic NAME`). Speak, then pause: about a second
   later the sentence is written as typed text in the framed area left of the panel, wrapped at whole words; the
-  area scrolls (SCROLL UP / DOWN) when full. Speech to text is faster-whisper on this laptop (free, offline,
+  area scrolls with the scroll column at its right edge (hold ▲ / ▼; the blue bar shows where you are).
+  Speech to text is faster-whisper on this laptop (free, offline,
   `pip install -e .[voice]`, model in `models/whisper/base.en`); quieter voices in the room are not written.
   Commands, said alone between pauses (COMMANDS ON / OFF on the panel): "new line", "new paragraph", "delete last
   word", "delete last sentence", "undo", "redo", "clear current line" (say it twice), "stop listening" / "resume
@@ -99,7 +100,8 @@ python -m pytest                          # unit tests
   with what follows; "scratch that" deletes it. SELECT around typed words chooses them (highlighted): DELETE (it
   appears on the voice panel) or "delete selection" removes only them; the AI panel then reads the chosen words
   ("AI on the selected words"), or the page's whole typed text when nothing is chosen ("AI on the typed text").
-  SCROLL UP / DOWN and DELETE show only when they can act. `[voice] vocabulary` lists names to expect.
+  DELETE shows only when words are chosen; the scroll column stays after voice writing while the text is
+  longer than the area. `[voice] vocabulary` lists names to expect.
 - **The AI on part of a document (D74).** With a document shown, SELECT draws a loop around a part of the page (a
   paragraph, a diagram, a table): it is framed in magenta, also while zoomed, and the AI panel ("AI on part of PDF
   page 2 of 12") then works on that part only, rendered sharply from the page itself (your ink on it is not sent).

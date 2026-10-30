@@ -459,23 +459,47 @@ def test_the_panel_is_pressed_by_holding_and_never_drawn_on():
     assert x0 > AREA[2] and y1 < Toolbar(SIZE).top                            # beside the writing area
 
 
-def test_scroll_and_delete_are_shown_only_when_they_can_act():
+def test_delete_is_shown_only_when_words_are_chosen():
     # wall test 1: "delete, scroll up and down were of no use" (greyed, the area not yet full)
     ctl = voice_controller()
     ctl.press("voice")
     names = lambda: [b.name for b in ctl.voice_buttons]                          # noqa: E731
     assert names() == ["voice:pause", "voice:done", "voice:cancel", "voice:commands", "voice:mic"]
-    short = ctl.voice_rect
-    assert short[3] < ctl.voice_panel.rect[3]                                      # the panel ends after MIC
-    up = ctl.voice_panel.button("voice:up")
-    assert not ctl._on_panel(up.centre)                                            # not there: the page is
-    for _ in range(4):
-        say(ctl, LONG)                                                             # more than the area holds
-    assert "voice:up" in names() and "voice:down" not in names() and ctl.voice_rect[3] > short[3]
-    ctl.press("voice:up")
-    assert ctl.voice_scroll == 3 and "voice:down" in names()
+    assert ctl.voice_rect == ctl.voice_panel.rect                                  # three rows (DELETE beside MIC)
     ctl.voice_selected = [0]                                                       # V2: words chosen with SELECT
-    assert "voice:delete" in names()
+    assert names()[-1] == "voice:delete"
+
+
+def test_the_scroll_column_beside_the_typed_text():
+    # wall test 3: "a scroll button for the mike writing" (the text had not filled the area: SCROLL never showed)
+    ctl = voice_controller()
+    layout = ctl.voice_layout
+    assert not ctl.voice_column_shown                                              # no voice writing, no text
+    ctl.press("voice")
+    assert ctl.voice_column_shown and not ctl.voice_enabled("voice:up") and not ctl.voice_enabled("voice:down")
+    say(ctl, LONG)
+    assert all(b[2] < layout.up[0] for _, b in layout.word_boxes(ctl.page_voice().tokens))   # the words left of it
+    for _ in range(3):
+        say(ctl, LONG)                                                             # more than the area holds
+    assert ctl.voice_enabled("voice:up") and not ctl.voice_enabled("voice:down")
+    up = ((layout.up[0] + layout.up[2]) / 2, (layout.up[1] + layout.up[3]) / 2)
+    ctl.update_pointer(0.0, up)
+    ctl.update_pointer(1.05, up)                                                   # held: pressed
+    assert ctl.voice_scroll == 3 and ctl.voice_enabled("voice:down")
+    stroke(ctl, [up, (300.0, 300.0)])
+    assert ctl.canvas.strokes == {} and ctl.log["strokes_refused_on_panel"] == 1   # never drawn on
+    img = CanvasRenderer(SIZE).render(ctl.canvas, ctl, ctl.toolbar, mode=HOVER, cursor=None)
+    tx0, ty0, tx1, ty1 = layout.track
+    thumb = (img[ty0:ty1, (tx0 + tx1) // 2] == (160, 60, 10)).all(axis=1)
+    assert 0 < thumb.sum() < ty1 - ty0 and not thumb[-1]                           # the thumb: above the end
+    ctl.press("voice")                                                             # voice writing ends
+    assert ctl.voice_column_shown                                                  # longer than the area: still
+    ctl.press("voice:down")
+    assert ctl.voice_scroll == 0
+    ctl.press("voice")
+    ctl.press("clear")
+    ctl.press("voice")
+    assert not ctl.voice_column_shown                                              # nothing to scroll, voice off
 
 
 def test_the_vocabulary_is_given_to_the_recognizer_and_must_be_words():
@@ -507,10 +531,11 @@ def test_the_panel_and_the_text_are_drawn_and_the_text_stays_after_voice_writing
     assert tuple(int(v) for v in img[AREA[1], (AREA[0] + AREA[2]) // 2]) != (255, 255, 255)   # the frame
     vb = ctl.toolbar.button("voice").rect
     assert tuple(int(v) for v in img[(vb[1] + vb[3]) // 2, vb[0] + 1]) == TOOL_SELECTED      # VOICE outlined
-    text_area = img[AREA[1] + 20:AREA[3] - 20, AREA[0] + 20:AREA[2] - 20]
+    left = ctl.voice_layout.up[0] - 8                                              # the text, not the scroll column
+    text_area = img[AREA[1] + 20:AREA[3] - 20, AREA[0] + 20:left]
     ctl.press("voice")
     img = renderer.render(ctl.canvas, ctl, ctl.toolbar, mode=HOVER, cursor=None)
-    changed = (img[AREA[1] + 20:AREA[3] - 20, AREA[0] + 20:AREA[2] - 20] != text_area).any(axis=2)
+    changed = (img[AREA[1] + 20:AREA[3] - 20, AREA[0] + 20:left] != text_area).any(axis=2)
     assert (text_area < 120).any() and changed.sum() < 120          # the text still there; only the writing mark gone
     assert (img[y0 + 5:y1 - 5, x0 + 5:x1 - 5] == 255).all()                   # no panel
     assert tuple(int(v) for v in img[AREA[1], (AREA[0] + AREA[2]) // 2]) == (255, 255, 255)   # no frame

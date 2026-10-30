@@ -27,6 +27,8 @@ PUNCTUATION = ".,?!;:"
 
 INK = (60, 38, 22)                 # D71 navy, as the Smart Lines notes
 FRAME, CARET = (208, 200, 192), (160, 60, 10)   # the area's frame while voice writing is on; the writing position
+ARROW_EDGE, ARROW_OFF = (90, 60, 40), (170, 170, 170)        # the scroll column (the Lines page's look, D71)
+TRACK, THUMB = (200, 196, 192), (160, 60, 10)
 
 
 class VoiceText:
@@ -190,19 +192,27 @@ class Line:
 
 
 class VoiceLayout:
-    """Where the words go in the writing area `area` (x0, y0, x1, y1, projector px)."""
+    """Where the words go in the writing area `area` (x0, y0, x1, y1, projector px). Its right `column` px hold the
+    scroll column (user, after wall test 3: "a scroll button for the mike writing"): ▲ at the top, ▼ at the bottom,
+    a track with a thumb between them (`up`, `down`, `track`); the words stay left of it."""
 
-    def __init__(self, area, font: str = "segoeui.ttf", size: int = 30, pad: int = 18):
+    def __init__(self, area, font: str = "segoeui.ttf", size: int = 30, pad: int = 18, column: int = 58):
         self.area = tuple(int(v) for v in area)
         self.font = typeset.font(font, size)
-        self.size, self.pad = size, pad
+        self.size, self.pad, self.column = size, pad, column
         self.line_height = int(round(size * 1.45))
         self.space = typeset.width(" ", self.font)
         self._widths: dict[str, float] = {}
+        x0, y0, x1, y1 = self.area
+        cx0, cx1 = x1 - column, x1 - 8
+        self.up = (cx0, y0 + 8, cx1, y0 + 58)
+        self.down = (cx0, y1 - 58, cx1, y1 - 8)
+        self.track = ((cx0 + cx1) // 2 - 3, self.up[3] + 12, (cx0 + cx1) // 2 + 3, self.down[1] - 12)
+        self.column_rect = (cx0 - 6, y0, x1, y1)
 
     @property
     def width(self) -> int:
-        return self.area[2] - self.area[0] - 2 * self.pad
+        return self.area[2] - self.area[0] - 2 * self.pad - self.column
 
     @property
     def rows(self) -> int:
@@ -270,7 +280,7 @@ def text_image(tokens, width: int = 1200, font: str = "segoeui.ttf", size: int =
                max_side: int = 1600) -> np.ndarray:
     """D75 V2: typed text for the AI: all its lines (not only those the area shows), black on white, `width` px wide;
     a very long text is reduced so its longer side is at most `max_side`."""
-    layout = VoiceLayout((0, 0, width, 10 ** 6), font, size)
+    layout = VoiceLayout((0, 0, width, 10 ** 6), font, size, column=0)
     lines = layout.lines(list(tokens))
     while lines and not lines[-1].words:
         lines.pop()
@@ -287,9 +297,10 @@ def text_image(tokens, width: int = 1200, font: str = "segoeui.ttf", size: int =
 
 
 def render(img: np.ndarray, text: VoiceText | None, layout: VoiceLayout, *, active: bool, scroll: int = 0,
-           selected=()) -> None:
+           selected=(), column: bool = False) -> None:
     """Draw the page's typed text in its area on `img` (in place); while voice writing is on, the area's frame and
-    the writing position after the last word. `selected`: token indexes shown highlighted (D75 V2)."""
+    the writing position after the last word. `selected`: token indexes shown highlighted (D75 V2). `column`: the
+    scroll column (arrows greyed at an end; the thumb shows which lines are in view)."""
     x0, y0, x1, y1 = layout.area
     ops = []
     if active:
@@ -297,6 +308,20 @@ def render(img: np.ndarray, text: VoiceText | None, layout: VoiceLayout, *, acti
     tokens = text.tokens if text is not None else []
     lines = layout.lines(tokens)
     first, shown = layout.visible(lines, scroll)
+    if column:
+        can_up, can_down = scroll < layout.max_scroll(lines), scroll > 0
+        for rect, on in ((layout.up, can_up), (layout.down, can_down)):
+            ops.append(("rrect", rect, 10, (255, 255, 255), ARROW_EDGE if on else ARROW_OFF, 2))
+        tx0, ty0, tx1, ty1 = layout.track
+        ops.append(("rrect", (tx0, ty0, tx1, ty1), 3, TRACK, None))
+        n = max(len(lines), 1)
+        a = ty0 + (ty1 - ty0) * first / n
+        b = ty0 + (ty1 - ty0) * min(first + len(shown), n) / n
+        ops.append(("rrect", (tx0, int(a), tx1, max(int(b), int(a) + 8)), 3, THUMB, None))
+        for rect, on, point in ((layout.up, can_up, -1), (layout.down, can_down, 1)):
+            cx, cy = (rect[0] + rect[2]) // 2, (rect[1] + rect[3]) // 2
+            tri = [(cx - 11, cy - 6 * point), (cx + 11, cy - 6 * point), (cx, cy + 7 * point)]
+            ops.append(("poly", tri, CARET if on else ARROW_OFF))
     left, top = x0 + layout.pad, y0 + layout.pad
     chosen = set(selected)
     for row, line in enumerate(shown):

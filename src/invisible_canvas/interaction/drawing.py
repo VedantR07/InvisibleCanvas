@@ -110,11 +110,12 @@ from ..voice.commands import match as voice_command
 VOICE_LABELS = {"voice:done": "DONE", "voice:cancel": "CANCEL", "voice:mic": "MIC", "voice:delete": "DELETE",
                 "voice:up": "SCROLL UP", "voice:down": "SCROLL DOWN"}
 VOICE_CONFIRM_S = 6.0                                  # D75: "clear current line" said again within this
-# D75 wall test 1 ("delete, scroll up and down were of no use"): shown only when they can act
-VOICE_WHEN_USEFUL = ("voice:up", "voice:down", "voice:delete")
+# D75 wall test 1 ("delete, scroll up and down were of no use"): DELETE shown only when it can act; scrolling is the
+# scroll column beside the text (wall test 3: "a scroll button for the mike writing")
+VOICE_WHEN_USEFUL = ("voice:delete",)
 
 AI_OFF = "The AI is off (draw --no-ai): EDIT or KEEP INK."
-from ..canvas.toolbar import COLOURS, WIDTHS, Toolbar
+from ..canvas.toolbar import COLOURS, WIDTHS, Button, Toolbar
 
 ERASER_RADIUS = {"thin": 12.0, "medium": 24.0, "thick": 42.0}     # px, by the selected width
 
@@ -161,6 +162,8 @@ class DrawingController:
         # D75: voice writing
         self.voice_layout = voice_layout or VoiceLayout((40, 60, 952, 632))
         self.voice_panel = VoicePanel(canvas.size)
+        self.voice_arrows = [Button("voice:up", "panel", self.voice_layout.up),           # the scroll column
+                             Button("voice:down", "panel", self.voice_layout.down)]
         self.voice_open = self.voice_paused = False
         self.voice_commands = True
         self.voice_gate_dbfs = -42.0                   # shown on the panel's loudness bar (the tool sets it)
@@ -246,14 +249,15 @@ class DrawingController:
         text = self.board.page.voice
         if not self.voice_open and (text is None or not text.has_content):
             return base
+        column = self.voice_column_shown
         key = (id(text), None if text is None else text.version, self.voice_scroll, self.voice_open,
-               tuple(self.voice_selected))
+               tuple(self.voice_selected), column)
         cached = self._voice_bg
         if cached is None or cached[0] != key or cached[2] is not base:
             w, h = self.board.size
             img = base.copy() if base is not None else np.full((h, w, 3), 255, np.uint8)
             render_voice(img, text, self.voice_layout, active=self.voice_open, scroll=self.voice_scroll,
-                         selected=self.voice_selected)
+                         selected=self.voice_selected, column=column)
             self._voice_bg = cached = (key, img, base)
         return cached[1]
 
@@ -441,6 +445,8 @@ class DrawingController:
         Smart Lines buttons while LINES is in use)."""
         if self.toolbar.in_band(point):
             return "toolbar"
+        if self._on_voice_column(point):              # D75: the typed text's scroll column
+            return "panel"
         if self._on_panel(point) or (self.lines_active and (self.lines_controls.on_control(point) or (
                 self.lines_controls.in_bar(point) and self.review_line() is not None))):    # D64: the review bar
             return "panel"
@@ -629,7 +635,8 @@ class DrawingController:
                       or (next((b for b in self.voice_buttons if b.contains(cursor)), None)
                           if self.voice_open else None))                                   # D75: the shown buttons
         elif cursor is not None:
-            button = (self._lines_hit(cursor) if self.lines_active else None) or self.toolbar.hit(cursor)
+            button = ((self._lines_hit(cursor) if self.lines_active else None) or self._voice_arrow_at(cursor)
+                      or self.toolbar.hit(cursor))
         d = self.dwell
         if button is None:
             self.dwell = None
@@ -814,6 +821,25 @@ class DrawingController:
         if getattr(self, "_voice_lines_cache", (None,))[0] != key:
             self._voice_lines_cache = (key, self.voice_layout.lines(text.tokens))
         return self._voice_lines_cache[1]
+
+    @property
+    def voice_column_shown(self) -> bool:
+        """The scroll column beside the typed text: while voice writing is on, and after it while the text is longer
+        than the area (to read back); never on a document."""
+        if self.doc_shown:
+            return False
+        return self.voice_open or self.voice_layout.max_scroll(self._voice_lines()) > 0
+
+    def _voice_arrow_at(self, point):
+        if point is None or not self.voice_column_shown:
+            return None
+        return next((b for b in self.voice_arrows if b.contains(point)), None)
+
+    def _on_voice_column(self, point) -> bool:
+        if point is None or not self.voice_column_shown:
+            return False
+        x0, y0, x1, y1 = self.voice_layout.column_rect
+        return x0 <= point[0] < x1 and y0 <= point[1] < y1
 
     @property
     def voice_buttons(self) -> list:
