@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import threading
 import time
 from collections import Counter
 from pathlib import Path
@@ -65,6 +66,7 @@ from ..canvas.model import Canvas
 from ..canvas.reference import Reference, ReferenceError, annotations_dict, annotations_from
 from ..canvas.render import CanvasRenderer
 from ..canvas.toolbar import Toolbar
+from ..canvas.voice_text import VoiceLayout
 from ..config import Config
 from ..display import patterns
 from ..display.file_dialog import choose_file
@@ -72,6 +74,7 @@ from ..display.handlight import HandLight, LightParams
 from ..interaction.drawing import DrawingController
 from ..interaction.engine import IDLE, InteractionEngine
 from ..vision.hands import HandTracker, HandTrackingError
+from ..voice.listener import VoiceListener, WhisperTranscriber
 from .common import add_device_args, current_seq, now_iso, open_session, save_report, stamp
 from .draw_diagnostics import DrawDiagnostics
 from .tracking_session import (
@@ -105,6 +108,8 @@ def add_parser(subparsers) -> None:
     p.add_argument("--no-light", action="store_true", help="switch the light on the hand off for this session (D69)")
     p.add_argument("--ai", action="store_true", help="switch the AI on for this session (the AI reads the selection, D51/D52)")
     p.add_argument("--no-ai", action="store_true", help="switch the AI off for this session (on by default, D57)")
+    p.add_argument("--no-voice", action="store_true", help="no VOICE button this session (voice writing, D75)")
+    p.add_argument("--mic", help='the microphone for voice writing: a part of its name (default: [voice] device)')
     p.set_defaults(func=run)
 
 
@@ -300,6 +305,21 @@ def save_canvas(config: Config, canvas: Canvas, renderer: CanvasRenderer) -> tup
     return base.with_suffix(".json"), base.with_suffix(".png")
 
 
+def voice_requests(voice: VoiceListener, requests: list[str], mic: str) -> str:
+    """D75: what the voice panel asked for: open or close the microphone, or the next microphone (MIC); asked of the
+    listener's control thread, never waited for here. Returns the microphone now chosen (a part of its name)."""
+    for request in requests:
+        if request in ("start", "stop"):
+            voice.request(request, mic)
+        elif request == "mic":
+            names = [name for _, name in voice.devices()]
+            if names:
+                k = next((i for i, n in enumerate(names) if mic and mic.lower() in n.lower()), -1)
+                mic = names[(k + 1) % len(names)]
+                voice.request("start", mic)
+    return mic
+
+
 def run(config: Config, args) -> int:
     calibration = load_calibration(config.calibration_dir)
     ai_on = bool(getattr(args, "ai", False) or config.ai.enabled) and not getattr(args, "no_ai", False)
@@ -315,6 +335,14 @@ def run(config: Config, args) -> int:
         # D67 (R43): the reader warms up once, in its own thread, before the first line
         line_worker = RecognitionWorker(LineRecognizer(config.ai), save_dir=config.root / "data" / "ai" / "lines",
                                         warm_up=True)
+    voice = None                                       # D75: voice writing (the microphone opens on VOICE)
+    if config.voice.enabled and not getattr(args, "no_voice", False):
+        v = config.voice
+        transcriber = WhisperTranscriber(v.model, v.threads, root=config.root)
+        voice = VoiceListener(transcriber, gate_dbfs=v.gate_dbfs, pause_ms=v.pause_ms,
+                              max_utterance_s=v.max_utterance_s)
+        threading.Thread(target=transcriber.preload, name="voice-preload", daemon=True).start()   # off the loop
+    mic = (getattr(args, "mic", None) or config.voice.device) if voice is not None else ""
     try:
         tracker = HandTracker(**TRACKER_OPTIONS)
     except HandTrackingError as e:
@@ -331,15 +359,20 @@ def run(config: Config, args) -> int:
         mapper, calibration, setup_info = checked
         size = s.canvas_size
         board, board_data = load_board(config, args, size)
-        toolbar, renderer = Toolbar(size, ai=ai_on), CanvasRenderer(size)
+        # D75: VOICE on the toolbar only with voice writing (without it, the toolbar is built exactly as before)
+        toolbar = Toolbar(size, ai=ai_on, **({"voice": True} if voice is not None else {}))
+        renderer = CanvasRenderer(size)
         sl = config.smart_lines
         try:                                           # D62: checked against this canvas, its toolbar (D65: panels)
             lines_layout = LinesLayout(size, toolbar.top, sl.zone, sl.notes, sl.line_height, sl.line_spacing,
                                        sl.numbering, sl.font, sl.text_size)
-            controller = DrawingController(board.page.canvas, toolbar, board=board, lines_layout=lines_layout)
+            voice_layout = VoiceLayout(config.voice.area, config.voice.font, config.voice.text_size)    # D75
+            controller = DrawingController(board.page.canvas, toolbar, board=board, lines_layout=lines_layout,
+                                           voice_layout=voice_layout)
         except ValueError as e:
             print(f"[smart_lines] in the config: {e}")
             return 2
+        controller.voice_commands, controller.voice_gate_dbfs = config.voice.commands, config.voice.gate_dbfs
         if not typeset.available(sl.font):
             print(f"[smart_lines] font {sl.font} not found in {typeset.FONT_DIR}: the notes use Pillow's own font")
         controller.recognition = line_worker is not None
@@ -419,6 +452,13 @@ def run(config: Config, args) -> int:
                     controller.line_result(request, reading)
             else:
                 controller.take_line_jobs()                # the AI is off: new lines are marked not recognised
+            if voice is not None:                          # D75: the microphone's requests, texts and state
+                mic = voice_requests(voice, controller.take_voice_requests(), mic)
+                for event in voice.poll():
+                    if event[0] == "text":
+                        controller.voice_result(event[1], event[2], event[3])
+                st = voice.status
+                controller.voice_status_update(st.state, st.detail, st.device, st.level)
             ta = time.perf_counter()
             lit = None if light is None else light.update(frame.timestamp, projector_landmarks(mapper, obs))
             img = renderer.render(controller.canvas, controller, toolbar, mode=step.mode, cursor=step.cursor, light=lit)
@@ -436,7 +476,9 @@ def run(config: Config, args) -> int:
                             "lines_warming": bool(line_worker is not None and line_worker.warming_up),
                             # D68: the light switched on, a light painted this frame, ink points added this frame
                             "light_on": light is not None, "lit": lit is not None,
-                            "ink_points": sum(1 for o in controller.outcomes if o[0] == "added")})
+                            "ink_points": sum(1 for o in controller.outcomes if o[0] == "added"),
+                            # D75: the listener's state while voice writing is on (None: off)
+                            "voice_state": controller.voice_status["state"] if controller.voice_open else None})
             td = time.perf_counter()
             stage_ms = {"queue": (t0 - frame.timestamp) * 1000, "inference": (t1 - t0) * 1000,
                         "hand": (th - t1) * 1000, "engine": (te - th) * 1000, "controller": (tc - te) * 1000,
@@ -463,6 +505,7 @@ def run(config: Config, args) -> int:
                          "view": controller.view,                        # D60: board or doc
                          "zoom": controller.reference.zoom if controller.doc_shown else None,   # D72
                          "tool": controller.tool,                        # D62: lines (Smart Lines) or another
+                         "voice_state": records[-1]["voice_state"],      # D75
                          "candidate": engine._candidate, "buffered": len(engine._buffer),
                          "queue_ms": round(stage_ms["queue"], 2), "inference_ms": round(stage_ms["inference"], 2),
                          "pipeline_ms": round((t2 - frame.timestamp) * 1000, 2),
@@ -549,6 +592,8 @@ def run(config: Config, args) -> int:
         worker.close(timeout=0.2)                      # a request still running is abandoned (daemon thread)
     if line_worker is not None:
         line_worker.close(timeout=0.2)                 # lines still unread are read again on --resume (D64)
+    if voice is not None:
+        voice.close()                                  # D75: the microphone closed, the worker ended
 
     json_path, png_path = save_canvas(config, controller.canvas, renderer)
     board_path = save_board(config, controller)
@@ -618,6 +663,21 @@ def run(config: Config, args) -> int:
         "diagnostics": diag.report(strokes_committed=controller.log["strokes"], attempts=controller.attempts),
         # D58: the projector or camera moving during the session: checks, and each move with what was done
         "setup_watch": {**watch.summary(), "events": setup_events},
+        "voice": None if voice is None else {                                                        # D75
+            "device": voice.status.device, "chosen": mic, "model": config.voice.model, "threads": config.voice.threads,
+            "gate_dbfs": config.voice.gate_dbfs, "pause_ms": config.voice.pause_ms,
+            "utterances": voice.stats["utterances"], "texts": voice.stats["texts"], "empty": voice.stats["empty"],
+            "errors": voice.stats["errors"], "audio_s": round(voice.stats["audio_s"], 1),
+            "transcribe_ms": _percentiles(voice.stats["transcribe_ms"]),
+            "latency_ms": _percentiles(voice.stats["latency_ms"]),       # the utterance's end -> its text
+            "log": controller.voice_log,
+            "words_on_pages": [len(p.voice.words) if p.voice is not None else 0 for p in controller.board.pages],
+            "open_frames": sum(r["voice_state"] is not None for r in records),
+            "writing_frames": sum(r["voice_state"] == "writing" for r in records),
+            "writing_processing_fps": segment_fps([r["t"] for r in records if r["voice_state"] == "writing"]),
+            "writing_pipeline_ms": _percentiles([r["pipeline_ms"] for r in records if r["voice_state"] == "writing"]),
+            "open_processing_fps": segment_fps([r["t"] for r in records if r["voice_state"] is not None]),
+        },
         "ai": None if worker is None else {
             "backend": config.ai.backend, "warmed_up": worker.warmed_up,
             "model": config.ai.local_model if config.ai.backend == "local" else config.ai.model,
@@ -681,6 +741,14 @@ def run(config: Config, args) -> int:
                       f"hand found {st['hand_found']:.0%}, {st['losses_per_1000_hand_frames']} losses per 1000 hand "
                       f"frames ({st['losses_while_drawing']} while drawing), pipeline median "
                       f"{st['pipeline_ms']['median']:.1f} ms, p95 {st['pipeline_ms']['p95']:.1f} ms")
+    vr = report["voice"]
+    if vr is not None and (vr["open_frames"] or vr["utterances"]):        # D75
+        print(f"voice writing: {vr['utterances']} utterances ({vr['texts']} with text, {vr['errors']} errors) from "
+              f"{vr['device'] or vr['chosen']}; text "
+              + (f"{vr['latency_ms']['median']:.0f} ms after the pause (median), transcription "
+                 f"{vr['transcribe_ms']['median']:.0f} ms" if vr["latency_ms"] else "none")
+              + f"; {vr['writing_frames']} frames while writing at {vr['writing_processing_fps']:.1f} fps "
+              f"(voice on: {vr['open_processing_fps']:.1f} fps)")
     print(f"canvas: {json_path} (+ .png)")
     print(f"report: {save_report(config, 'draw', report)}")
     if controller.reference is not None:               # D60: let go of the document file

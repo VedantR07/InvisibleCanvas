@@ -68,6 +68,12 @@ BLOCKED = (90, 90, 90)                # D56: the "not drawing" cursor
 BLOCKED_HINT = "Not drawing: open your hand, then point to draw"
 ZONE_HINT = "Not drawing here: move your fingertip into the writing area to write"  # D62, D66
 ASK_PROMPT = "Type your question on the laptop keyboard. Enter sends it, Esc cancels."   # D61
+# D75: the voice panel's states (label, colour BGR)
+VOICE_STATES = {"off": ("Starting...", (130, 130, 130)), "loading": ("Loading speech...", (130, 130, 130)),
+                "listening": ("Listening", (40, 150, 40)), "hearing": ("Hearing you...", (40, 40, 200)),
+                "writing": ("Writing...", (160, 60, 10)), "paused": ("Paused", (130, 130, 130)),
+                "unavailable": ("Microphone unavailable", (40, 40, 200)), "error": ("Error", (40, 40, 200))}
+VOICE_TRACK, VOICE_LEVEL = (225, 220, 216), (40, 150, 40)
 PAGE_LINES = 2                        # D61: lines of "what the AI read" shown for a document page
 
 
@@ -108,6 +114,7 @@ class CanvasRenderer:
         self._label: tuple | None = None               # D71: (label, pill image, its shape)
         self._view = None                              # D72: the cache's page view (None: wall coordinates)
         self._zoom: tuple | None = None                # D72: (state, the zoom bar typeset, its shape)
+        self._voice: tuple | None = None               # D75: (state, the voice panel typeset, its shape)
 
     def _strokes(self, canvas: Canvas, under: np.ndarray | None = None, view=None) -> np.ndarray:
         if (self._cache is None or canvas is not self._canvas or canvas.version != self._version
@@ -157,6 +164,8 @@ class CanvasRenderer:
         bar = getattr(controller, "zoom_bar", None)
         if bar is not None:                                             # D72: under the panels
             self._zoom_bar(img, controller, bar, view)
+        if getattr(controller, "voice_open", False):                    # D75
+            self._voice_panel(img, controller)
         if getattr(controller, "panel", None) is not None and controller.panel_layout is not None:
             self._panel(img, controller)
         board = getattr(controller, "board", None)
@@ -187,7 +196,7 @@ class CanvasRenderer:
     def _toolbar(self, img: np.ndarray, toolbar: Toolbar, controller) -> None:
         """The band typeset once per state (D71) and copied over the frame; then the hold-to-press progress."""
         key = (id(toolbar), controller.tool, controller.colour, controller.width,
-               getattr(controller, "board_open", False))
+               getattr(controller, "board_open", False), getattr(controller, "voice_open", False))   # D75
         if self._band is None or self._band[0] != key:
             self._band = (key, self._toolbar_band(toolbar, controller))
         band = self._band[1]
@@ -223,7 +232,8 @@ class CanvasRenderer:
             current = ((b.kind == "tool" and controller.tool == b.name)
                        or (b.kind == "colour" and controller.colour == b.name and controller.tool == "pen")
                        or (b.kind == "width" and controller.width == b.name)
-                       or (b.kind == "board" and getattr(controller, "board_open", False)))
+                       or (b.kind == "board" and getattr(controller, "board_open", False))
+                       or (b.kind == "voice" and getattr(controller, "voice_open", False)))     # D75
             ops.append(("rrect", (x0, y0, x1 - 1, y1 - 1), 10, (255, 255, 255), TOOL_SELECTED if current else TOOL_EDGE,
                         4 if current else 2))
             if b.kind not in ("colour", "width"):
@@ -303,6 +313,73 @@ class CanvasRenderer:
             cv2.rectangle(patch, (mx - 10, my - 2), (mx + 10, my + 1), colour, -1)
             if name == "zoom:in":
                 cv2.rectangle(patch, (mx - 2, my - 10), (mx + 1, my + 10), colour, -1)
+        return patch, shape[:, :, 0] > 127
+
+    def _voice_panel(self, img: np.ndarray, controller) -> None:
+        """D75: the voice panel (typeset once per state and copied over the frame in its rounded shape), then the
+        loudness bar (the gate marked) and the hold-to-press progress."""
+        layout, status = controller.voice_panel, controller.voice_status
+        state = (status["state"], status["detail"], status["device"], controller.voice_paused,
+                 tuple((controller.voice_label(b.name), controller.voice_enabled(b.name)) for b in layout.buttons))
+        if self._voice is None or self._voice[0] != state:
+            self._voice = (state, *self._voice_patch(layout, controller, status))
+        _, patch, shape = self._voice
+        x0, y0, x1, _ = layout.rect
+        region = img[y0:y0 + patch.shape[0], x0:x1]
+        region[shape] = patch[shape]
+        sx0, sy0, sx1, sy1 = layout.status
+        if status["state"] in ("listening", "hearing", "writing") and not controller.voice_paused:
+            y = sy0 + 64
+            frac = min(max((status["level"] + 60.0) / 40.0, 0.0), 1.0)          # -60 .. -20 dBFS
+            cv2.rectangle(img, (sx0, y), (sx1, y + 6), VOICE_TRACK, -1)
+            cv2.rectangle(img, (sx0, y), (sx0 + int((sx1 - sx0) * frac), y + 6), VOICE_LEVEL, -1)
+            gate = getattr(controller, "voice_gate_dbfs", -42.0)
+            gx = sx0 + int((sx1 - sx0) * min(max((gate + 60.0) / 40.0, 0.0), 1.0))
+            cv2.line(img, (gx, y - 3), (gx, y + 9), INK, 2)
+        progress = controller.dwell_progress
+        if progress is not None and progress[0].startswith("voice:") and controller.voice_enabled(progress[0]):
+            bx0, by0, bx1, by1 = layout.button(progress[0]).rect
+            cv2.rectangle(img, (bx0 + 4, by1 - 7), (bx0 + 4 + int((bx1 - bx0 - 8) * progress[1]), by1 - 3),
+                          HIGHLIGHT, -1)
+
+    @staticmethod
+    def _voice_patch(layout, controller, status) -> tuple[np.ndarray, np.ndarray]:
+        x0, y0, x1, y1 = layout.rect
+        w, h = x1 - x0, y1 - y0
+        patch, shape = np.full((h, w, 3), 255, np.uint8), np.zeros((h, w, 3), np.uint8)
+        sx0, sy0, sx1, _ = (v - o for v, o in zip(layout.status, (x0, y0, x0, y0)))
+        state = "paused" if controller.voice_paused and status["state"] in ("listening", "hearing", "writing") \
+            else status["state"]
+        label, colour = VOICE_STATES.get(state, (state, PANEL_MUTED))
+        title, text, small = typeset.font(LABEL_FONT, 20), typeset.font(LABEL_FONT, 17), typeset.font(LABEL_FONT, 13)
+        ops = [("rrect", (0, 0, w - 1, h - 1), 14, PANEL_FILL, PANEL_EDGE, 2),
+               ("text", (sx0, sy0 + 10), "VOICE", title, INK, "lm"),
+               ("rrect", (sx0, sy0 + 31, sx0 + 13, sy0 + 44), 7, colour, None),
+               ("text", (sx0 + 22, sy0 + 38), label, text, colour, "lm")]
+        if state in ("unavailable", "error") and status["detail"]:
+            words, line, lines = status["detail"].split(), "", []
+            for word in words:                                          # the reason, on two lines at most
+                if line and typeset.width(f"{line} {word}", small) > sx1 - sx0:
+                    lines.append(line)
+                    line = word
+                else:
+                    line = f"{line} {word}".strip()
+            lines.append(line)
+            for k, part in enumerate(lines[:2]):
+                ops.append(("text", (sx0, sy0 + 62 + 16 * k), typeset.fit(part, small, sx1 - sx0), small, PANEL_MUTED,
+                            "lm"))
+        elif status["device"]:
+            ops.append(("text", (sx0, sy0 + 84), typeset.fit("Mic: " + status["device"], small, sx1 - sx0), small,
+                        PANEL_MUTED, "lm"))
+        label_font = typeset.font(LABEL_FONT, 15)
+        for b in layout.buttons:
+            on = controller.voice_enabled(b.name)
+            bx0, by0, bx1, by1 = (b.rect[0] - x0, b.rect[1] - y0, b.rect[2] - x0, b.rect[3] - y0)
+            ops.append(("rrect", (bx0, by0, bx1 - 1, by1 - 1), 10, (255, 255, 255), EDGE if on else EDGE_OFF, 2))
+            ops.append(("text", ((bx0 + bx1) / 2, (by0 + by1) / 2), controller.voice_label(b.name), label_font,
+                        LABEL if on else LABEL_OFF, "mm"))
+        typeset.draw(patch, ops)
+        typeset.draw(shape, [("rrect", (0, 0, w - 1, h - 1), 14, (255, 255, 255), None)])
         return patch, shape[:, :, 0] > 127
 
     @staticmethod

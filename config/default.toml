@@ -104,3 +104,21 @@ numbering = "1."
 # D64: the notes' typeset text (Windows font folder; drawn with Pillow). The review bar uses Segoe UI Semibold.
 font = "segoeui.ttf"
 text_size = 30
+
+[voice]
+# D75 (brain.md section 9.19): voice writing. VOICE on the toolbar opens the voice panel; what is said is written as typed
+# text in the writing area of the whiteboard page. Speech to text: faster-whisper on this laptop (free, offline; step V0:
+# base.en, 99 % of the words on the user's voice, 0.57 s per utterance with 2 CPU threads). Utterances end at a pause;
+# frames quieter than gate_dbfs are not speech (the user at the mic -30 to -36 dBFS, other voices -45 to -63).
+enabled = true
+device = "Realtek"           # a part of the microphone's name ("" = Windows' default input): the jack mic (Headset)
+model = "models/whisper/base.en"
+threads = 2
+gate_dbfs = -42.0
+pause_ms = 700
+max_utterance_s = 15.0
+commands = true
+# Left of the voice panel (300 px wide at the top right), below the page label, above the toolbar (y < 648).
+area = [40, 60, 952, 632]
+font = "segoeui.ttf"
+text_size = 30

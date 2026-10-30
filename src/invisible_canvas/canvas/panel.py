@@ -103,6 +103,41 @@ class BoardPanel:
         return next((b for b in self.buttons if b.contains(point)), None)
 
 
+VOICE_ROWS = (("voice:pause", "voice:done"), ("voice:cancel", "voice:commands"), ("voice:mic", "voice:delete"),
+              ("voice:up", "voice:down"))
+
+
+class VoicePanel:
+    """D75: the voice panel at the top right (the writing area lies left of it): a status area (the state, the
+    loudness, the microphone) above two columns of buttons pressed by holding the cursor on them."""
+
+    def __init__(self, size: tuple[int, int], rows=VOICE_ROWS, width: int = 300, margin: int = 16, header: int = 112):
+        w, _ = size
+        x1 = w - margin
+        x0, y0 = x1 - width, margin
+        bw, bh, gap = (width - 3 * 12) // 2, 52, 10
+        top = y0 + header
+        self.buttons = [Button(name, "panel", (x0 + 12 + c * (bw + 12), top + r * (bh + gap),
+                                               x0 + 12 + c * (bw + 12) + bw, top + r * (bh + gap) + bh))
+                        for r, row in enumerate(rows) for c, name in enumerate(row) if name]
+        self.rect = (x0, y0, x1, top + len(rows) * (bh + gap) + 2)
+        self.status = (x0 + 14, y0 + 12, x1 - 14, y0 + header - 10)     # title, state, loudness, microphone
+
+    def contains(self, point) -> bool:
+        if point is None:
+            return False
+        x0, y0, x1, y1 = self.rect
+        return x0 <= point[0] < x1 and y0 <= point[1] < y1
+
+    def hit(self, point) -> Button | None:
+        if point is None:
+            return None
+        return next((b for b in self.buttons if b.contains(point)), None)
+
+    def button(self, name: str) -> Button:
+        return next(b for b in self.buttons if b.name == name)
+
+
 class ZoomBar:
     """D72: the zoom control shown with a document, a rounded bar at the bottom right just above the toolbar (left
     of `right` when a panel lies there): a magnifier, ZOOM OUT, the zoom level, ZOOM IN, then FIT. Pressed by

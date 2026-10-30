@@ -71,6 +71,14 @@ D74: SELECT on a document chooses a part of the page (`doc_region`: the box arou
 coordinates, for the page it was drawn on); the AI then reads only that part (the page's own content, rendered for
 it), and the panel's title says so. A loop off the page or a slip chooses nothing (the whole page again); a page turn,
 SHOW BOARD, CLOSE DOC, another document and CLEAR drop it; a zoom keeps it.
+
+D75: voice writing (whiteboard pages only). VOICE opens the voice panel (one panel at a time) and asks the tool to
+listen (`voice_requests`); the tool hands back each transcribed utterance once (`voice_result`, numbered: a number seen
+before is ignored) and the listener's state (`voice_status`). An utterance that is a whole command (`voice.commands`,
+while COMMANDS is on) edits; anything else is written at the end of the page's typed text (`Page.voice`), unless
+paused (then only "resume listening" is heard). While the panel is open UNDO / REDO / CLEAR act on the typed text (as
+with LINES); CANCEL puts back what the pages had when voice writing began; "clear current line" must be said twice.
+The typed text lies under the ink, in its own area (`background`).
 """
 
 from __future__ import annotations
@@ -78,15 +86,25 @@ from __future__ import annotations
 import math
 from collections import Counter
 
+import numpy as np
+
 from ..canvas.board import Board
 from ..canvas.history import AddStroke, History, MoveStrokes, ReplaceStrokes
 from ..canvas.lines import (
     REVIEW, TEXT_MAX, CompleteLine, LineSheet, LinesLayout, RetryLine, ReviewLine, render_sheet,
 )
 from ..canvas.model import Canvas, Stroke
-from ..canvas.panel import BOARD_LABELS, QUESTION_MAX, AIPanel, BoardPanel, ZoomBar
+from ..canvas.panel import BOARD_LABELS, QUESTION_MAX, AIPanel, BoardPanel, VoicePanel, ZoomBar
 from ..canvas.reference import ReferenceError, document_key
 from ..canvas.selection import close_loop, loop_region, png_bytes, select_in_loop, selection_image, strokes_image
+from ..canvas.voice_text import VoiceLayout, VoiceText
+from ..canvas.voice_text import render as render_voice
+from ..voice.commands import MARKS
+from ..voice.commands import match as voice_command
+
+VOICE_LABELS = {"voice:done": "DONE", "voice:cancel": "CANCEL", "voice:mic": "MIC", "voice:delete": "DELETE",
+                "voice:up": "SCROLL UP", "voice:down": "SCROLL DOWN"}
+VOICE_CONFIRM_S = 6.0                                  # D75: "clear current line" said again within this
 
 AI_OFF = "The AI is off (draw --no-ai): EDIT or KEEP INK."
 from ..canvas.toolbar import COLOURS, WIDTHS, Toolbar
@@ -96,7 +114,7 @@ ERASER_RADIUS = {"thin": 12.0, "medium": 24.0, "thick": 42.0}     # px, by the s
 
 class DrawingController:
     def __init__(self, canvas: Canvas, toolbar: Toolbar, history: History | None = None, board: Board | None = None,
-                 lines_layout: LinesLayout | None = None):
+                 lines_layout: LinesLayout | None = None, voice_layout: VoiceLayout | None = None):
         self.toolbar = toolbar
         # D59: pages. `canvas` (and `history`) are always the current page's; the canvas given is page 1.
         self.board = board or Board(canvas.size, canvas, history)
@@ -133,6 +151,21 @@ class DrawingController:
         self._zoom_bars = {None: ZoomBar(canvas.size, toolbar.top)}    # D72: by its right edge (None: its own)
         self._pan: dict | None = None                  # D72: {"from": wall point, "origin"}: dragging the page
         self.doc_region: dict | None = None            # D74: {"page", "rect"}: a part of a document page for the AI
+        # D75: voice writing
+        self.voice_layout = voice_layout or VoiceLayout((40, 60, 952, 632))
+        self.voice_panel = VoicePanel(canvas.size)
+        self.voice_open = self.voice_paused = False
+        self.voice_commands = True
+        self.voice_gate_dbfs = -42.0                   # shown on the panel's loudness bar (the tool sets it)
+        self.voice_status = {"state": "off", "detail": "", "device": "", "level": -120.0}
+        self.voice_requests: list[str] = []            # for the tool: "start", "stop", "mic"
+        self.voice_scroll = 0                          # lines back from the end of the typed text
+        self.voice_log: list[dict] = []                # every utterance: what it said, what it did
+        self._voice_seen: set[int] = set()
+        self._voice_began: dict[int, tuple] = {}       # id(page) -> (page, its tokens when voice writing began)
+        self._voice_confirm: dict | None = None        # {"what", "until"}: a command to say again
+        self._voice_bg: tuple | None = None            # (key, the background with the typed text, its base)
+        self.voice_selected: list[int] = []            # D75 V2: token indexes chosen with SELECT
         # {"state": menu|asking|thinking|answer|error, "since", "action", "answer", "source", "title", "question"}
         self.panel: dict | None = None
         self.ai_jobs: list[tuple[str, bytes, dict]] = []    # (action, PNG, context), D61
@@ -194,10 +227,28 @@ class DrawingController:
             return self.reference.display(self.board.size, self.toolbar.top)
         sheet = self.board.page.lines
         if not self.lines_active and (sheet is None or not sheet.has_content):
-            return None
+            return self._with_voice(None)
         sheet, review = self.sheet(), self.review_line()
-        return render_sheet(sheet, self.lines_layout, self.lines_active or bool(sheet.canvas.strokes),
-                            self.lines_active, None if review is None else review.id, self._notes_right())
+        return self._with_voice(render_sheet(sheet, self.lines_layout, self.lines_active or bool(sheet.canvas.strokes),
+                                             self.lines_active, None if review is None else review.id,
+                                             self._notes_right()))
+
+    def _with_voice(self, base):
+        """D75: the page's typed text (and, while voice writing is on, its area's frame) over `base`; the same image
+        until something in it changes (the renderer keeps its ink over it)."""
+        text = self.board.page.voice
+        if not self.voice_open and (text is None or not text.has_content):
+            return base
+        key = (id(text), None if text is None else text.version, self.voice_scroll, self.voice_open,
+               tuple(self.voice_selected))
+        cached = self._voice_bg
+        if cached is None or cached[0] != key or cached[2] is not base:
+            w, h = self.board.size
+            img = base.copy() if base is not None else np.full((h, w, 3), 255, np.uint8)
+            render_voice(img, text, self.voice_layout, active=self.voice_open, scroll=self.voice_scroll,
+                         selected=self.voice_selected)
+            self._voice_bg = cached = (key, img, base)
+        return cached[1]
 
     @property
     def doc_shown(self) -> bool:
@@ -320,6 +371,7 @@ class DrawingController:
         self._cancel_edit("left")
         self.selection, self.selected = [], None
         self.doc_region = None                         # D74: it belongs to the page it was drawn on
+        self.voice_selected, self.voice_scroll = [], 0 # D75: the new page's typed text from its end
 
     def _leave_target(self) -> None:
         """Before `target` changes (D62: into or out of LINES): what is live ends where it was drawn, and a pointing
@@ -336,7 +388,11 @@ class DrawingController:
             self.blocked = "zone"
 
     def _pause_lines(self) -> None:
-        """A document is now shown: LINES works on whiteboard pages only, so the tool goes back to PEN (D62)."""
+        """A document is now shown: LINES works on whiteboard pages only, so the tool goes back to PEN (D62). D75: voice
+        writing ends too (it writes on whiteboard pages)."""
+        if self.voice_open and self.view == "doc" and self.reference is not None:
+            self._close_voice()
+            self.show_notice("Voice writing ended: it writes on whiteboard pages (SHOW BOARD, then VOICE).")
         if self.tool == "lines" and self.view == "doc" and self.reference is not None:
             self.tool = "pen"
             self.show_notice(f"Smart Lines paused on the document; any unfinished line stays on whiteboard "
@@ -369,7 +425,8 @@ class DrawingController:
         bar = self.zoom_bar                            # D72: never drawn on, as a panel
         return ((self.panel is not None and self.panel_layout.contains(point))
                 or (self.board_open and self.board_layout.contains(point))
-                or (bar is not None and bar.contains(point)))
+                or (bar is not None and bar.contains(point))
+                or (self.voice_open and self.voice_panel.contains(point)))                # D75
 
     def _ui_at(self, point) -> str | None:
         """The UI area a point lies on, where nothing is drawn: "toolbar" (the band, D46) or "panel" (D51; D62: the
@@ -558,7 +615,8 @@ class DrawingController:
             bar = self.zoom_bar                            # D72
             button = ((self.panel_layout.hit(cursor) if self.panel is not None else None)
                       or (self.board_layout.hit(cursor) if self.board_open else None)
-                      or (bar.hit(cursor) if bar is not None else None))
+                      or (bar.hit(cursor) if bar is not None else None)
+                      or (self.voice_panel.hit(cursor) if self.voice_open else None))      # D75
         elif cursor is not None:
             button = (self._lines_hit(cursor) if self.lines_active else None) or self.toolbar.hit(cursor)
         d = self.dwell
@@ -587,18 +645,30 @@ class DrawingController:
         if name.startswith("zoom:"):                   # D72
             self._zoom_action(name[5:])
             return
+        if name.startswith("voice:"):                  # D75
+            self._voice_action(name[6:])
+            return
         button = self.toolbar.button(name)
         if button.kind == "ai":                        # one panel at a time (D59)
             self.panel = None if self.panel is not None else {"state": "menu", "since": self.now}
             self.board_open = self.board_open and self.panel is None
+            if self.panel is not None:
+                self._close_voice()                    # D75
         elif button.kind == "board":
             self.board_open = not self.board_open
             self.panel = None if self.board_open else self.panel
+            if self.board_open:
+                self._close_voice()                    # D75
+        elif button.kind == "voice":                   # D75
+            self._toggle_voice()
         elif button.kind == "tool":
             if name == "lines" and self.view == "doc" and self.reference is not None:
                 self.show_notice("Smart Lines are on whiteboard pages: PAGES, then SHOW BOARD.")
                 self.log["lines:refused_doc"] += 1
                 return
+            if name == "lines" and self.voice_open:     # D75: the same part of the page
+                self._close_voice()
+                self.show_notice("Voice writing ended: LINES uses the same part of the page.")
             if (name == "lines") != self.lines_active:     # D62: the tools' target changes
                 self._leave_target()
                 self._cancel_edit("left")
@@ -659,9 +729,165 @@ class DrawingController:
             self.view = "board"
             self.log["doc:close"] += 1
 
+    # -- voice writing (D75) ----------------------------------------------------------------------------
+
+    def page_voice(self) -> VoiceText:
+        """The shown whiteboard page's typed text, made when first written."""
+        page = self.board.page
+        if page.voice is None:
+            page.voice = VoiceText()
+        return page.voice
+
+    @property
+    def voice_active(self) -> bool:
+        """Voice writing is on, on a whiteboard page."""
+        return self.voice_open and not self.doc_shown
+
+    def take_voice_requests(self) -> list[str]:
+        requests, self.voice_requests = self.voice_requests, []
+        return requests
+
+    def voice_status_update(self, state: str, detail: str = "", device: str = "", level: float = -120.0) -> None:
+        self.voice_status = {"state": state, "detail": detail, "device": device, "level": level}
+
+    def _toggle_voice(self) -> None:
+        if self.voice_open:
+            self._close_voice()
+            return
+        if self.doc_shown:
+            self.show_notice("Voice writing is on whiteboard pages: PAGES, then SHOW BOARD.")
+            self.log["voice:refused_doc"] += 1
+            return
+        if self.tool == "lines":                       # the same part of the page: back to PEN
+            self._leave_target()
+            self._cancel_edit("left")
+            self.tool = "pen"
+            self.show_notice("LINES ended: voice writing uses the writing area of the page.")
+        self.panel, self.board_open = None, False      # one panel at a time
+        self.voice_open, self.voice_paused, self.voice_scroll = True, False, 0
+        self._voice_began, self._voice_confirm = {}, None
+        self.voice_requests.append("start")
+        self.log["voice:open"] += 1
+
+    def _close_voice(self) -> None:
+        if not self.voice_open:
+            return
+        self.voice_open, self._voice_confirm, self._voice_began = False, None, {}
+        self.voice_selected = []
+        self.voice_requests.append("stop")
+        self.log["voice:close"] += 1
+
+    def _voice_touch(self) -> None:
+        """Before the first change to a page in this voice writing: what it had (for CANCEL)."""
+        page = self.board.page
+        self._voice_began.setdefault(id(page), (page, tuple(self.page_voice().tokens)))
+
+    def voice_enabled(self, name: str) -> bool:
+        text = self.board.page.voice
+        lines = [] if text is None else self.voice_layout.lines(text.tokens)
+        return {"voice:up": self.voice_scroll < self.voice_layout.max_scroll(lines),
+                "voice:down": self.voice_scroll > 0,
+                "voice:delete": bool(self.voice_selected)}.get(name, True)
+
+    def voice_label(self, name: str) -> str:
+        if name == "voice:pause":
+            return "RESUME" if self.voice_paused else "PAUSE"
+        if name == "voice:commands":
+            return "COMMANDS ON" if self.voice_commands else "COMMANDS OFF"
+        return VOICE_LABELS[name]
+
+    def _voice_action(self, action: str) -> None:
+        if not self.voice_enabled(f"voice:{action}"):
+            self.log["voice:disabled"] += 1
+            return
+        if action == "pause":
+            self.voice_paused = not self.voice_paused
+            self.log["voice:resume" if not self.voice_paused else "voice:pause"] += 1
+        elif action == "done":
+            self._close_voice()
+        elif action == "cancel":                       # every page back to what it had (one undo step each)
+            for page, tokens in self._voice_began.values():
+                page.voice.restore(tokens)
+            self.log["voice:cancel"] += 1
+            self._close_voice()
+        elif action == "commands":
+            self.voice_commands = not self.voice_commands
+        elif action == "mic":
+            self.voice_requests.append("mic")
+        elif action in ("up", "down"):
+            text = self.page_voice()
+            top = self.voice_layout.max_scroll(self.voice_layout.lines(text.tokens))
+            self.voice_scroll = min(max(self.voice_scroll + (3 if action == "up" else -3), 0), top)
+        elif action == "delete":                       # V2: the words chosen with SELECT
+            self._voice_touch()
+            self.page_voice().delete_words(self.voice_selected)
+            self.voice_selected = []
+            self.log["voice:delete"] += 1
+
+    def voice_result(self, number: int, text: str, latency_ms: float | None = None) -> None:
+        """A transcribed utterance from the tool (once each: a number seen before is ignored)."""
+        if number in self._voice_seen:
+            self.log["voice:duplicates"] += 1
+            return
+        self._voice_seen.add(number)
+        entry = {"t": round(self.now, 3), "n": number, "text": text, "latency_ms": latency_ms}
+        command = voice_command(text) if self.voice_commands else None
+        if not self.voice_active:
+            entry["ignored"] = "closed"
+        elif command is not None:
+            entry["command"] = command
+            if self.voice_paused and command != "resume":
+                entry["ignored"] = "paused"
+            else:
+                self._voice_command(command)
+        elif self.voice_paused:
+            entry["ignored"] = "paused"
+        else:
+            self._voice_touch()
+            if self.page_voice().write(text):
+                self.voice_scroll = 0                  # follow the end of the text
+                self.log["voice:phrases"] += 1
+        self.log["voice:ignored" if "ignored" in entry else "voice:used"] += 1
+        self.voice_log.append(entry)
+
+    def _voice_command(self, command: str) -> None:
+        self.log[f"voice:cmd:{command}"] += 1
+        if command == "pause":
+            self.voice_paused = True
+            return
+        if command == "resume":
+            self.voice_paused = False
+            return
+        text = self.page_voice()
+        if command == "undo":
+            text.undo()
+            return
+        if command == "redo":
+            text.redo()
+            return
+        if command == "clear_line":
+            confirm = self._voice_confirm
+            if not (confirm and confirm["what"] == "clear_line" and self.now <= confirm["until"]):
+                self._voice_confirm = {"what": "clear_line", "until": self.now + VOICE_CONFIRM_S}
+                self.show_notice('Say "clear current line" again to clear the line being written.', VOICE_CONFIRM_S)
+                return
+            self._voice_confirm = None
+        self._voice_touch()
+        if command in MARKS:
+            text.punctuate(MARKS[command])
+        else:
+            {"new_line": text.new_line, "new_paragraph": text.new_paragraph, "delete_word": text.delete_last_word,
+             "delete_sentence": text.delete_last_sentence, "clear_line": text.clear_line}[command]()
+        self.voice_scroll = 0
+
     # -- actions (toolbar and keyboard) ------------------------------------------------------------------
 
     def undo(self) -> None:
+        if self.voice_active:                          # D75: the typed text while voice writing is on
+            if self.page_voice().undo():
+                self.log["undo"] += 1
+                self.log["voice:undo"] += 1
+            return
         target = self.target
         self._cancel_edit("undo")
         if target.history.undo(target.canvas) is not None:
@@ -671,6 +897,11 @@ class DrawingController:
             self._lines_nothing("undo", "Nothing to undo in Smart Lines. To undo drawing on the page, choose PEN.")
 
     def redo(self) -> None:
+        if self.voice_active:                          # D75
+            if self.page_voice().redo():
+                self.log["redo"] += 1
+                self.log["voice:redo"] += 1
+            return
         target = self.target
         self._cancel_edit("redo")
         if target.history.redo(target.canvas) is not None:
@@ -680,7 +911,15 @@ class DrawingController:
             self._lines_nothing("redo", "Nothing to redo in Smart Lines. To redo drawing on the page, choose PEN.")
 
     def clear(self) -> None:
-        """CLEAR: the shown page's ink; with LINES only the unfinished line (completed lines are kept)."""
+        """CLEAR: the shown page's ink; with LINES only the unfinished line (completed lines are kept). D75: while voice
+        writing is on, the page's typed text (one undo step)."""
+        if self.voice_active:
+            self._voice_touch()
+            if self.page_voice().clear():
+                self.log["clear"] += 1
+                self.log["voice:clear"] += 1
+            self.voice_selected, self.voice_scroll = [], 0
+            return
         target = self.target
         self._cancel_edit("clear")
         removed = target.canvas.clear()

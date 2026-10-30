@@ -6,6 +6,7 @@ A new page is inserted after the current one, blank, and becomes current. The bo
 strokes and which page was current; a single-canvas file (`canvas-*.json`, before D59) loads as one page.
 D62: a page can also have Smart Lines (`Page.lines`, made when first used); the board file keeps them under the
 optional key "smart_lines" (one entry per page, null without them), so board files without it still load.
+D75: a page can also have voice-written text (`Page.voice`), kept the same way under the optional key "voice".
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ from dataclasses import dataclass, field
 from .history import History
 from .lines import LineSheet
 from .model import Canvas
+from .voice_text import VoiceText
 
 FORMAT = "invisible-canvas/board"
 VERSION = 1
@@ -25,6 +27,7 @@ class Page:
     canvas: Canvas
     history: History = field(default_factory=History)
     lines: LineSheet | None = None                     # D62: Smart Lines on this page
+    voice: VoiceText | None = None                     # D75: text written by voice on this page
 
 
 class Board:
@@ -76,6 +79,9 @@ class Board:
         if any(p.lines is not None and p.lines.has_content for p in self.pages):
             d["smart_lines"] = [p.lines.to_dict() if p.lines is not None and p.lines.has_content else None
                                 for p in self.pages]
+        if any(p.voice is not None and p.voice.has_content for p in self.pages):            # D75
+            d["voice"] = [p.voice.to_dict() if p.voice is not None and p.voice.has_content else None
+                          for p in self.pages]
         return d
 
     @classmethod
@@ -91,6 +97,9 @@ class Board:
             for page, sheet in zip(board.pages, d.get("smart_lines") or []):
                 if sheet:
                     page.lines = LineSheet.from_dict(sheet, board.size)
+            for page, text in zip(board.pages, d.get("voice") or []):                     # D75
+                if text:
+                    page.voice = VoiceText.from_dict(text)
             return board
         canvas = Canvas.from_dict(d)                     # raises on anything else
         return cls(canvas.size, canvas)

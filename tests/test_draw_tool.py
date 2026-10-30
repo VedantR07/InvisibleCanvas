@@ -59,15 +59,17 @@ class OfflineRecognizer:
         return {"ok": False, "written": "", "text": "", "error": "offline test", "latency_s": 0.0}
 
 
-def run_tool(tool, tmp_path, monkeypatch, argv, schedule, ai_enabled=False, keys=None):
+def run_tool(tool, tmp_path, monkeypatch, argv, schedule, ai_enabled=False, keys=None, voice_enabled=False):
     """schedule(seconds since the first tracked frame, mapper) -> (shape, tip in projector px) or None.
     ai_enabled: `[ai] enabled` for the run (default False: no test reaches a real Ollama unless it asks with
     `--ai` and a fake assistant); None keeps the shipped config's value (D57: on).
-    keys(seconds) -> a key code or -1: what cv2.pollKey and cv2.waitKey return (default: no key)."""
+    keys(seconds) -> a key code or -1: what cv2.pollKey and cv2.waitKey return (default: no key).
+    voice_enabled: `[voice] enabled` (D75; default False: the toolbar as the tests lay it out, no microphone)."""
     with open(DEFAULT_CONFIG_PATH, "rb") as f:
         data = copy.deepcopy(tomllib.load(f))
     if ai_enabled is not None:
         data["ai"]["enabled"] = ai_enabled
+    data["voice"]["enabled"] = voice_enabled
     config = config_from_dict(data, root=tmp_path)
     scene = SyntheticScene()
     calibration = auto_calibration(scene)
@@ -1141,3 +1143,71 @@ def test_diagnostics_timing_and_overhead_are_reported(tmp_path, monkeypatch):
     line = trace[-1]
     assert set(line["stage_ms"]) == {"hand", "engine", "controller", "ai", "render", "show"}
     assert line["pipeline_ms"] >= line["inference_ms"] and line["queue_ms"] >= 0
+
+
+def test_voice_writing_in_draw_with_a_fake_microphone(tmp_path, monkeypatch):
+    """D75: VOICE pressed by holding the cursor on it opens the chosen microphone; each utterance is written on the
+    page (a command edits), saved with the board and reported; the microphone is closed at the end."""
+    from invisible_canvas.canvas.toolbar import Toolbar
+
+    class FakeListener:
+        instances = []
+
+        def __init__(self, transcriber, **kwargs):
+            self.status = SimpleNamespace(state="off", detail="", device="", level=-120.0)
+            self.started, self.stopped, self.sent, self.t0 = [], 0, False, None
+            self.stats = {"utterances": 0, "texts": 0, "empty": 0, "errors": 0, "transcribe_ms": [],
+                          "latency_ms": [], "audio_s": 0.0}
+            FakeListener.instances.append(self)
+
+        def devices(self):
+            return [(1, "Microphone (Realtek(R) Audio)")]
+
+        def start(self, device):
+            self.started.append(device)
+            self.status.state, self.status.device = "listening", "Microphone (Realtek(R) Audio)"
+            self.t0 = time.perf_counter()
+            return True
+
+        def stop(self):
+            self.stopped += 1
+            self.status.state = "off"
+
+        def close(self):
+            self.stop()
+
+        def request(self, kind, device=""):
+            self.start(device) if kind == "start" else self.stop()
+
+        def poll(self):
+            if self.t0 is not None and not self.sent and time.perf_counter() - self.t0 > 0.3:
+                self.sent = True
+                self.stats.update(utterances=2, texts=2, transcribe_ms=[480.0, 520.0], latency_ms=[600.0, 650.0],
+                                  audio_s=4.2)
+                return [("status", "writing", ""), ("text", 1, "Photosynthesis makes food.", 600.0),
+                        ("text", 2, "New line.", 650.0), ("text", 1, "Photosynthesis makes food.", 600.0)]
+            return []
+
+    class FakeTranscriber:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def preload(self):
+            pass
+
+    monkeypatch.setattr(draw_tool, "VoiceListener", FakeListener)
+    monkeypatch.setattr(draw_tool, "WhisperTranscriber", FakeTranscriber)
+    voice = Toolbar((1280, 720), voice=True).button("voice").centre
+    schedule = lambda s, mapper: (OTHER, voice) if s < 1.2 else (OTHER, (500.0, 400.0))   # noqa: E731
+    code, config, shown = run_tool(draw_tool, tmp_path, monkeypatch,
+                                   ["draw", "--seconds", "2.6", "--trace", "--mic", "Realtek"], schedule,
+                                   voice_enabled=True)
+    report, trace = draw_report(config)
+    v, listener = report["voice"], FakeListener.instances[0]
+    assert code == 0 and listener.started == ["Realtek"] and listener.stopped >= 1   # opened on VOICE, closed at end
+    assert report["actions"]["voice:open"] == 1 and report["actions"]["voice:duplicates"] == 1
+    assert [e.get("command") for e in v["log"]] == [None, "new_line"] and v["texts"] == 2
+    assert v["words_on_pages"] == [3] and v["latency_ms"]["median"] == 625.0 and v["chosen"] == "Realtek"
+    assert any(line["voice_state"] == "listening" for line in trace)
+    saved = json.load(open(report["board"]["json"], encoding="utf-8"))
+    assert saved["voice"] == [{"tokens": ["Photosynthesis", "makes", "food.", "\n"]}]

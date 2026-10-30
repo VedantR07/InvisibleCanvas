@@ -100,6 +100,23 @@ class SmartLinesConfig:
 
 
 @dataclass(frozen=True)
+class VoiceConfig:
+    """D75 (brain.md §9.19): voice writing. The VOICE button only when enabled; a microphone chosen by a part of its
+    name; faster-whisper on the CPU (step V0: `base.en`, 2 threads); utterances cut at pauses above a loudness gate."""
+    enabled: bool
+    device: str                    # a part of the microphone's name; "" = Windows' default input
+    model: str                     # the faster-whisper model folder (relative to the project)
+    threads: int                   # CPU threads for recognition (the camera loop keeps the rest)
+    gate_dbfs: float               # quieter frames are not speech (other voices in the room)
+    pause_ms: int                  # this long without speech ends an utterance
+    max_utterance_s: float         # a longer utterance is cut
+    commands: bool                 # voice commands on at the start (the panel switches them)
+    area: list                     # [x0, y0, x1, y1] the writing area (projector px)
+    font: str                      # the typed text's font (the Windows font folder, or a path)
+    text_size: int                 # px
+
+
+@dataclass(frozen=True)
 class Config:
     camera: CameraConfig
     projector: ProjectorConfig
@@ -109,6 +126,7 @@ class Config:
     paths: PathsConfig
     ai: AIConfig
     smart_lines: SmartLinesConfig
+    voice: VoiceConfig
     root: Path
 
     @property
@@ -129,6 +147,7 @@ _SECTIONS = {
     "paths": PathsConfig,
     "ai": AIConfig,
     "smart_lines": SmartLinesConfig,
+    "voice": VoiceConfig,
 }
 
 
@@ -192,6 +211,14 @@ def _check(config: Config) -> None:
         raise ConfigError("[smart_lines] line_height must be 16-200 and line_spacing 0-100")
     if not lines.font.lower().endswith((".ttf", ".otf", ".ttc")) or not 12 <= lines.text_size <= lines.line_height:
         raise ConfigError("[smart_lines] font must be a .ttf / .otf / .ttc file and text_size 12 up to line_height")
+    voice = config.voice                                                  # D75
+    area = voice.area
+    if not (len(area) == 4 and all(isinstance(v, int) for v in area) and area[0] < area[2] and area[1] < area[3]):
+        raise ConfigError("[voice] area must be [x0, y0, x1, y1] (integers, x0 < x1, y0 < y1)")
+    if not (1 <= voice.threads <= 8 and -80.0 <= voice.gate_dbfs <= -10.0 and 200 <= voice.pause_ms <= 3000
+            and 2.0 <= voice.max_utterance_s <= 30.0 and 14 <= voice.text_size <= 72):
+        raise ConfigError("[voice] threads 1-8, gate_dbfs -80 to -10, pause_ms 200-3000, max_utterance_s 2-30 and "
+                          "text_size 14-72")
     if ai.max_tokens < 1024 or ai.timeout_s <= 0:
         raise ConfigError("[ai] max_tokens must be >= 1024 and timeout_s > 0")
     if config.camera.backend not in ("dshow", "msmf", "any"):

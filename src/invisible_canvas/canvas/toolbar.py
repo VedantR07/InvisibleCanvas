@@ -8,6 +8,8 @@ D59: the PAGES button (the board panel: pages, and documents D60) in that last g
 button the buttons are 65 px wide (the longest label, ERASER, is 61 px).
 D62: the LINES tool (Smart Lines) with the other tools; with the AI button the buttons are 61 px wide (the renderer
 draws a label that would touch the button's edges slightly smaller).
+D75: the VOICE button (voice writing) last, only when voice writing is enabled; with it and the AI button the buttons
+are 57 px wide.
 """
 
 from __future__ import annotations
@@ -46,12 +48,12 @@ class Button:
 
 class Toolbar:
     def __init__(self, size: tuple[int, int], *, height: int = 72, button: int | None = None, gap: int = 8,
-                 group_gap: int = 28, ai: bool = False, edge: int = 16):
+                 group_gap: int = 28, ai: bool = False, voice: bool = False, edge: int = 16):
         w, h = int(size[0]), int(size[1])
         self.size, self.height = (w, h), height
         self.top = h - height
-        self.ai = ai
-        last = [("pages", "board")] + ([("ai", "ai")] if ai else [])
+        self.ai, self.voice = ai, voice
+        last = [("pages", "board")] + ([("ai", "ai")] if ai else []) + ([("voice", "voice")] if voice else [])
         names = ([(n, "tool") for n in TOOLS] + [(n, "colour") for n in COLOURS] + [(n, "width") for n in WIDTHS]
                  + [(n, "action") for n in ACTIONS] + last)
         groups = [len(TOOLS), len(COLOURS), len(WIDTHS), len(ACTIONS), len(last)]

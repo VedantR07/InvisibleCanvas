@@ -33,6 +33,11 @@ dev = [
 ai = [
     "anthropic>=2.2,<3",
 ]
+# D75 voice writing (brain.md section 9.19): speech to text on this laptop, free and offline (MIT). The model folder
+# (models/whisper/base.en) is downloaded separately. sounddevice (the microphone) already comes with MediaPipe.
+voice = [
+    "faster-whisper>=1.2,<2",
+]
 
 [tool.setuptools.packages.find]
 where = ["src"]

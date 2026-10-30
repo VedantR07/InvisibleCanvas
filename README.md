@@ -84,6 +84,17 @@ python -m pytest                          # unit tests
   on ink, MOVE moves the ink as before); a slim scroll bar shows which part is seen. What you write stays on the same
   words at every zoom. A page turn keeps the zoom and starts at the top of the next page; the zoom is saved with the
   board. The AI still reads the whole page.
+- **Voice writing (D75).** VOICE (last on the toolbar) opens the voice panel at the top right and the microphone
+  (`[voice] device`, a part of its name: the jack mic set to *Headset* in the Realtek Audio Console is "Microphone
+  (Realtek(R) Audio)"; MIC on the panel switches microphones; `draw --mic NAME`). Speak, then pause: about a second
+  later the sentence is written as typed text in the framed area left of the panel, wrapped at whole words; the
+  area scrolls (SCROLL UP / DOWN) when full. Speech to text is faster-whisper on this laptop (free, offline,
+  `pip install -e .[voice]`, model in `models/whisper/base.en`); quieter voices in the room are not written.
+  Commands, said alone between pauses (COMMANDS ON / OFF on the panel): "new line", "new paragraph", "delete last
+  word", "delete last sentence", "undo", "redo", "clear current line" (say it twice), "stop listening" / "resume
+  listening", "comma", "full stop", "question mark". PAUSE / RESUME, DONE (keeps the text), CANCEL (puts back what
+  the pages had when voice writing began). While the panel is open UNDO / REDO / CLEAR act on the typed text. Each
+  page keeps its own text, saved with the board. Whiteboard pages only; `draw --no-voice` hides the button.
 - **The AI on part of a document (D74).** With a document shown, SELECT draws a loop around a part of the page (a
   paragraph, a diagram, a table): it is framed in magenta, also while zoomed, and the AI panel ("AI on part of PDF
   page 2 of 12") then works on that part only, rendered sharply from the page itself (your ink on it is not sent).
