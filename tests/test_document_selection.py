@@ -119,6 +119,21 @@ def test_a_slip_or_a_loop_off_the_page_chooses_nothing(tmp_path):
     assert context["region"][0] == 0.0
 
 
+def test_an_open_loop_that_runs_into_the_ai_panel_chooses_all_it_went_around(tmp_path):
+    # wall test 2026-10-31 01:06: loops beside the open AI panel ended on it, open; closed at their tightest point
+    # (D53) a 317-px-wide loop became a 26-px-wide part
+    ctl = doc_controller(Reference.open(write_pdf(tmp_path / "lesson.pdf")))
+    ctl.press("ai")                                                  # the panel: x >= 824
+    arc = [(650 + 150 * np.cos(a), 300 - 50 * np.sin(a)) for a in np.linspace(0.3, 2 * np.pi - 0.6, 40)]
+    run_on = [(arc[-1][0] + 30 * k, arc[-1][1]) for k in range(1, 8)]    # then right, into the panel
+    ctl.press("select")
+    stroke(ctl, arc + run_on)
+    assert ctl.blocked is None and ctl.log["strokes_ended_on_panel"] == 1
+    x0, y0, x1, y1 = ctl.region
+    assert x0 < 510 and y0 < 255 and y1 > 345 and x1 >= 790              # the whole box it went around
+    assert ctl.ai_title() == "AI on part of PDF page 1 of 3"
+
+
 def test_a_page_turn_show_board_and_clear_drop_the_part_and_a_zoom_keeps_it(tmp_path):
     ctl = doc_controller(Reference.open(write_pdf(tmp_path / "lesson.pdf")))
     select(ctl, loop(520, 170, 60, 60))

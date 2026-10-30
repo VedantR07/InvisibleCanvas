@@ -6,7 +6,7 @@ majority). The loop is first closed at its tightest point (D53, `close_loop`), s
 where the loop begins, and any run-on past the start, are not part of it. The selection image shows the strokes in
 their own colours on white, cropped to them with a margin and scaled so the longer side is at most `MAX_SIDE` px
 (and handwriting is not tiny); PNG for the API. D74: on a document the loop chooses a part of the page instead
-(`loop_region`: the box around the closed loop).
+(`loop_region`: the box around the whole loop as drawn).
 """
 
 from __future__ import annotations
@@ -54,12 +54,18 @@ def close_loop(points, part: float = CLOSE_PART) -> np.ndarray:
 
 
 def loop_region(loop) -> tuple[float, float, float, float] | None:
-    """D74: the box around a loop closed at its tightest point (x0, y0, x1, y1), or None for a slip (as
-    `select_in_loop`): on a document, the part of the page the AI reads."""
-    pts = close_loop(loop)
-    if loop_area(pts) < MIN_LOOP_AREA:
+    """D74: the box around the whole loop as drawn (x0, y0, x1, y1), or None for a slip (a box under MIN_LOOP_AREA):
+    on a document, the part of the page the AI reads. Not closed first (D53): on the wall the loops were often left
+    open, ending where they reached the AI panel beside the text (D56), and the tightest closing then kept a sliver of
+    them (2026-10-31: a 317-px-wide loop gave a 26-px-wide part); a box needs no closed loop."""
+    pts = np.asarray(loop, dtype=np.float64).reshape(-1, 2)
+    if not len(pts):
         return None
-    return float(pts[:, 0].min()), float(pts[:, 1].min()), float(pts[:, 0].max()), float(pts[:, 1].max())
+    x0, y0 = pts.min(axis=0)
+    x1, y1 = pts.max(axis=0)
+    if (x1 - x0) * (y1 - y0) < MIN_LOOP_AREA:
+        return None
+    return float(x0), float(y0), float(x1), float(y1)
 
 
 def select_in_loop(canvas: Canvas, loop, min_inside: float = MIN_INSIDE) -> list[int]:
