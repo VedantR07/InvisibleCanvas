@@ -340,7 +340,8 @@ def run(config: Config, args) -> int:
     if config.voice.enabled and not getattr(args, "no_voice", False):
         v = config.voice
         transcriber = WhisperTranscriber(v.model, v.threads, root=config.root, vocabulary=v.vocabulary)
-        fixer = VoiceFixer(config.ai, v.vocabulary) if v.fix and ai_on else None     # D77: in the voice worker
+        fixer = (VoiceFixer(config.ai, v.vocabulary + v.fix_words)      # D77: in the voice worker; D79: + fix_words
+                 if v.fix and ai_on else None)
         voice = VoiceListener(transcriber, gate_dbfs=v.gate_dbfs, pause_ms=v.pause_ms,
                               max_utterance_s=v.max_utterance_s, fixer=fixer)
         threading.Thread(target=transcriber.preload, name="voice-preload", daemon=True).start()   # off the loop
@@ -456,6 +457,7 @@ def run(config: Config, args) -> int:
                 controller.take_line_jobs()                # the AI is off: new lines are marked not recognised
             if voice is not None:                          # D75: the microphone's requests, texts and state
                 mic = voice_requests(voice, controller.take_voice_requests(), mic)
+                voice.paused = controller.voice_paused     # D79: while paused, long utterances are not transcribed
                 for event in voice.poll():
                     if event[0] == "text":
                         controller.voice_result(event[1], event[2], event[3])
@@ -675,6 +677,7 @@ def run(config: Config, args) -> int:
             "fix": {"on": getattr(voice, "fixer", None) is not None,                                # D77
                     "fix_ms": _percentiles(voice.stats.get("fix_ms", [])), "fixes": voice.stats.get("fixes", [])},
             "prompt_echoes_dropped": getattr(getattr(voice, "transcriber", None), "echoes", 0),         # D78
+            "skipped_while_paused": voice.stats.get("skipped_paused", 0),                              # D79
             "log": controller.voice_log,
             "words_on_pages": [len(p.voice.words) if p.voice is not None else 0 for p in controller.board.pages],
             "open_frames": sum(r["voice_state"] is not None for r in records),

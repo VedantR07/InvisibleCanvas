@@ -84,6 +84,7 @@ class AIConfig:
     max_tokens: int
     timeout_s: float
     fallbacks: bool                # server-side refusal fallbacks ("default", beta server-side-fallback-2026-07-01)
+    facts: list = dataclasses.field(default_factory=list)   # D79: the teacher's facts given with every AI request
 
 
 @dataclass(frozen=True)
@@ -112,6 +113,7 @@ class VoiceConfig:
     max_utterance_s: float         # a longer utterance is cut
     commands: bool                 # voice commands on at the start (the panel switches them)
     fix: bool                      # D77: the local AI corrects misheard words (only while the AI is on)
+    fix_words: list                # D79: more names for the AI fix only (not the recognizer's hint)
     vocabulary: list               # names and words the recognizer should expect (people, places, the project)
     area: list                     # [x0, y0, x1, y1] the writing area (projector px)
     font: str                      # the typed text's font (the Windows font folder, or a path)
@@ -221,8 +223,10 @@ def _check(config: Config) -> None:
             and 2.0 <= voice.max_utterance_s <= 30.0 and 14 <= voice.text_size <= 72):
         raise ConfigError("[voice] threads 1-8, gate_dbfs -80 to -10, pause_ms 200-3000, max_utterance_s 2-30 and "
                           "text_size 14-72")
-    if not all(isinstance(w, str) for w in voice.vocabulary):
+    if not all(isinstance(w, str) for w in voice.vocabulary + voice.fix_words):
         raise ConfigError("[voice] vocabulary must be a list of words or names (strings)")
+    if not all(isinstance(f, str) for f in ai.facts):                   # D79
+        raise ConfigError("[ai] facts must be a list of sentences (strings)")
     if ai.max_tokens < 1024 or ai.timeout_s <= 0:
         raise ConfigError("[ai] max_tokens must be >= 1024 and timeout_s > 0")
     if config.camera.backend not in ("dshow", "msmf", "any"):

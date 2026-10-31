@@ -623,3 +623,20 @@ def test_ask_works_on_a_page_with_typed_text_and_no_ink():
     ctl.press("ai")
     ctl.press("ai:ask")
     assert ctl.panel["state"] == "asking"                                            # not "Nothing written to read"
+
+
+def test_the_teachers_facts_go_with_every_request_and_a_guess_is_never_a_fact():
+    # wall test 2026-10-31 20:38: "Sree Shankaracharya Institute is located in Chennai, Tamil Nadu ... based on
+    # well-established facts" (it is in Raipur)
+    from invisible_canvas.ai.client import NO_GUESS, SYSTEM, SYSTEM_DOCUMENT, SYSTEM_TYPED, facts_text, system_for
+    from invisible_canvas.ai.local import build_local_request
+    from invisible_canvas.config import load_config
+    cfg = load_config().ai
+    assert any("Raipur" in f for f in cfg.facts)
+    assert NO_GUESS in SYSTEM and NO_GUESS in SYSTEM_DOCUMENT
+    assert system_for({"source": "voice"}) == SYSTEM_DOCUMENT + SYSTEM_TYPED                     # no facts: unchanged
+    with_facts = system_for({"source": "voice"}, cfg.facts)
+    assert with_facts.endswith(cfg.facts[0]) and "without saying where they came from" in with_facts
+    assert facts_text([]) == "" and facts_text(["  "]) == ""
+    body = build_local_request(cfg, "ask", PNG, {"source": "voice", "question": "where is this institute situated"})
+    assert "Raipur, Chhattisgarh" in body["messages"][0]["content"]

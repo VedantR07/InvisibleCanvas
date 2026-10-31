@@ -41,7 +41,7 @@ def build_local_request(cfg: AIConfig, action: str, png: bytes, context: dict | 
         "options": {"temperature": 0,
                     "num_predict": EXPLORE_MAX_TOKENS if action == "explore" else LOCAL_MAX_TOKENS},
         "messages": [
-            {"role": "system", "content": system_for(context)},
+            {"role": "system", "content": system_for(context, cfg.facts)},     # D79: the teacher's facts
             {"role": "user", "content": f"Task: {task}",
              "images": [base64.standard_b64encode(png).decode("ascii")]},
         ],

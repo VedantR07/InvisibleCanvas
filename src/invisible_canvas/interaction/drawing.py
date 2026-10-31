@@ -150,6 +150,8 @@ class DrawingController:
         self.log: Counter = Counter()
         self._erase_group: dict | None = None          # D78: per layer erased: {id: {"layer", "removed", "created"}}
         self._erase_told = False                       # D78: the notes-area notice given in this eraser stroke
+        self._selected_at: tuple | None = None         # D79: the ink state when the selection was made
+        self._deselected: dict | None = None           # D79: a selection UNDO cleared, for REDO
         self._drag: dict | None = None
         self.selection: list[int] = []                 # D51: strokes chosen with the SELECT loop
         self.selection_log: list[dict] = []            # every loop: when, its points' bounds, what it selected (S1)
@@ -614,6 +616,7 @@ class DrawingController:
                 self.selection = select_in_loop(target.canvas, loop)
                 self.voice_selected = self._words_in_loop(loop)                 # D75 V2: typed words too
             self.log["selections"] += 1
+            self._selected_at, self._deselected = self._ink_state(), None       # D79: UNDO takes it back
             xs, ys = [p[0] for p in loop], [p[1] for p in loop]
             self.selection_log.append({"t": round(self.now, 3), "ids": list(self.selection),
                                        "loop_bounds": [round(min(xs)), round(min(ys)), round(max(xs)), round(max(ys))],
@@ -1007,12 +1010,44 @@ class DrawingController:
 
     # -- actions (toolbar and keyboard) ------------------------------------------------------------------
 
+    def _ink_state(self) -> tuple:
+        """D79: which ink layer is shown, and its version: a selection made at this state is the last thing done."""
+        canvas = self.target.canvas
+        return id(canvas), canvas.version
+
+    def _deselect(self) -> bool:
+        """D79 (user: on a document, UNDO did not take back a SELECT): UNDO right after a selection, with no ink
+        changed since, clears that selection (the AI reads the whole page / canvas again); REDO brings it back."""
+        chosen = self.doc_region is not None or bool(self.selection) or bool(self.voice_selected)
+        if not chosen or self._selected_at != self._ink_state():
+            return False
+        self._deselected = {"doc_region": self.doc_region, "selection": list(self.selection),
+                            "voice_selected": list(self.voice_selected), "at": self._selected_at}
+        self.doc_region, self.selection, self.voice_selected, self._selected_at = None, [], [], None
+        self.show_notice("Selection cleared. REDO brings it back.")
+        self.log["undo"] += 1
+        self.log["deselect"] += 1
+        return True
+
+    def _reselect(self) -> bool:
+        kept = self._deselected
+        if kept is None or kept["at"] != self._ink_state():
+            return False
+        self.doc_region, self.selection, self.voice_selected = kept["doc_region"], kept["selection"], \
+            kept["voice_selected"]
+        self._selected_at, self._deselected = kept["at"], None
+        self.log["redo"] += 1
+        self.log["reselect"] += 1
+        return True
+
     def undo(self) -> None:
         if self.voice_active:                          # D75: the typed text while voice writing is on
             self.voice_selected = []
             if self.page_voice().undo():
                 self.log["undo"] += 1
                 self.log["voice:undo"] += 1
+            return
+        if self._deselect():                           # D79: a selection is undone first
             return
         target = self.target
         self._cancel_edit("undo")
@@ -1028,6 +1063,8 @@ class DrawingController:
             if self.page_voice().redo():
                 self.log["redo"] += 1
                 self.log["voice:redo"] += 1
+            return
+        if self._reselect():                           # D79
             return
         target = self.target
         self._cancel_edit("redo")

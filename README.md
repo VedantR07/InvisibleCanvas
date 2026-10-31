@@ -110,18 +110,24 @@ python -m pytest                          # unit tests
   or busy the sentence is written as heard (`[voice] fix`; nothing leaves the laptop). It fixes names and terms only,
   never the grammar (D78). Words it cannot know (a new surname) still need `[voice] vocabulary`, "I mean ...", or
   SELECT + DELETE. "Remove that" and "erase that" also undo the last phrase (as "scratch that"); a transcription
-  that is only the vocabulary list (the recognizer writing its own hint back) is not written.
+  that is only the vocabulary list (the recognizer writing its own hint back) is not written. `[voice] fix_words`
+  (D79) are names only the AI fix knows ("Navam Meish" → "Navomesh"); a longer recognizer hint made its accuracy
+  worse. While PAUSE is on, only short sounds are transcribed (to hear "resume listening"), so talk in the room does
+  not hold up the text when you resume.
 - **The AI on part of a document (D74).** With a document shown, SELECT draws a loop around a part of the page (a
   paragraph, a diagram, a table): it is framed in magenta, also while zoomed, and the AI panel ("AI on part of PDF
   page 2 of 12") then works on that part only, rendered sharply from the page itself (your ink on it is not sent).
   A loop off the page (or a slip) goes back to the whole page; a page turn, SHOW BOARD, CLOSE DOC and CLEAR drop
-  the selection.
+  the selection. **UNDO right after a SELECT (D79)** clears that selection (on the whiteboard too), and REDO brings
+  it back; once something was drawn after it, UNDO works on the drawing as before.
 - **The AI on documents (D61).** With a document shown, the AI panel reads the page itself (the picture, or the PDF
   page rendered at 1600 px); its title says what it reads ("AI on PDF page 3 of 12", "AI on the selection", "AI
   on the whole canvas"). The six actions work on the page. **ASK**: type a question on the laptop keyboard; it
   appears in the panel as you type; Enter sends it, Esc cancels it (while you type, `z`, `s`, `c` and `o` are
   text, and Esc cancels the question instead of quitting). ASK also works on the writing. The answers come from the local model (Ollama),
-  free and offline.
+  free and offline. **Facts (D79):** `[ai] facts` are sentences the AI is given with every request and uses as plain
+  facts (the college is in Raipur: the model had guessed "Chennai, Tamil Nadu"); it is also told never to state a
+  guess as a fact, so for a detail it does not know (where a particular school is) it says it does not know.
 - **Fuller AI answers (D76).** SUMMARIZE, EXPLAIN, SIMPLIFY, EXAMPLES, QUESTIONS and ASK answer with the
   substance (the main idea and key points, how or why, a concrete example), each point on its own line, up to
   about 100 words; when an answer is longer than the panel, MORE (between ASK and CLOSE) shows the rest, page by

@@ -45,6 +45,9 @@ MIN_SPEECH_FRAMES = 8          # speech frames an utterance needs (240 ms) to be
 # this long = say so, with the usual fix; the first utterance ends it for good (the microphone works).
 SILENT_AFTER_S = 10.0
 SILENT_HINT = "Speaking? Set Headset in the Realtek Audio Console, or press MIC."     # the panel's two lines
+# D79 (wall test 20:38: 27 utterances transcribed while paused, only to be ignored; 20 of 103 texts > 8 s late): while
+# paused only "resume listening" is wanted, ~1-2 s of speech + the 0.5-s lead-in + the 0.7-s pause; longer is skipped
+PAUSED_MAX_S = 3.5
 STATES = ("off", "loading", "listening", "hearing", "writing", "silent", "unavailable", "error")
 logging.getLogger("faster_whisper").setLevel(logging.WARNING)    # wall test 1: a console line per utterance
 
@@ -194,6 +197,7 @@ class VoiceListener:
                  sd=None, fixer=None):
         self.transcriber = transcriber
         self.fixer = fixer                               # D77: `fixer(text)` -> the corrected sentence or None
+        self.paused = False                              # D79: set by the drawing tool from the panel's PAUSE
         self.gate_dbfs, self.pause_ms, self.max_utterance_s = gate_dbfs, pause_ms, max_utterance_s
         self._sd = sd
         self.status = Status()
@@ -208,7 +212,7 @@ class VoiceListener:
         self._control: threading.Thread | None = None   # opens / closes the microphone off the camera loop
         self._control_q: queue.Queue = queue.Queue()
         self.stats = {"utterances": 0, "texts": 0, "empty": 0, "errors": 0, "transcribe_ms": [], "latency_ms": [],
-                      "audio_s": 0.0, "fix_ms": [], "fixes": []}
+                      "audio_s": 0.0, "fix_ms": [], "fixes": [], "skipped_paused": 0}
 
     @property
     def sd(self):
@@ -289,6 +293,9 @@ class VoiceListener:
                 else:
                     self._set("hearing" if seg is not None and seg.speaking else "listening")
                 continue
+            if self.paused and len(audio) / RATE > PAUSED_MAX_S:      # D79: only "resume listening" is wanted
+                self.stats["skipped_paused"] += 1
+                continue
             self._set("writing")
             t = time.perf_counter()
             try:
@@ -301,7 +308,7 @@ class VoiceListener:
             self.stats["utterances"] += 1
             self.stats["audio_s"] += len(audio) / RATE
             self.stats["transcribe_ms"].append(round((done - t) * 1000, 1))
-            if text and self.fixer is not None:              # D77: misheard names and terms, in this thread
+            if text and self.fixer is not None and not self.paused:   # D77: misheard names and terms, here
                 fixed = self.fixer(text)                     # (None: a command, nothing to fix, refused or failed)
                 self.stats["fix_ms"].append(round((time.perf_counter() - done) * 1000, 1))
                 if fixed:

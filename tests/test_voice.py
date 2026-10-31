@@ -868,3 +868,31 @@ def test_an_echoed_prompt_is_dropped_and_counted():
 def test_a_grammar_change_is_not_a_fix(heard, fixed):
     from invisible_canvas.voice.fix import SYSTEM, accept
     assert not accept(heard, fixed) and "Never correct grammar" in SYSTEM
+
+
+# -- D79: while paused only "resume listening" is transcribed; facts for the AI ----------------------------------------
+
+def test_while_paused_long_utterances_are_skipped_and_never_sent_to_the_fix():
+    from invisible_canvas.voice.listener import PAUSED_MAX_S
+    sd, sent = FakeSD(), []
+    whisper = FakeWhisper()
+    listener = VoiceListener(whisper, sd=sd, fixer=lambda text: sent.append(text))
+    listener.start("Realtek")
+    listener.paused = True
+    rng = np.random.default_rng(9)
+    sd.streams[0].feed(np.concatenate([speech(4.0, -30, rng), speech(1.0, -90, rng),      # someone talking: skipped
+                                       speech(1.0, -30, rng), speech(1.0, -90, rng)]))     # "resume listening"
+    texts = [e for e in wait_for(listener, "text") if e[0] == "text"]
+    assert len(texts) == 1 and listener.stats["skipped_paused"] == 1 and len(whisper.calls) == 1
+    assert sent == [] and PAUSED_MAX_S >= 3.0                                # no AI fix while paused
+    listener.paused = False
+    sd.streams[0].feed(np.concatenate([speech(4.0, -30, rng), speech(1.0, -90, rng)]))
+    assert any(e[0] == "text" for e in wait_for(listener, "text")) and len(sent) == 1
+    listener.close()
+
+
+def test_the_fix_knows_the_extra_names_and_the_recognizer_does_not():
+    from invisible_canvas.config import load_config
+    v = load_config().voice
+    assert "Navomesh" in v.fix_words and "Shri Shankaracharya" in v.fix_words
+    assert not set(v.fix_words) & set(v.vocabulary)                          # not in the recognizer's hint

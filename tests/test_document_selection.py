@@ -190,3 +190,34 @@ def test_only_a_selected_part_adds_to_the_prompt():
     assert system_for({"source": "document", "page": "PDF page 1 of 3"}) == SYSTEM_DOCUMENT
     assert system_for({"source": "document", "region": [0.1, 0.1, 0.5, 0.4]}) == SYSTEM_DOCUMENT + SYSTEM_REGION
     assert system_for({"source": "selection"}) == SYSTEM and system_for(None) == SYSTEM
+
+
+# -- D79: UNDO takes back a selection (user: "if i want to deselect undo is not working") ------------------------------
+
+def test_undo_right_after_select_on_a_document_clears_the_part_and_redo_brings_it_back(tmp_path):
+    ctl = doc_controller(Reference.open(write_pdf(tmp_path / "doc.pdf")))
+    select(ctl, loop(520, 180, 90, 70))
+    chosen = ctl.doc_region
+    assert chosen is not None and ctl.ai_title().startswith("AI on part of")
+    ctl.undo()
+    assert ctl.doc_region is None and ctl.ai_title() == "AI on PDF page 1 of 3"     # the whole page again
+    assert "Selection cleared" in ctl.notice["text"] and ctl.log["deselect"] == 1
+    ctl.redo()
+    assert ctl.doc_region == chosen and ctl.log["reselect"] == 1
+    ctl.press("pen")
+    stroke(ctl, [(500.0, 300.0), (600.0, 300.0)])                           # ink after the selection
+    ctl.undo()                                                              # now UNDO takes back the ink
+    assert ctl.doc_region == chosen and not ctl.canvas.strokes and ctl.log["deselect"] == 1
+
+
+def test_undo_right_after_select_on_the_whiteboard_clears_the_selection_first():
+    ctl = DrawingController(Canvas(SIZE), Toolbar(SIZE, ai=True))
+    stroke(ctl, [(300.0, 300.0), (360.0, 300.0)])
+    select(ctl, loop(330, 300, 60, 40))
+    assert len(ctl.selection) == 1 and ctl.ai_source() == "selection"
+    ctl.undo()                                                              # the selection, not the stroke
+    assert ctl.selection == [] and len(ctl.canvas.strokes) == 1 and ctl.ai_source() == "canvas"
+    ctl.undo()                                                              # then the stroke
+    assert not ctl.canvas.strokes
+    ctl.redo()                                                              # the stroke back; the selection stays gone
+    assert len(ctl.canvas.strokes) == 1 and ctl.selection == []

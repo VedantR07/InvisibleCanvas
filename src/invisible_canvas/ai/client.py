@@ -91,6 +91,12 @@ DOCUMENT_ACTIONS = {
             "cannot answer it, say so. Question: {question}"),
 }
 
+# D79 (wall test 2026-10-31 20:38, ASK "where is this institute situated": "located in Chennai, Tamil Nadu, India, based
+# on well-established facts"; it is in Raipur): a guess is never stated as a fact, and the teacher's own facts
+# (`[ai] facts`) are given with every request (`system_for`)
+NO_GUESS = (" Never present a guess as a fact: for a specific detail you do not know for certain (where a particular "
+            "school, college, company or small place is, or details about a person), say that you do not know it.")
+
 SYSTEM = (
     "You read writing from a projected interactive whiteboard. The image shows strokes drawn with a finger in "
     "the air in front of a wall, so the handwriting can be rough, shaky or slanted, and letters can be "
@@ -99,6 +105,7 @@ SYSTEM = (
     "information (facts, reasons, an example), never describe the handwriting, the letters or the image. The "
     "result is shown on the wall in a small panel: plain text, no markdown, at most about 100 words. If nothing "
     "readable is written, say so in the result."
+    + NO_GUESS
 )
 
 # D61: an opened document's page. The transcription is only a short line (the panel shows it above the answer, and a
@@ -110,6 +117,7 @@ SYSTEM_DOCUMENT = (
     "anything you cannot read). Then do the task on the page's content with specific, useful information "
     "(facts, reasons, an example). The result is shown on the wall in a small panel: plain text, no markdown, "
     "at most about 100 words. If the page shows nothing you can read or recognise, say so in the result."
+    + NO_GUESS
 )
 # D74: added only when the teacher selected a part of the page (whole-page requests are unchanged)
 SYSTEM_REGION = (" The image is only the part of the page that the teacher selected: in the task, 'this page' means "
@@ -161,12 +169,22 @@ def is_printed(context: dict | None) -> bool:
     return (context or {}).get("source") in ("document", "voice")
 
 
-def system_for(context: dict | None) -> str:
+def facts_text(facts=()) -> str:
+    """D79: the teacher's own facts (`[ai] facts`), true for this class, added to the system text."""
+    given = [str(f).strip() for f in facts if str(f).strip()]
+    # D79 check: "located in Raipur, Chhattisgarh, as confirmed by teacher's fact" with "the teacher gave you"
+    return (" True facts about this class; when the question is about them, state them as plain facts, without "
+            "saying where they came from: " + " ".join(given)) if given else ""
+
+
+def system_for(context: dict | None, facts=()) -> str:
     if is_document(context) and (context or {}).get("region"):       # D74: a part of the page the teacher selected
-        return SYSTEM_DOCUMENT + SYSTEM_REGION
-    if (context or {}).get("source") == "voice":                       # D75 V2: the typed text
-        return SYSTEM_DOCUMENT + SYSTEM_TYPED
-    return SYSTEM_DOCUMENT if is_document(context) else SYSTEM
+        base = SYSTEM_DOCUMENT + SYSTEM_REGION
+    elif (context or {}).get("source") == "voice":                     # D75 V2: the typed text
+        base = SYSTEM_DOCUMENT + SYSTEM_TYPED
+    else:
+        base = SYSTEM_DOCUMENT if is_document(context) else SYSTEM
+    return base + facts_text(facts)                                   # D79
 
 
 def task_for(action: str, context: dict | None = None) -> str:
@@ -242,7 +260,7 @@ def build_request(cfg: AIConfig, action: str, png: bytes, context: dict | None =
     request = {
         "model": cfg.model,
         "max_tokens": cfg.max_tokens,
-        "system": system_for(context),
+        "system": system_for(context, getattr(cfg, "facts", ())),     # D79
         "output_config": {"effort": cfg.effort, "format": {"type": "json_schema", "schema": schema_for(action)}},
         "messages": [{
             "role": "user",

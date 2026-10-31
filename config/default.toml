@@ -87,6 +87,9 @@ effort = "medium"          # the model's default; answer time is measured in acc
 max_tokens = 16000         # thinking counts towards it
 timeout_s = 120.0          # the first local request also loads the model into GPU memory
 fallbacks = true           # server-side refusal fallbacks
+# D79: facts about this class the AI must use (the local model guessed the college "in Chennai, Tamil Nadu"); one
+# sentence each, given with every request. Edit freely.
+facts = ["Shri Shankaracharya Institute of Professional Management and Technology (SSIPMT) is in Raipur, Chhattisgarh, India."]
 
 [smart_lines]
 # D62 (brain.md section 9.15): Smart Lines, the LINES tool. Projector px on the 1280 x 720 canvas, above the toolbar
@@ -125,6 +128,10 @@ fix = true
 # Names and words to expect (wall test 1: "Pratik" -> "Pertik", "Invisible Canvas" -> "a visible catalyst"):
 # given to the recognizer as text said before. Edit freely.
 vocabulary = ["Pratik", "Vedant", "Jamshedpur", "Jharkhand", "Kritagya", "Invisible Canvas"]
+# D79: more names for the AI fix only (it corrects what was heard towards them: "Navam Meish" -> "Navomesh", "Sri
+# Shankar Shari" -> "Shri Shankaracharya"). Not given to the recognizer: on the 15 recorded sentences its accuracy fell
+# from 91.6 to 86.9 % with them in its hint. Edit freely.
+fix_words = ["Navomesh", "Shri Shankaracharya"]
 # Left of the voice panel (300 px wide at the top right), below the page label, above the toolbar (y < 648).
 area = [40, 60, 952, 632]
 font = "segoeui.ttf"
