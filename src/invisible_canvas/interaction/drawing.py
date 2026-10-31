@@ -148,7 +148,8 @@ class DrawingController:
         self.selected: int | None = None               # stroke being moved
         self.dwell: dict | None = None                 # {"button", "since", "fired"}
         self.log: Counter = Counter()
-        self._erase_group: dict | None = None
+        self._erase_group: dict | None = None          # D78: per layer erased: {id: {"layer", "removed", "created"}}
+        self._erase_told = False                       # D78: the notes-area notice given in this eraser stroke
         self._drag: dict | None = None
         self.selection: list[int] = []                 # D51: strokes chosen with the SELECT loop
         self.selection_log: list[dict] = []            # every loop: when, its points' bounds, what it selected (S1)
@@ -498,7 +499,9 @@ class DrawingController:
             self.active.append(point)
             self._note("added" if self.active.points else "not_appended", wall)
         elif self.tool == "eraser":
-            self._erase_group = {"removed": {}, "created": set()}
+            self._erase_group = {id(layer): {"layer": layer, "removed": {}, "created": set()}
+                                 for layer in self._erase_layers()}
+            self._erase_told = False
             self._erase_at(point)
             self._note("eraser", wall)
         else:
@@ -579,11 +582,15 @@ class DrawingController:
         if self.active is not None and self.active.points:
             target.history.do(AddStroke(self.active), target.canvas)
             self.log["line_strokes" if self.lines_active else "strokes"] += 1
-        group, self._erase_group = self._erase_group, None
-        if group and (group["removed"] or group["created"]):
-            added = [target.canvas.strokes[i] for i in sorted(group["created"]) if i in target.canvas.strokes]
-            target.history.record(ReplaceStrokes(list(group["removed"].values()), added))
-            self.log["erase_strokes"] += 1
+        groups, self._erase_group = self._erase_group, None
+        for group in (groups or {}).values():           # D78: each layer's part is one undo step of its own history
+            layer = group["layer"]
+            if group["removed"] or group["created"]:
+                added = [layer.canvas.strokes[i] for i in sorted(group["created"]) if i in layer.canvas.strokes]
+                layer.history.record(ReplaceStrokes(list(group["removed"].values()), added))
+                self.log["erase_strokes"] += 1
+                if isinstance(layer, LineSheet):
+                    self.log["lines:erased"] += 1
         drag, self._drag = self._drag, None
         if drag and (drag["dx"] or drag["dy"]):
             target.history.record(MoveStrokes(drag["ids"], drag["dx"], drag["dy"]))
@@ -615,16 +622,34 @@ class DrawingController:
                                        **({"words": len(self.voice_selected)} if self.voice_selected else {})})
         self.active, self.selected = None, None
 
+    def _erase_layers(self) -> list:
+        """What the eraser takes. From PEN (or any tool but LINES): the shown page's ink only, never the line being
+        written (D62). D78 (wall test 16:47: ink drawn with PEN in the writing area stayed while the Smart Lines eraser
+        rubbed it): the Smart Lines eraser takes all the ink under it, the line being written and the page's ink;
+        completed lines are not ink on the page."""
+        if not self.lines_active:
+            return [self._layer()]
+        page = self.board.page
+        return [page, self.sheet()]
+
     def _erase_at(self, point) -> None:
         view = self.page_view                          # D72: the same reach on the wall at any zoom
-        removed, created = self.target.canvas.erase(point, self.eraser_radius / (1.0 if view is None else view.scale))
-        group = self._erase_group
-        for s in removed:
-            if s.id in group["created"]:
-                group["created"].discard(s.id)          # a piece from earlier in this stroke: not an original
-            else:
-                group["removed"][s.id] = s
-        group["created"].update(s.id for s in created)
+        radius = self.eraser_radius / (1.0 if view is None else view.scale)
+        for group in self._erase_group.values():
+            removed, created = group["layer"].canvas.erase(point, radius)
+            for s in removed:
+                if s.id in group["created"]:
+                    group["created"].discard(s.id)      # a piece from earlier in this stroke: not an original
+                else:
+                    group["removed"][s.id] = s
+            group["created"].update(s.id for s in created)
+        sheet, (nx0, ny0, nx1, ny1) = self.board.page.lines, self.lines_layout.notes
+        if (view is None and not self._erase_told and sheet is not None and sheet.lines
+                and nx0 <= point[0] < nx1 and ny0 <= point[1] < ny1):
+            self._erase_told = True                    # once per eraser stroke
+            self.show_notice("Finished lines can't be erased. With LINES, UNDO brings the last line back into the "
+                             "writing area to erase there.")
+            self.log["lines:erase_notes"] += 1
 
     # -- toolbar: press by holding the cursor on a button ------------------------------------------------
 

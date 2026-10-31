@@ -539,3 +539,30 @@ def test_from_the_smart_lines_eraser_a_colour_writes_lines_again_and_voice_or_a_
     cv2.imwrite(str(tmp_path / "page.png"), img)
     ctl.set_reference(Reference.open(tmp_path / "page.png"))
     assert ctl.view == "doc" and not ctl.lines_active and not ctl.lines_eraser and ctl.target is ctl._layer()
+
+
+def test_the_smart_lines_eraser_takes_pen_ink_in_the_writing_area_too_and_explains_the_notes():
+    # wall test 16:47: ink drawn with PEN in the writing area stayed while the Smart Lines eraser rubbed it; then the
+    # notes area was rubbed, where completed lines are not ink
+    ctl = DrawingController(Canvas(SIZE), Toolbar(SIZE))
+    stroke(ctl, [(200.0, float(Y)), (400.0, float(Y))])                     # PEN ink inside the writing area
+    ctl.press("lines")
+    letter(ctl, 600)
+    ctl.press("eraser")
+    stroke(ctl, [(300.0, Y - 3.0), (300.0, Y + 3.0), (600.0, Y - 3.0), (605.0, Y + 30.0)])
+    page, sheet = ctl.board.page, ctl.sheet()
+    assert len(page.canvas.strokes) == 2 and not sheet.canvas.strokes      # both: the PEN line cut, the letter gone
+    assert ctl.log["erase_strokes"] == 2 and ctl.log["lines:erased"] == 1
+    ctl.undo()                                                              # with the Smart Lines eraser: its part
+    assert len(sheet.canvas.strokes) == 1 and len(page.canvas.strokes) == 2
+    ctl.press("pen")
+    ctl.undo()                                                              # with PEN: the page's part
+    assert len(page.canvas.strokes) == 1
+    ctl.press("lines")
+    dwell(ctl, "lines:complete")
+    ctl.press("eraser")
+    nx0, ny0, nx1, ny1 = ctl.lines_layout.notes
+    stroke(ctl, [(float(nx0 + 40), float(ny0 + 30)), (float(nx0 + 60), float(ny0 + 30))])   # waits: outside the zone
+    stroke(ctl, [(300.0, float(Y)), (300.0, float(ny0 + 30))])              # from the zone up into the notes
+    assert "Finished lines can't be erased" in ctl.notice["text"] and ctl.log["lines:erase_notes"] == 1
+    assert len(sheet.lines) == 1 and len(sheet.lines[0].strokes) == 1       # the completed line is untouched

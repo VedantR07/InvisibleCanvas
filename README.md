@@ -139,9 +139,11 @@ python -m pytest                          # unit tests
   you press one; hold the cursor on a note line to review it again. While the AI or PAGES panel is open, DONE, these
   buttons and the scroll column stand just left of it (D65), so they stay usable. The handwriting is always kept. With
   LINES, UNDO / REDO / CLEAR act on the Smart Lines only (CLEAR: the unfinished line); an unfinished line stays when
-  you switch tools or pages. **ERASER while writing Smart Lines (D78)** rubs out ink in the line being written (the
-  writing area); UNDO / REDO / CLEAR and DONE stay on the Smart Lines, and LINES (or a colour) writes again. ERASER
-  chosen from another tool erases the page's ink as before. Smart Lines work on whiteboard pages (not on documents). Positions, numbering, font and
+  you switch tools or pages. **ERASER while writing Smart Lines (D78)** rubs out all the ink under it, starting in the
+  writing area: the line being written and any PEN ink there; UNDO / REDO / CLEAR and DONE stay on the Smart Lines
+  (the PEN ink it took: PEN, then UNDO), and LINES (or a colour) writes again. Completed lines are not ink: to change
+  one, UNDO (with LINES) brings it back into the writing area. ERASER chosen from another tool erases the page's ink
+  as before, never the line being written. Smart Lines work on whiteboard pages (not on documents). Positions, numbering, font and
   text size: `[smart_lines]` in `config/default.toml`; line images and readings are saved in `data/ai/lines/`.
 - **Saving.** On exit and with `s`: every page to `data/canvas/board-<time>.json` plus one PNG per page; an open
   document is stored by its path with its annotations (it is reopened by `--resume` if the file still exists).
