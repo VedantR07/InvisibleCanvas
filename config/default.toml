@@ -120,7 +120,7 @@ max_utterance_s = 15.0
 commands = true
 # Names and words to expect (wall test 1: "Pratik" -> "Pertik", "Invisible Canvas" -> "a visible catalyst"):
 # given to the recognizer as text said before. Edit freely.
-vocabulary = ["Pratik", "Jamshedpur", "Invisible Canvas"]
+vocabulary = ["Pratik", "Jamshedpur", "Jharkhand", "Kritagya", "Invisible Canvas"]
 # Left of the voice panel (300 px wide at the top right), below the page label, above the toolbar (y < 648).
 area = [40, 60, 952, 632]
 font = "segoeui.ttf"
