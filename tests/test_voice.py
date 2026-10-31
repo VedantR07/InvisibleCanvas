@@ -134,7 +134,9 @@ def test_the_view_follows_the_end_and_scrolls_back_without_drawing_outside_the_a
     ("Scratch that.", "scratch"), ("Scratch date.", "scratch"), ("Scratch back.", "scratch"),
     ("Scratch the deck.", "scratch"), ("Scratch the paint off the wall.", None), ("Scratching is bad.", None),
     ("Draw a new line under the title.", None), ("And do.", None), ("Photosynthesis is the process.", None),
-    ("New line please and then the next one.", None), ("", None)])
+    ("New line please and then the next one.", None), ("", None),
+    ("Remove that.", "scratch"), ("Erase that.", "scratch"), ("Splash that.", "scratch"),       # D78, the wall
+    ("Remove that line from the notes.", None), ("Splash the water on the plant.", None)])
 def test_a_command_only_when_the_whole_utterance_is_one(said, command):
     assert match(said) == command
 
@@ -823,3 +825,46 @@ def test_the_listener_writes_the_corrected_sentence_from_its_own_thread_and_neve
     broken._sd.streams[0].feed(np.concatenate([speech(1.0, -30, rng), speech(1.0, -90, rng)]))
     assert [e[2] for e in wait_for(broken, "text") if e[0] == "text"] == ["My friend lives in Rachi."]
     broken.close()
+
+
+# -- D78: the vocabulary prompt written back, and the fix kept off the grammar (wall test 2026-10-31 16:08) ----------
+
+@pytest.mark.parametrize("text, echo", [
+    ("Pratik, Vedant, Jamshedpur, Jharkhand, Kritagya, Invisible Canvas.", True),   # the whole prompt
+    ("Pratik, Jamshedpur, Jharkhand, Kritagya, Invisible Canvas.", True),            # as written on the wall
+    ("Pratik, Jharkhand, Kritagya,", True),                                          # part of it, in its order
+    ("Pratik.", False), ("Jharkhand", False),                                        # a name alone may be said
+    ("My name is Pratik.", False), ("Pratik and Vedant made Invisible Canvas.", False),
+    ("Kritagya, Pratik.", False),                                                    # not the prompt's order
+    ("Jharkhand, Jharkhand.", False), ("", False)])
+def test_the_vocabulary_prompt_written_back_is_not_taken_for_speech(text, echo):
+    from invisible_canvas.voice.listener import WhisperTranscriber
+    w = WhisperTranscriber("m", vocabulary=["Pratik", "Vedant", "Jamshedpur", "Jharkhand", "Kritagya", "Invisible Canvas"])
+    assert w.echoes_prompt(text) is echo
+
+
+def test_an_echoed_prompt_is_dropped_and_counted():
+    from invisible_canvas.voice.listener import WhisperTranscriber
+
+    class Model:
+        def __init__(self, said):
+            self.said = said
+
+        def transcribe(self, audio, **kwargs):
+            return [type("Part", (), {"text": self.said})()], None
+
+    w = WhisperTranscriber("m", vocabulary=["Pratik", "Jharkhand", "Kritagya"])
+    w._model = Model(" Pratik, Jharkhand, Kritagya.")
+    assert w(np.zeros(16000, np.float32)) == "" and w.echoes == 1
+    w._model = Model(" I am from Jharkhand.")
+    assert w(np.zeros(16000, np.float32)) == "I am from Jharkhand." and w.echoes == 1
+
+
+@pytest.mark.parametrize("heard, fixed", [
+    ("Should we done this project because everything is working fine?",       # the wall: the model changed it
+     "Should we do this project because everything is working fine?"),
+    ("He go to school.", "He goes to school."), ("The plant are green.", "The plant is green."),
+    ("I am going market.", "I am going to the market.")])
+def test_a_grammar_change_is_not_a_fix(heard, fixed):
+    from invisible_canvas.voice.fix import SYSTEM, accept
+    assert not accept(heard, fixed) and "Never correct grammar" in SYSTEM

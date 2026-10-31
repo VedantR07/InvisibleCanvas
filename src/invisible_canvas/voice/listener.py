@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import logging
 import queue
+import re
 import threading
 import time
 from collections import deque
@@ -30,6 +31,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 import numpy as np
+
+from .commands import normalise
 
 RATE = 16000
 FRAME = 480                    # 30 ms
@@ -117,9 +120,25 @@ class WhisperTranscriber:
         # the words given to Whisper as the text that came before, so it expects them
         words = [str(w).strip() for w in vocabulary if str(w).strip()]
         self.prompt = (", ".join(words) + ".") if words else None
+        self.vocabulary = [normalise(w) for w in words]
+        self.echoes = 0                                  # D78: transcriptions dropped as the prompt written back
         self._model = None
         self._lock = threading.Lock()
         self.load_s: float | None = None
+
+    def echoes_prompt(self, text: str) -> bool:
+        """D78 (wall test 16:08: "Pratik, Jamshedpur, Jharkhand, Kritagya, Invisible Canvas." written twice, never said):
+        on unclear audio Whisper can write its own prompt back. True when the text is nothing but 2 or more of the
+        vocabulary's entries, in the vocabulary's order; a sentence with a name in it, or a name alone, is kept."""
+        items = [normalise(part) for part in re.split(r"[,.;:!?]+", text) if normalise(part)]
+        if len(items) < 2:
+            return False
+        at = -1
+        for item in items:
+            if item not in self.vocabulary[at + 1:]:
+                return False
+            at = self.vocabulary.index(item, at + 1)
+        return True
 
     def load(self) -> None:
         with self._lock:                                 # once, whichever thread asks first
@@ -145,7 +164,11 @@ class WhisperTranscriber:
         parts, _ = self._model.transcribe(audio, language="en", beam_size=1, vad_filter=False,
                                           condition_on_previous_text=False, without_timestamps=True,
                                           initial_prompt=self.prompt)
-        return " ".join(p.text.strip() for p in parts).strip()
+        text = " ".join(p.text.strip() for p in parts).strip()
+        if self.echoes_prompt(text):                     # D78: not said, the prompt written back
+            self.echoes += 1
+            return ""
+        return text
 
 
 def input_devices(sd=None) -> list[tuple[int, str]]:

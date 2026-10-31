@@ -107,8 +107,10 @@ python -m pytest                          # unit tests
   **The AI fix (D77):** while the AI is on, each dictated sentence is read once more by the local model, which corrects
   names and terms the recognizer misheard ("Rachi" → "Ranchi", "touchmail" → "Taj Mahal") before it is written, about
   0.4 s later; commands are never sent, an answer that is not the same sentence is not used, and if the model is off
-  or busy the sentence is written as heard (`[voice] fix`; nothing leaves the laptop). Words it cannot know (a new
-  surname) still need `[voice] vocabulary`, "I mean ...", or SELECT + DELETE.
+  or busy the sentence is written as heard (`[voice] fix`; nothing leaves the laptop). It fixes names and terms only,
+  never the grammar (D78). Words it cannot know (a new surname) still need `[voice] vocabulary`, "I mean ...", or
+  SELECT + DELETE. "Remove that" and "erase that" also undo the last phrase (as "scratch that"); a transcription
+  that is only the vocabulary list (the recognizer writing its own hint back) is not written.
 - **The AI on part of a document (D74).** With a document shown, SELECT draws a loop around a part of the page (a
   paragraph, a diagram, a table): it is framed in magenta, also while zoomed, and the AI panel ("AI on part of PDF
   page 2 of 12") then works on that part only, rendered sharply from the page itself (your ink on it is not sent).
@@ -137,7 +139,9 @@ python -m pytest                          # unit tests
   you press one; hold the cursor on a note line to review it again. While the AI or PAGES panel is open, DONE, these
   buttons and the scroll column stand just left of it (D65), so they stay usable. The handwriting is always kept. With
   LINES, UNDO / REDO / CLEAR act on the Smart Lines only (CLEAR: the unfinished line); an unfinished line stays when
-  you switch tools or pages. Smart Lines work on whiteboard pages (not on documents). Positions, numbering, font and
+  you switch tools or pages. **ERASER while writing Smart Lines (D78)** rubs out ink in the line being written (the
+  writing area); UNDO / REDO / CLEAR and DONE stay on the Smart Lines, and LINES (or a colour) writes again. ERASER
+  chosen from another tool erases the page's ink as before. Smart Lines work on whiteboard pages (not on documents). Positions, numbering, font and
   text size: `[smart_lines]` in `config/default.toml`; line images and readings are saved in `data/ai/lines/`.
 - **Saving.** On exit and with `s`: every page to `data/canvas/board-<time>.json` plus one PNG per page; an open
   document is stored by its path with its annotations (it is reopened by `--resume` if the file still exists).

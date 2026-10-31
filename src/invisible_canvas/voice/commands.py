@@ -27,6 +27,8 @@ COMMANDS = {
     "comma": "comma", "full stop": "full_stop", "period": "full_stop",
     "question mark": "question_mark", "exclamation mark": "exclamation_mark",
     "scratch that": "scratch", "delete that": "scratch",                       # the last phrase written
+    "remove that": "scratch", "erase that": "scratch",                         # D78: said on the wall
+    "splash that": "scratch",                                                  # D78: "scratch that" misheard
     "delete selection": "delete_selection", "delete the selection": "delete_selection",
     "delete selected words": "delete_selection",                              # V2: the words chosen with SELECT
 }

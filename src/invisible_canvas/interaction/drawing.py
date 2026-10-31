@@ -143,6 +143,7 @@ class DrawingController:
         self.kept_annotations: dict[str, dict] = {}    # closed documents' annotations: {key: {"path", "annotations"}}
         self.notice: dict | None = None                # {"text", "until"}: a message on the wall (D60 errors)
         self.tool, self.colour, self.width = "pen", "black", "medium"
+        self.lines_eraser = False                      # D78: ERASER chosen while writing Smart Lines rubs out the line
         self.active: Stroke | None = None              # pen stroke being drawn
         self.selected: int | None = None               # stroke being moved
         self.dwell: dict | None = None                 # {"button", "since", "fired"}
@@ -221,8 +222,10 @@ class DrawingController:
 
     @property
     def lines_active(self) -> bool:
-        """The LINES tool is in use on a whiteboard page (D62)."""
-        return self.tool == "lines" and not (self.view == "doc" and self.reference is not None)
+        """The LINES tool is in use on a whiteboard page (D62), or (D78) ERASER chosen while it was: the eraser then
+        rubs out the line being written, and UNDO / REDO / CLEAR, DONE and the review stay on the Smart Lines."""
+        smart = self.tool == "lines" or (self.tool == "eraser" and self.lines_eraser)
+        return smart and not (self.view == "doc" and self.reference is not None)
 
     @property
     def target(self):
@@ -404,6 +407,8 @@ class DrawingController:
         if self.voice_open and self.view == "doc" and self.reference is not None:
             self._close_voice()
             self.show_notice("Voice writing ended: it writes on whiteboard pages (SHOW BOARD, then VOICE).")
+        if self.lines_eraser and self.view == "doc" and self.reference is not None:
+            self.lines_eraser = False                  # D78: the eraser now erases the document's annotations
         if self.tool == "lines" and self.view == "doc" and self.reference is not None:
             self.tool = "pen"
             self.show_notice(f"Smart Lines paused on the document; any unfinished line stays on whiteboard "
@@ -689,13 +694,22 @@ class DrawingController:
             if name == "lines" and self.voice_open:     # D75: the same part of the page
                 self._close_voice()
                 self.show_notice("Voice writing ended: LINES uses the same part of the page.")
-            if (name == "lines") != self.lines_active:     # D62: the tools' target changes
+            # D78 (wall test: ERASER did nothing on the line being written, which is the Smart Lines' own layer):
+            # ERASER chosen while writing Smart Lines erases that line; from any other tool, the page's ink as before
+            lines_eraser = name == "eraser" and self.lines_active
+            if (name == "lines" or lines_eraser) != self.lines_active:     # D62: the tools' target changes
                 self._leave_target()
                 self._cancel_edit("left")
-            self.tool = name
+            if lines_eraser and not (self.tool == "eraser" and self.lines_eraser):
+                self.show_notice("ERASER on the Smart Line: rub out what you wrote in the writing area. "
+                                 "LINES to write again.")
+                self.log["lines:eraser"] += 1
+            self.tool, self.lines_eraser = name, lines_eraser
         elif button.kind == "colour":                  # a colour selects PEN (D62: LINES keeps writing lines)
             self.colour = name
-            if self.tool != "lines":
+            if self.tool == "eraser" and self.lines_active:     # D78: from the Smart Lines eraser, writing lines again
+                self.tool, self.lines_eraser = "lines", False
+            elif self.tool != "lines":
                 self.tool = "pen"
         elif button.kind == "width":
             self.width = name
@@ -778,10 +792,10 @@ class DrawingController:
             self.show_notice("Voice writing is on whiteboard pages: PAGES, then SHOW BOARD.")
             self.log["voice:refused_doc"] += 1
             return
-        if self.tool == "lines":                       # the same part of the page: back to PEN
+        if self.lines_active:                          # the same part of the page: back to PEN (D78: or its eraser)
             self._leave_target()
             self._cancel_edit("left")
-            self.tool = "pen"
+            self.tool, self.lines_eraser = "pen", False
             self.show_notice("LINES ended: voice writing uses the writing area of the page.")
         self.panel, self.board_open = None, False      # one panel at a time
         self.voice_open, self.voice_paused, self.voice_scroll = True, False, 0

@@ -255,6 +255,10 @@ def test_a_colour_keeps_lines_and_selects_pen_otherwise():
     assert next(iter(ctl.sheet().canvas.strokes.values())).color == (40, 40, 215)
     ctl.press("eraser")
     ctl.press("blue")
+    assert ctl.tool == "lines"                                              # D78: the Smart Lines eraser -> LINES
+    ctl.press("pen")
+    ctl.press("eraser")
+    ctl.press("blue")
     assert ctl.tool == "pen"                                                # unchanged outside LINES
 
 
@@ -482,3 +486,56 @@ def test_the_writing_guides_and_greyed_buttons_are_dark_enough_for_the_wall():
     assert img[ty0 + 10:ty1 - 10, tx0 + 2:tx1 - 2].max() <= 210             # the scroll track
     x0, y0, x1, y1 = layout.button("lines:up").rect                         # an arrow, greyed
     assert img[y0 + 2:y1 - 2, x0 + 2:x1 - 2].min() <= 175
+
+
+# -- D78: the eraser on the line being written (wall test 2026-10-31: ERASER did nothing on a Smart Line) ------------
+
+def test_eraser_chosen_while_writing_lines_rubs_out_the_line_and_undo_stays_on_the_smart_lines():
+    ctl = DrawingController(Canvas(SIZE), Toolbar(SIZE))
+    stroke(ctl, [(200.0, 150.0), (400.0, 150.0)])                           # PEN: ink on the page, above the zone
+    ctl.press("lines")
+    stroke(ctl, [(200.0, float(Y)), (400.0, float(Y))])                     # the line being written
+    sheet = ctl.sheet()
+    assert len(sheet.canvas.strokes) == 1 and len(ctl.board.page.canvas.strokes) == 1
+    ctl.press("eraser")
+    assert ctl.tool == "eraser" and ctl.lines_active and ctl.target is sheet and "Smart Line" in ctl.notice["text"]
+    stroke(ctl, [(300.0, Y - 3.0), (300.0, Y + 3.0)])                       # rub out its middle
+    assert len(sheet.canvas.strokes) == 2                                   # two pieces of the line are left
+    left = sorted(max(x for x, _ in s.points) for s in sheet.canvas.strokes.values())
+    assert left[0] < 300 - ctl.eraser_radius + 3 and len(ctl.board.page.canvas.strokes) == 1   # the page untouched
+    stroke(ctl, [(300.0, 150.0), (300.0, 152.0)])                           # outside the zone: it waits, nothing gone
+    assert len(ctl.board.page.canvas.strokes) == 1 and ctl.log["lines:eraser"] == 1
+    ctl.undo()
+    assert len(sheet.canvas.strokes) == 1 and len(ctl.board.page.canvas.strokes) == 1   # the Smart Lines' undo
+    ctl.redo()
+    assert len(sheet.canvas.strokes) == 2
+    ctl.press("lines")                                                      # writing again, on the same line
+    assert ctl.tool == "lines" and not ctl.lines_eraser
+    letter(ctl, 500)
+    dwell(ctl, "lines:complete")
+    assert len(sheet.lines) == 1 and len(sheet.lines[0].strokes) == 3 and not sheet.canvas.strokes
+    ctl.press("pen")
+    ctl.press("eraser")                                                     # from PEN: the page's ink, as before
+    assert not ctl.lines_active and ctl.target is ctl.board.page
+    stroke(ctl, [(300.0, 147.0), (300.0, 153.0)])
+    assert len(ctl.board.page.canvas.strokes) == 2 and len(sheet.lines[0].strokes) == 3
+
+
+def test_from_the_smart_lines_eraser_a_colour_writes_lines_again_and_voice_or_a_document_end_it(tmp_path):
+    ctl = lines_controller()
+    letter(ctl, 300)
+    ctl.press("eraser")
+    ctl.press("red")
+    assert ctl.tool == "lines" and ctl.colour == "red" and not ctl.lines_eraser
+    ctl.press("eraser")
+    ctl.press("eraser")                                                     # pressed again: still on the Smart Line
+    assert ctl.lines_active and ctl.log["lines:eraser"] == 2                # entered twice, told once each time
+    voice = DrawingController(Canvas(SIZE), Toolbar(SIZE, voice=True))
+    voice.press("lines")
+    voice.press("eraser")
+    voice.press("voice")
+    assert voice.tool == "pen" and not voice.lines_eraser and voice.voice_open
+    img = np.full((300, 400, 3), 200, np.uint8)
+    cv2.imwrite(str(tmp_path / "page.png"), img)
+    ctl.set_reference(Reference.open(tmp_path / "page.png"))
+    assert ctl.view == "doc" and not ctl.lines_active and not ctl.lines_eraser and ctl.target is ctl._layer()

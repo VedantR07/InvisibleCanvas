@@ -674,6 +674,7 @@ def run(config: Config, args) -> int:
             "latency_ms": _percentiles(voice.stats["latency_ms"]),       # the utterance's end -> its text
             "fix": {"on": getattr(voice, "fixer", None) is not None,                                # D77
                     "fix_ms": _percentiles(voice.stats.get("fix_ms", [])), "fixes": voice.stats.get("fixes", [])},
+            "prompt_echoes_dropped": getattr(getattr(voice, "transcriber", None), "echoes", 0),         # D78
             "log": controller.voice_log,
             "words_on_pages": [len(p.voice.words) if p.voice is not None else 0 for p in controller.board.pages],
             "open_frames": sum(r["voice_state"] is not None for r in records),

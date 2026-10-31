@@ -67,6 +67,7 @@ RING_RADIUS = 38                      # D50 ring cursor: just outside the light 
 BLOCKED = (90, 90, 90)                # D56: the "not drawing" cursor
 BLOCKED_HINT = "Not drawing: open your hand, then point to draw"
 ZONE_HINT = "Not drawing here: move your fingertip into the writing area to write"  # D62, D66
+ZONE_ERASE_HINT = "Erasing the Smart Line: move your fingertip into the writing area"  # D78
 ASK_PROMPT = "Type your question on the laptop keyboard. Enter sends it, Esc cancels."   # D61
 # D75: the voice panel's states (label, colour BGR)
 VOICE_STATES = {"off": ("Starting...", (110, 110, 110)), "loading": ("Loading speech...", (110, 110, 110)),
@@ -532,7 +533,9 @@ class CanvasRenderer:
         right = self.size[0]
         if getattr(controller, "panel", None) is not None and controller.panel_layout is not None:
             right = controller.panel_layout.rect[0]
-        hint = ZONE_HINT if getattr(controller, "blocked", None) == "zone" else BLOCKED_HINT
+        hint = BLOCKED_HINT
+        if getattr(controller, "blocked", None) == "zone":
+            hint = ZONE_ERASE_HINT if getattr(controller, "tool", "") == "eraser" else ZONE_HINT
         scale = 0.7
         (tw, th), _ = cv2.getTextSize(hint, FONT, scale, 2)
         if tw + 40 > right:
