@@ -74,6 +74,7 @@ from ..display.handlight import HandLight, LightParams
 from ..interaction.drawing import DrawingController
 from ..interaction.engine import IDLE, InteractionEngine
 from ..vision.hands import HandTracker, HandTrackingError
+from ..voice.fix import VoiceFixer
 from ..voice.listener import VoiceListener, WhisperTranscriber
 from .common import add_device_args, current_seq, now_iso, open_session, save_report, stamp
 from .draw_diagnostics import DrawDiagnostics
@@ -339,8 +340,9 @@ def run(config: Config, args) -> int:
     if config.voice.enabled and not getattr(args, "no_voice", False):
         v = config.voice
         transcriber = WhisperTranscriber(v.model, v.threads, root=config.root, vocabulary=v.vocabulary)
+        fixer = VoiceFixer(config.ai, v.vocabulary) if v.fix and ai_on else None     # D77: in the voice worker
         voice = VoiceListener(transcriber, gate_dbfs=v.gate_dbfs, pause_ms=v.pause_ms,
-                              max_utterance_s=v.max_utterance_s)
+                              max_utterance_s=v.max_utterance_s, fixer=fixer)
         threading.Thread(target=transcriber.preload, name="voice-preload", daemon=True).start()   # off the loop
     mic = (getattr(args, "mic", None) or config.voice.device) if voice is not None else ""
     try:
@@ -670,6 +672,8 @@ def run(config: Config, args) -> int:
             "errors": voice.stats["errors"], "audio_s": round(voice.stats["audio_s"], 1),
             "transcribe_ms": _percentiles(voice.stats["transcribe_ms"]),
             "latency_ms": _percentiles(voice.stats["latency_ms"]),       # the utterance's end -> its text
+            "fix": {"on": getattr(voice, "fixer", None) is not None,                                # D77
+                    "fix_ms": _percentiles(voice.stats.get("fix_ms", [])), "fixes": voice.stats.get("fixes", [])},
             "log": controller.voice_log,
             "words_on_pages": [len(p.voice.words) if p.voice is not None else 0 for p in controller.board.pages],
             "open_frames": sum(r["voice_state"] is not None for r in records),
@@ -748,7 +752,9 @@ def run(config: Config, args) -> int:
               + (f"{vr['latency_ms']['median']:.0f} ms after the pause (median), transcription "
                  f"{vr['transcribe_ms']['median']:.0f} ms" if vr["latency_ms"] else "none")
               + f"; {vr['writing_frames']} frames while writing at {vr['writing_processing_fps']:.1f} fps "
-              f"(voice on: {vr['open_processing_fps']:.1f} fps)")
+              f"(voice on: {vr['open_processing_fps']:.1f} fps)"
+              + (f"; AI fix: {len(vr['fix']['fixes'])} corrected, {vr['fix']['fix_ms']['median']:.0f} ms (median)"
+                 if vr["fix"]["on"] and vr["fix"]["fix_ms"] else ""))                            # D77
     print(f"canvas: {json_path} (+ .png)")
     print(f"report: {save_report(config, 'draw', report)}")
     if controller.reference is not None:               # D60: let go of the document file

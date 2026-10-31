@@ -118,6 +118,10 @@ gate_dbfs = -42.0
 pause_ms = 700
 max_utterance_s = 15.0
 commands = true
+# D77: the local AI ([ai] local_model, only while the AI is on) corrects words the recognizer misheard ("Rachi" ->
+# "Ranchi", "touchmail" -> "Taj Mahal"), in the voice worker, never the camera loop; commands are never sent. On the
+# user's 15 recorded sentences 86.9 -> 93.5 % of the words, +0.37 s a sentence, no correct word changed.
+fix = true
 # Names and words to expect (wall test 1: "Pratik" -> "Pertik", "Invisible Canvas" -> "a visible catalyst"):
 # given to the recognizer as text said before. Edit freely.
 vocabulary = ["Pratik", "Jamshedpur", "Jharkhand", "Kritagya", "Invisible Canvas"]

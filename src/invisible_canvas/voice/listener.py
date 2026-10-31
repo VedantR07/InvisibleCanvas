@@ -10,6 +10,8 @@
 - Text: one worker thread transcribes each utterance with faster-whisper (`model`, CPU int8, `threads`; loaded in that
   thread when the listener starts, so the camera loop never waits for it) and queues it with a number, so each
   utterance gives its text once, in order. `poll()` hands the main loop the events (text, status) without waiting.
+  D77: with a `fixer` (voice/fix.py), the same thread then has the local AI correct misheard words before the text is
+  queued (a command never; a failure leaves it as heard).
 - Pause keeps listening (a "resume listening" said while paused must be heard); the controller ignores dictation
   while paused. Errors (no such microphone, the stream stopping: unplugged, the model missing) become a status for
   the panel; nothing raises into the drawing loop. `close()` stops the stream and the worker.
@@ -166,8 +168,9 @@ class Status:
 
 class VoiceListener:
     def __init__(self, transcriber, *, gate_dbfs: float = -42.0, pause_ms: int = 700, max_utterance_s: float = 15.0,
-                 sd=None):
+                 sd=None, fixer=None):
         self.transcriber = transcriber
+        self.fixer = fixer                               # D77: `fixer(text)` -> the corrected sentence or None
         self.gate_dbfs, self.pause_ms, self.max_utterance_s = gate_dbfs, pause_ms, max_utterance_s
         self._sd = sd
         self.status = Status()
@@ -182,7 +185,7 @@ class VoiceListener:
         self._control: threading.Thread | None = None   # opens / closes the microphone off the camera loop
         self._control_q: queue.Queue = queue.Queue()
         self.stats = {"utterances": 0, "texts": 0, "empty": 0, "errors": 0, "transcribe_ms": [], "latency_ms": [],
-                      "audio_s": 0.0}
+                      "audio_s": 0.0, "fix_ms": [], "fixes": []}
 
     @property
     def sd(self):
@@ -275,6 +278,13 @@ class VoiceListener:
             self.stats["utterances"] += 1
             self.stats["audio_s"] += len(audio) / RATE
             self.stats["transcribe_ms"].append(round((done - t) * 1000, 1))
+            if text and self.fixer is not None:              # D77: misheard names and terms, in this thread
+                fixed = self.fixer(text)                     # (None: a command, nothing to fix, refused or failed)
+                self.stats["fix_ms"].append(round((time.perf_counter() - done) * 1000, 1))
+                if fixed:
+                    self.stats["fixes"].append({"n": number, "heard": text, "text": fixed})
+                    text = fixed
+                done = time.perf_counter()
             self.stats["latency_ms"].append(round((done - ended) * 1000, 1))
             if text:
                 self.stats["texts"] += 1

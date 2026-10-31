@@ -703,3 +703,123 @@ def test_a_long_typed_text_for_the_ai_is_kept_within_its_size():
     assert small.shape[1] == 1200 and small.shape[0] < 200
     big = text_image((LONG + " ").split() * 12)
     assert max(big.shape[:2]) == 1600
+
+
+# -- D77: the local AI corrects misheard words (user, 2026-10-31: "new words in front of judges") ---------------------
+
+HEARD_FIXED = [   # the user's 15 recorded sentences (§13.2 2026-10-31 15:4x): base.en as heard -> the local model's fix
+    ("My friend, Kritagya lives in Rachi.", "My friend, Kritagya lives in Ranchi."),
+    ("We travel to Bhupavneeshwar and Vishakapatna.", "We travel to Bhubaneswar and Visakhapatnam."),
+    ("The touchmail was built by Shah Jahan in Agra.", "The Taj Mahal was built by Shah Jahan in Agra."),
+    ("Newton's second law says, force equals mass-type acceleration.",
+     "Newton's second law says, force equals mass times acceleration."),
+    ("Invisible Canvas turns any wall into a smart hood.", "Invisible Canvas turns any wall into a smart board."),
+    ("Chhattisgarh and Orissa are neighbours of Charkhand.", "Chhattisgarh and Odisha are neighbours of Jharkhand."),
+    ("I mean, I am from Jamshedpur, Tarkhat.", "I mean, I am from Jamshedpur, Jharkhand."),
+]
+
+
+def fix_config():
+    from invisible_canvas.config import load_config
+    return load_config().ai
+
+
+class Answer:
+    def __init__(self, body: bytes):
+        self.body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self):
+        return self.body
+
+
+def ollama_saying(text, sent):
+    import json
+
+    def opener(request, timeout):
+        sent.append((request, timeout, threading.current_thread().name))
+        return Answer(json.dumps({"message": {"content": json.dumps({"text": text})}}).encode())
+    return opener
+
+
+@pytest.mark.parametrize("heard, fixed", HEARD_FIXED)
+def test_a_fix_of_misheard_words_is_used(heard, fixed):
+    from invisible_canvas.voice.fix import accept
+    assert accept(heard, fixed)
+
+
+@pytest.mark.parametrize("heard, fixed", [
+    ("I am from Jamshedpur, Jharkhand.", "The capital of India is New Delhi."),       # another sentence
+    ("Photosynthesis happens inside the chloroplast.", ""),
+    ("Hello.", "Hello, my name is Pratik and I am from Jamshedpur in Jharkhand."),    # words added
+    ("I mean, I am from Jamshedpur, Tarkhat.", "I am from Jamshedpur, Jharkhand."),   # no longer a correction
+    ("Scratch is a game for children.", "Scratch that."),                            # became a command
+])
+def test_a_fix_that_is_not_the_same_sentence_is_not_used(heard, fixed):
+    from invisible_canvas.voice.fix import accept
+    assert not accept(heard, fixed)
+
+
+def test_the_fix_asks_the_local_model_about_one_sentence_and_keeps_it_on_any_failure():
+    import json
+    import socket
+    import urllib.error
+
+    from invisible_canvas.voice.fix import FIX_TIMEOUT_S, VoiceFixer
+    sent = []
+    fixer = VoiceFixer(fix_config(), ["Pratik", "Jharkhand"], opener=ollama_saying("My friend lives in Ranchi.", sent))
+    assert fixer("My friend lives in Rachi.") == "My friend lives in Ranchi."
+    request, timeout, _ = sent[0]
+    body = json.loads(request.data)
+    assert request.full_url == "http://127.0.0.1:11434/api/chat" and timeout == FIX_TIMEOUT_S
+    assert body["model"] == "qwen3-vl:8b-instruct" and body["options"]["temperature"] == 0 and not body["stream"]
+    assert body["format"]["required"] == ["text"] and "images" not in body["messages"][1]
+    assert body["messages"][1]["content"] == "My friend lives in Rachi."
+    assert "Words the teacher often uses: Pratik, Jharkhand." in body["messages"][0]["content"]
+    assert fixer("New line.") is None and fixer("Scratch that.") is None and len(sent) == 1   # never sent
+    same = VoiceFixer(fix_config(), opener=ollama_saying("My friend lives in Ranchi.", []))
+    assert same("My friend lives in Ranchi.") is None                        # nothing to fix
+
+    def failing(error):
+        def opener(request, timeout):
+            raise error
+        return opener
+    for error in (urllib.error.URLError("refused"), socket.timeout("timed out"), ConnectionResetError()):
+        assert VoiceFixer(fix_config(), opener=failing(error))("My friend lives in Rachi.") is None
+    garbled = VoiceFixer(fix_config(), opener=lambda r, timeout: Answer(b'{"message": {"content": "not json"}}'))
+    assert garbled("My friend lives in Rachi.") is None
+
+
+def test_the_listener_writes_the_corrected_sentence_from_its_own_thread_and_never_sends_a_command():
+    from invisible_canvas.voice.fix import VoiceFixer
+
+    class Heard:
+        texts = ["My friend lives in Rachi.", "New line."]
+
+        def __call__(self, audio):
+            return self.texts.pop(0)
+
+    sd, sent = FakeSD(), []
+    fixer = VoiceFixer(fix_config(), opener=ollama_saying("My friend lives in Ranchi.", sent))
+    listener = VoiceListener(Heard(), sd=sd, fixer=fixer)
+    listener.start("Realtek")
+    rng = np.random.default_rng(8)
+    sd.streams[0].feed(np.concatenate([speech(1.0, -30, rng), speech(1.0, -90, rng), speech(0.6, -30, rng),
+                                       speech(1.0, -90, rng)]))
+    texts = [e for e in wait_for(listener, "text", 2) if e[0] == "text"]
+    assert [e[2] for e in texts] == ["My friend lives in Ranchi.", "New line."]
+    assert len(sent) == 1 and sent[0][2] == "voice-writer"                   # the dictation only, off the caller
+    assert listener.stats["fixes"] == [{"n": 1, "heard": "My friend lives in Rachi.", "text": "My friend lives in Ranchi."}]
+    assert len(listener.stats["fix_ms"]) == 2 and len(listener.stats["latency_ms"]) == 2
+    listener.close()
+    broken = VoiceListener(Heard(), sd=FakeSD(), fixer=lambda text: None)    # the AI off or failing: as heard
+    Heard.texts = ["My friend lives in Rachi."]
+    broken.start("Realtek")
+    broken._sd.streams[0].feed(np.concatenate([speech(1.0, -30, rng), speech(1.0, -90, rng)]))
+    assert [e[2] for e in wait_for(broken, "text") if e[0] == "text"] == ["My friend lives in Rachi."]
+    broken.close()

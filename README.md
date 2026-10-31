@@ -104,6 +104,11 @@ python -m pytest                          # unit tests
   longer than the area. `[voice] vocabulary` lists names to expect. If the microphone has heard nothing 10 s after
   it opened, the panel says "Nothing heard yet": a jack mic needs *Headset* in the Realtek Audio Console (it can go
   back to headphones when the plug is moved), or press MIC for another microphone.
+  **The AI fix (D77):** while the AI is on, each dictated sentence is read once more by the local model, which corrects
+  names and terms the recognizer misheard ("Rachi" → "Ranchi", "touchmail" → "Taj Mahal") before it is written, about
+  0.4 s later; commands are never sent, an answer that is not the same sentence is not used, and if the model is off
+  or busy the sentence is written as heard (`[voice] fix`; nothing leaves the laptop). Words it cannot know (a new
+  surname) still need `[voice] vocabulary`, "I mean ...", or SELECT + DELETE.
 - **The AI on part of a document (D74).** With a document shown, SELECT draws a loop around a part of the page (a
   paragraph, a diagram, a table): it is framed in magenta, also while zoomed, and the AI panel ("AI on part of PDF
   page 2 of 12") then works on that part only, rendered sharply from the page itself (your ink on it is not sent).

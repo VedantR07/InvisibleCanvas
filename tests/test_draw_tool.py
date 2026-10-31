@@ -1154,6 +1154,7 @@ def test_voice_writing_in_draw_with_a_fake_microphone(tmp_path, monkeypatch):
         instances = []
 
         def __init__(self, transcriber, **kwargs):
+            self.kwargs = kwargs
             self.status = SimpleNamespace(state="off", detail="", device="", level=-120.0)
             self.started, self.stopped, self.sent, self.t0 = [], 0, False, None
             self.stats = {"utterances": 0, "texts": 0, "empty": 0, "errors": 0, "transcribe_ms": [],
@@ -1208,6 +1209,7 @@ def test_voice_writing_in_draw_with_a_fake_microphone(tmp_path, monkeypatch):
     assert report["actions"]["voice:open"] == 1 and report["actions"]["voice:duplicates"] == 1
     assert [e.get("command") for e in v["log"]] == [None, "new_line"] and v["texts"] == 2
     assert v["words_on_pages"] == [3] and v["latency_ms"]["median"] == 625.0 and v["chosen"] == "Realtek"
+    assert listener.kwargs["fixer"] is None and v["fix"]["on"] is False      # D77: the AI is off in this run
     assert any(line["voice_state"] == "listening" for line in trace)
     saved = json.load(open(report["board"]["json"], encoding="utf-8"))
     assert saved["voice"] == [{"tokens": ["Photosynthesis", "makes", "food.", "\n"]}]

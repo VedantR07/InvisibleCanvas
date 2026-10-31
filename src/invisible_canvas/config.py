@@ -111,6 +111,7 @@ class VoiceConfig:
     pause_ms: int                  # this long without speech ends an utterance
     max_utterance_s: float         # a longer utterance is cut
     commands: bool                 # voice commands on at the start (the panel switches them)
+    fix: bool                      # D77: the local AI corrects misheard words (only while the AI is on)
     vocabulary: list               # names and words the recognizer should expect (people, places, the project)
     area: list                     # [x0, y0, x1, y1] the writing area (projector px)
     font: str                      # the typed text's font (the Windows font folder, or a path)
