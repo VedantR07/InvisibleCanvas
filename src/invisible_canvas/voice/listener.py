@@ -35,7 +35,12 @@ PRE_ROLL_S = 0.5               # kept before the frames that begin an utterance 
 HOLD_DB = 8.0                  # once an utterance began, frames down to the gate - 8 dB keep it going
 START_FRAMES = 2               # speech frames in a row that begin an utterance
 MIN_SPEECH_FRAMES = 8          # speech frames an utterance needs (240 ms) to be written
-STATES = ("off", "loading", "listening", "hearing", "writing", "unavailable", "error")
+# D76 wall test: the jack mic heard nothing for 73 s and the panel only said "Listening". Its level cannot tell why: in a
+# silent room the working jack mic also gives about -96 dBFS (V1). So: nothing heard since the microphone opened, for
+# this long = say so, with the usual fix; the first utterance ends it for good (the microphone works).
+SILENT_AFTER_S = 10.0
+SILENT_HINT = "Speaking? Set Headset in the Realtek Audio Console, or press MIC."     # the panel's two lines
+STATES = ("off", "loading", "listening", "hearing", "writing", "silent", "unavailable", "error")
 logging.getLogger("faster_whisper").setLevel(logging.WARNING)    # wall test 1: a console line per utterance
 
 
@@ -58,10 +63,16 @@ class Segmenter:
         self.rest = np.zeros(0, np.float32)
         self.level = -120.0
         self.samples = 0                         # samples seen: the time of the stream
+        self.heard = False                       # an utterance has begun since this stream opened
 
     @property
     def speaking(self) -> bool:
         return self.frames is not None
+
+    @property
+    def silent(self) -> bool:
+        """Nothing heard for SILENT_AFTER_S since the stream opened: a microphone that may not hear the speaker."""
+        return not self.heard and self.samples >= SILENT_AFTER_S * RATE
 
     def feed(self, samples: np.ndarray) -> list[tuple[np.ndarray, float]]:
         """New samples; returns the utterances that ended in them: (audio, the stream time it ended, s)."""
@@ -79,6 +90,7 @@ class Segmenter:
                 self.run = self.run + 1 if loud else 0
                 if self.run >= START_FRAMES:
                     self.frames, self.speech, self.quiet = list(self.pre), self.run, 0
+                    self.heard = True
                 continue
             self.frames.append(frame)
             self.speech += loud
@@ -246,7 +258,10 @@ class VoiceListener:
                 number, audio, ended = self._utterances.get(timeout=0.1)
             except queue.Empty:
                 seg = self._segmenter
-                self._set("hearing" if seg is not None and seg.speaking else "listening")
+                if seg is not None and seg.silent:               # no sound at all: say why nothing is written
+                    self._set("silent", SILENT_HINT)
+                else:
+                    self._set("hearing" if seg is not None and seg.speaking else "listening")
                 continue
             self._set("writing")
             t = time.perf_counter()

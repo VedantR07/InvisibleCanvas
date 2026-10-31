@@ -101,7 +101,9 @@ python -m pytest                          # unit tests
   appears on the voice panel) or "delete selection" removes only them; the AI panel then reads the chosen words
   ("AI on the selected words"), or the page's whole typed text when nothing is chosen ("AI on the typed text").
   DELETE shows only when words are chosen; the scroll column stays after voice writing while the text is
-  longer than the area. `[voice] vocabulary` lists names to expect.
+  longer than the area. `[voice] vocabulary` lists names to expect. If the microphone has heard nothing 10 s after
+  it opened, the panel says "Nothing heard yet": a jack mic needs *Headset* in the Realtek Audio Console (it can go
+  back to headphones when the plug is moved), or press MIC for another microphone.
 - **The AI on part of a document (D74).** With a document shown, SELECT draws a loop around a part of the page (a
   paragraph, a diagram, a table): it is framed in magenta, also while zoomed, and the AI panel ("AI on part of PDF
   page 2 of 12") then works on that part only, rendered sharply from the page itself (your ink on it is not sent).
@@ -116,7 +118,8 @@ python -m pytest                          # unit tests
 - **Fuller AI answers (D76).** SUMMARIZE, EXPLAIN, SIMPLIFY, EXAMPLES, QUESTIONS and ASK answer with the
   substance (the main idea and key points, how or why, a concrete example), each point on its own line, up to
   about 100 words; when an answer is longer than the panel, MORE (between ASK and CLOSE) shows the rest, page by
-  page. EXPLORE is unchanged.
+  page. EXPLORE is unchanged. SUMMARIZE on writing states the topic itself ("SQL is ...", not "The text asks
+  ..."), answers a written question, and takes unclear words in their everyday meaning.
 - **Smart Lines (D62, D64, D66, D71).** The LINES tool writes one line at a time in the writing area (marked by corner
   guides, a dashed frame and a baseline, at the middle height; "Write here" in it until you write). Ink appears only
   inside it: pointing elsewhere draws nothing, and the ink begins as soon as the fingertip enters the area (no need to

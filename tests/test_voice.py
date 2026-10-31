@@ -179,6 +179,21 @@ def test_a_long_utterance_is_cut():
     assert len(out) == 2 and all(len(a) / RATE <= 3.05 for a, _ in out)
 
 
+def test_a_microphone_that_has_heard_nothing_since_it_opened_is_silent_until_it_hears_speech():
+    # D76 wall test: the jack mic heard nothing for 73 s; a working one in a silent room gives ~-96 dBFS too (V1), so
+    # the rule is "nothing heard yet", not a level
+    rng = np.random.default_rng(6)
+    seg = Segmenter()
+    seg.feed(speech(9.0, -97, rng))
+    assert not seg.silent                                                    # not 10 s yet
+    seg.feed(speech(1.2, -60, rng))                                          # room noise, below the gate
+    assert seg.silent
+    seg.feed(np.concatenate([speech(1.5, -33, rng), speech(1.0, -97, rng)]))   # plugged in, someone speaks
+    assert not seg.silent
+    seg.feed(speech(30.0, -97, rng))                                         # then a long quiet: it works, no warning
+    assert not seg.silent
+
+
 # -- the listener (a fake microphone and recognizer) -----------------------------------------------------------------
 
 class FakeStream:
@@ -321,6 +336,26 @@ def test_a_missing_microphone_or_model_and_an_unplugged_one_are_a_status_not_a_c
         time.sleep(0.02)
     assert unplugged.status.state == "unavailable" and "unplugged" in unplugged.status.detail
     unplugged.close()
+
+
+def test_a_silent_microphone_says_so_and_listens_again_when_sound_comes():
+    sd = FakeSD()
+    listener = VoiceListener(FakeWhisper(), sd=sd)
+    listener.start("Realtek")
+    wait_for(listener, "status")
+    rng = np.random.default_rng(7)
+    sd.streams[0].feed(speech(10.2, -97, rng))
+    t = time.perf_counter()
+    while listener.status.state != "silent" and time.perf_counter() - t < 3:
+        time.sleep(0.02)
+    assert listener.status.state == "silent" and "Headset" in listener.status.detail and "MIC" in listener.status.detail
+    sd.streams[0].feed(np.concatenate([speech(1.0, -30, rng), speech(1.0, -97, rng)]))   # it hears speech
+    assert any(e[0] == "text" for e in wait_for(listener, "text"))
+    t = time.perf_counter()
+    while listener.status.state != "listening" and time.perf_counter() - t < 3:
+        time.sleep(0.02)
+    assert listener.status.state == "listening" and listener.status.detail == ""
+    listener.close()
 
 
 # -- the controller ------------------------------------------------------------------------------------------------
@@ -545,6 +580,23 @@ def test_the_panel_and_the_text_are_drawn_and_the_text_stays_after_voice_writing
     ctl.canvas.add(ink)
     img = renderer.render(ctl.canvas, ctl, ctl.toolbar, mode=HOVER, cursor=None)
     assert (img[100, 150] < 60).all()                                          # the ink over the text
+
+
+def test_the_panel_says_when_the_microphone_sends_no_sound():
+    from invisible_canvas.voice.listener import SILENT_HINT
+    ctl = voice_controller()
+    ctl.press("voice")
+    renderer = CanvasRenderer(SIZE)
+    x0, y0, x1, y1 = ctl.voice_panel.rect
+    ctl.voice_status_update("listening", device="Microphone (Realtek(R) Audio)", level=-97.0)
+    listening = renderer.render(ctl.canvas, ctl, ctl.toolbar, mode=HOVER, cursor=None)[y0:y1, x0:x1].copy()
+    ctl.voice_status_update("silent", SILENT_HINT, "Microphone (Realtek(R) Audio)", -97.0)
+    silent = renderer.render(ctl.canvas, ctl, ctl.toolbar, mode=HOVER, cursor=None)[y0:y1, x0:x1]
+    sx0, sy0, sx1, _ = (v - o for v, o in zip(ctl.voice_panel.status, (x0, y0, x0, y0)))
+    changed = (silent[sy0 + 20:sy0 + 100, sx0:sx1] != listening[sy0 + 20:sy0 + 100, sx0:sx1]).any(axis=2)
+    assert changed.sum() > 500                                   # a red "No sound from the mic" and the two-line hint
+    red = (silent[sy0 + 28:sy0 + 44, sx0:sx0 + 16].astype(int) - (40, 40, 200))
+    assert (np.abs(red).sum(axis=2) < 30).any()                  # the red state mark
 
 
 # -- corrections, "scratch that" (user request 2026-10-31) ------------------------------------------------------------

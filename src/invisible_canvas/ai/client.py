@@ -33,8 +33,13 @@ from ..config import AIConfig
 ACTIONS = {
     # D76 (user, 2026-10-31: "very light and little" answers): the main idea and key points, how and why, an
     # example; each point on its own line
-    "summarize": ("Give the main idea of what is written in one sentence, then 2 or 3 key points about it, each "
-                  "on its own line starting with '- '."),
+    # D76 wall test: "The text asks for an explanation of SQL ..." opened the summary of "WHAT IS SQL"; answering about
+    # the topic made the model invent ("CaT, a program developed by ...") until the facts rule was added
+    "summarize": ("Give the main idea of the topic in one sentence that states it directly, about the topic itself "
+                  "rather than the writing (if the writing asks a question or makes a request, answer it), then 2 or "
+                  "3 key points about it, each on its own line starting with '- '. Use only well-established facts: "
+                  "when the words are unclear, take their most common everyday meaning; never invent names, dates "
+                  "or organisations, and never guess anything about a person named in the writing."),
     "explain": ("Explain the topic of what is written so that a student understands it: what it is, how or why "
                 "it works, and one concrete example, in 3 or 4 lines each starting with '- '."),
     "simplify": ("Explain what is written in very simple words, as to a 10-year-old, keeping every important "

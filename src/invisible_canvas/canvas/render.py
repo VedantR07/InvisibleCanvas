@@ -72,7 +72,9 @@ ASK_PROMPT = "Type your question on the laptop keyboard. Enter sends it, Esc can
 VOICE_STATES = {"off": ("Starting...", (110, 110, 110)), "loading": ("Loading speech...", (110, 110, 110)),
                 "listening": ("Listening", (30, 120, 30)), "hearing": ("Hearing you...", (40, 40, 200)),
                 "writing": ("Writing...", (160, 60, 10)), "paused": ("Paused", (110, 110, 110)),
+                "silent": ("Nothing heard yet", (40, 40, 200)),       # D76 wall test: the jack mic heard nothing
                 "unavailable": ("Microphone unavailable", (40, 40, 200)), "error": ("Error", (40, 40, 200))}
+LIVE_VOICE = ("listening", "hearing", "writing", "silent")     # the microphone is open: loudness bar, PAUSE
 VOICE_TRACK, VOICE_LEVEL = (225, 220, 216), (40, 150, 40)
 VOICE_TEXT = (80, 60, 50)              # the microphone line and reasons (wall test 1: the grey was faint)
 
@@ -335,7 +337,7 @@ class CanvasRenderer:
         # 4.5-5.6 ms with voice writing on)
         np.copyto(img[y0:y0 + patch.shape[0], x0:x1], patch, where=shape[:, :, None])
         sx0, sy0, sx1, sy1 = layout.status
-        if status["state"] in ("listening", "hearing", "writing") and not controller.voice_paused:
+        if status["state"] in LIVE_VOICE and status["state"] != "silent" and not controller.voice_paused:
             y = sy0 + 62
             frac = min(max((status["level"] + 60.0) / 40.0, 0.0), 1.0)          # -60 .. -20 dBFS
             cv2.rectangle(img, (sx0, y), (sx1, y + 6), VOICE_TRACK, -1)
@@ -355,8 +357,7 @@ class CanvasRenderer:
         w, h = x1 - x0, y1 - y0
         patch, shape = np.full((h, w, 3), 255, np.uint8), np.zeros((h, w, 3), np.uint8)
         sx0, sy0, sx1, _ = (v - o for v, o in zip(layout.status, (x0, y0, x0, y0)))
-        state = "paused" if controller.voice_paused and status["state"] in ("listening", "hearing", "writing") \
-            else status["state"]
+        state = "paused" if controller.voice_paused and status["state"] in LIVE_VOICE else status["state"]
         label, colour = VOICE_STATES.get(state, (state, PANEL_MUTED))
         # wall test 1: the state and the microphone faint on the wall: larger and darker
         title, text, small = typeset.font(LABEL_FONT, 21), typeset.font(LABEL_FONT, 22), typeset.font(LABEL_FONT, 16)
@@ -364,7 +365,7 @@ class CanvasRenderer:
                ("text", (sx0, sy0 + 9), "VOICE", title, INK, "lm"),
                ("rrect", (sx0, sy0 + 28, sx0 + 16, sy0 + 44), 8, colour, None),
                ("text", (sx0 + 26, sy0 + 36), label, text, colour, "lm")]
-        if state in ("unavailable", "error") and status["detail"]:
+        if state in ("silent", "unavailable", "error") and status["detail"]:
             words, line, lines = status["detail"].split(), "", []
             for word in words:                                          # the reason, on two lines at most
                 if line and typeset.width(f"{line} {word}", small) > sx1 - sx0:

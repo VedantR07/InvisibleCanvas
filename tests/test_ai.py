@@ -579,6 +579,15 @@ def test_the_tasks_ask_for_points_and_content_and_explore_is_unchanged():
     assert "3 or 4 short lines, each starting with '- ' and at most 12 words" in ACTIONS["explore"]
 
 
+def test_summarize_on_writing_states_the_topic_and_invents_nothing():
+    # wall test 2026-10-31 14:35: "The text asks for an explanation of SQL ..." opened the summary of "WHAT IS SQL"
+    from invisible_canvas.ai.client import ACTIONS, DOCUMENT_ACTIONS
+    task = ACTIONS["summarize"]
+    assert "about the topic itself rather than the writing" in task and "answer it" in task
+    assert "never invent names, dates or organisations" in task and "a person named in the writing" in task
+    assert DOCUMENT_ACTIONS["summarize"].startswith("Give the main idea of this page in one sentence")   # unchanged
+
+
 def test_points_run_together_are_split_and_a_long_answer_has_more():
     from invisible_canvas.canvas.panel import ANSWER_SCALE, answer_rows, bullets
     assert bullets("- One point. - Two point. - Three.") == "- One point.\n- Two point.\n- Three."
