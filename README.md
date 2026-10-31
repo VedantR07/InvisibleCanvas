@@ -113,6 +113,10 @@ python -m pytest                          # unit tests
   appears in the panel as you type; Enter sends it, Esc cancels it (while you type, `z`, `s`, `c` and `o` are
   text, and Esc cancels the question instead of quitting). ASK also works on the writing. The answers come from the local model (Ollama),
   free and offline.
+- **Fuller AI answers (D76).** SUMMARIZE, EXPLAIN, SIMPLIFY, EXAMPLES, QUESTIONS and ASK answer with the
+  substance (the main idea and key points, how or why, a concrete example), each point on its own line, up to
+  about 100 words; when an answer is longer than the panel, MORE (between ASK and CLOSE) shows the rest, page by
+  page. EXPLORE is unchanged.
 - **Smart Lines (D62, D64, D66, D71).** The LINES tool writes one line at a time in the writing area (marked by corner
   guides, a dashed frame and a baseline, at the middle height; "Write here" in it until you write). Ink appears only
   inside it: pointing elsewhere draws nothing, and the ink begins as soon as the fingertip enters the area (no need to

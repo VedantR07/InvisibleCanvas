@@ -46,7 +46,7 @@ from ..interaction.engine import DRAW, HOVER
 from . import text as typeset
 from .lines import EDGE, EDGE_OFF, INK, LABEL, LABEL_OFF, PANEL_EDGE, PANEL_FILL, THUMB, TRACK, render_controls
 from .model import Canvas, Stroke
-from .panel import clip_lines, wrap
+from .panel import PAGE_LINES, answer_rows, wrap   # noqa: F401  (PAGE_LINES: D61, kept importable here)
 from .toolbar import COLOURS, WIDTHS, Toolbar
 
 BACKGROUND = 255
@@ -75,7 +75,6 @@ VOICE_STATES = {"off": ("Starting...", (110, 110, 110)), "loading": ("Loading sp
                 "unavailable": ("Microphone unavailable", (40, 40, 200)), "error": ("Error", (40, 40, 200))}
 VOICE_TRACK, VOICE_LEVEL = (225, 220, 216), (40, 150, 40)
 VOICE_TEXT = (80, 60, 50)              # the microphone line and reasons (wall test 1: the grey was faint)
-PAGE_LINES = 2                        # D61: lines of "what the AI read" shown for a document page
 
 
 def draw_stroke(img: np.ndarray, stroke: Stroke, colour=None, extra: int = 0, view=None, shift=(0, 0)) -> None:
@@ -453,19 +452,14 @@ class CanvasRenderer:
         elif state == "error":
             rows = [(line, 0.6, PANEL_ERROR, 2) for line in wrap(panel.get("message", "Error."), width, 0.6, 2)]
         else:
-            answer = panel["answer"]
-            rows = [("PAGE:" if document else "READ:", 0.55, PANEL_TEXT, 2)]   # what the AI read, as large as the answer
-            read = wrap(answer.transcription or "-", width, 0.62)
-            if document:                       # D61: the local model copied the page out in 5 of 9 answers
-                read = clip_lines(read, PAGE_LINES, width, 0.62)   # (2026-10-27): the answer stays in view
-            rows += [(line, 0.62, PANEL_TEXT, 1) for line in read]
-            header = panel["action"].upper() + ":"
-            if getattr(answer, "readable", None) and answer.topic:              # D54: EXPLORE names its topic
-                header += " " + answer.topic.upper()
-            if panel.get("question"):                                           # D61: ASK shows its question
-                header += " " + panel["question"]
-            rows += [("", 0.3, PANEL_TEXT, 1)] + [(line, 0.55, PANEL_TEXT, 2) for line in wrap(header, width, 0.55, 2)]
-            rows += [(line, 0.62, PANEL_TEXT, 1) for line in wrap(answer.result, width, 0.62)]
+            # D76: the rows composed in panel.py (shared with MORE), shown page by page
+            every = answer_rows(panel["answer"], panel["action"], panel.get("question", ""), width, document)
+            starts = layout.answer_pages(every)
+            page = panel.get("page", 0) % len(starts)
+            end = starts[page + 1] if page + 1 < len(starts) else len(every)
+            rows = [(line, scale, PANEL_TEXT, thick) for line, scale, _, thick in every[starts[page]:end]]
+            if len(starts) > 1:                                         # MORE, with where the answer is
+                self._panel_button(img, layout.more, f"MORE {page + 1}/{len(starts)}", controller)
         for k, (line, scale, colour, thick) in enumerate(rows):
             step = int(34 * scale) + 6
             if y + step > y1 - 8:                                   # no room left: mark the cut
@@ -473,6 +467,19 @@ class CanvasRenderer:
                 break
             y += step
             cv2.putText(img, line, (left, y), FONT, scale, colour, thick, cv2.LINE_AA)
+
+    @staticmethod
+    def _panel_button(img: np.ndarray, button, label: str, controller) -> None:
+        """D76: a button of the AI panel drawn as the others (MORE), with its hold-to-press progress."""
+        bx0, by0, bx1, by1 = button.rect
+        cv2.rectangle(img, (bx0, by0), (bx1 - 1, by1 - 1), (255, 255, 255), -1)
+        cv2.rectangle(img, (bx0, by0), (bx1 - 1, by1 - 1), (160, 160, 160), 1)
+        (tw, th), _ = cv2.getTextSize(label, FONT, 0.55, 2)
+        cv2.putText(img, label, ((bx0 + bx1 - tw) // 2, (by0 + by1 + th) // 2), FONT, 0.55, (60, 60, 60), 2,
+                    cv2.LINE_AA)
+        progress = controller.dwell_progress
+        if progress is not None and progress[0] == button.name:
+            cv2.rectangle(img, (bx0, by1 - 9), (bx0 + int((bx1 - bx0) * progress[1]), by1 - 1), HIGHLIGHT, -1)
 
     def _board_panel(self, img: np.ndarray, controller) -> None:
         """D59: the page label and the page buttons; a button that cannot act now (first / last page) is grey."""

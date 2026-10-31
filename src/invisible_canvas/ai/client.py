@@ -31,11 +31,18 @@ from dataclasses import dataclass, field
 from ..config import AIConfig
 
 ACTIONS = {
-    "summarize": "Summarize what is written in one to three short sentences.",
-    "explain": "Explain what is written so that a student can understand it. Keep it short.",
-    "simplify": "Rewrite what is written in simpler words, keeping its meaning.",
-    "examples": "Give two or three short, concrete examples of what is written.",
-    "questions": "Write three short questions that check understanding of what is written.",
+    # D76 (user, 2026-10-31: "very light and little" answers): the main idea and key points, how and why, an
+    # example; each point on its own line
+    "summarize": ("Give the main idea of what is written in one sentence, then 2 or 3 key points about it, each "
+                  "on its own line starting with '- '."),
+    "explain": ("Explain the topic of what is written so that a student understands it: what it is, how or why "
+                "it works, and one concrete example, in 3 or 4 lines each starting with '- '."),
+    "simplify": ("Explain what is written in very simple words, as to a 10-year-old, keeping every important "
+                 "idea, in 3 or 4 short lines each starting with '- '."),
+    "examples": ("Give three concrete, real-world examples of the topic of what is written, each on its own line "
+                 "starting with '- ', with one short detail about each."),
+    "questions": ("Write three questions that check understanding of what is written, from easy to harder, each "
+                  "on its own line starting with '- '."),
     # D54: beyond the writing; its own answer format (EXPLORE_SCHEMA) says whether a topic was read at all
     "explore": ("Find the topic of what is written and help the reader explore it beyond the written words: "
                 "3 or 4 short lines, each starting with '- ' and at most 12 words, giving background, key facts "
@@ -48,17 +55,24 @@ ACTIONS = {
                 "(for example a misspelled word or an unknown name), set readable to false and leave the topic "
                 "empty: never guess a topic or invent facts."),
     # D61: a question typed on the laptop keyboard; {question} is filled in by task_for
-    "ask": ("Answer the question below about what is written, in at most about 80 words. Use what is written and "
-            "well-established facts only; if you cannot answer it, say so. Question: {question}"),
+    "ask": ("Answer the question below about what is written clearly and specifically, with the reason or an "
+            "example where it helps, in at most about 100 words. Use what is written and well-established facts "
+            "only; if you cannot answer it, say so. Question: {question}"),
 }
 
 # D61: the same actions on a page of an opened document (an image, or a rendered PDF page)
 DOCUMENT_ACTIONS = {
-    "summarize": "Summarize what this page shows in one to three short sentences.",
-    "explain": "Explain what this page shows so that a student can understand it. Keep it short.",
-    "simplify": "Explain the content of this page in simpler words, keeping its meaning.",
-    "examples": "Give two or three short, concrete examples of what this page is about.",
-    "questions": "Write three short questions that check understanding of this page.",
+    # D76: as the handwriting tasks, on the page
+    "summarize": ("Give the main idea of this page in one sentence, then 2 or 3 key points from it, each on its "
+                  "own line starting with '- '."),
+    "explain": ("Explain what this page shows so that a student understands it: what it is, how or why it "
+                "works, and one concrete example, in 3 or 4 lines each starting with '- '."),
+    "simplify": ("Explain the content of this page in very simple words, as to a 10-year-old, keeping every "
+                 "important idea, in 3 or 4 short lines each starting with '- '."),
+    "examples": ("Give three concrete, real-world examples of what this page is about, each on its own line "
+                 "starting with '- ', with one short detail about each."),
+    "questions": ("Write three questions that check understanding of this page, from easy to harder, each on "
+                  "its own line starting with '- '."),
     "explore": ("Find the topic of this page and help the reader explore it beyond what the page says: 3 or 4 short "
                 "lines, each starting with '- ' and at most 12 words, giving background, key facts and one "
                 "connected concept worth exploring next. Do not repeat or summarize the page. Only state "
@@ -67,17 +81,19 @@ DOCUMENT_ACTIONS = {
                 "topic itself (1 to 4 words) in the topic field. If the page cannot be read with confidence or "
                 "shows no clear topic, set readable to false and leave the topic empty: never guess a topic or "
                 "invent facts."),
-    "ask": ("Answer the question below about this page, in at most about 80 words. Use what the page shows and "
-            "well-established facts only; say whether the answer is on the page, and if you cannot answer it, say "
-            "so. Question: {question}"),
+    "ask": ("Answer the question below about this page clearly and specifically, in at most about 100 words. Use "
+            "what the page shows and well-established facts only; say whether the answer is on the page, and if you "
+            "cannot answer it, say so. Question: {question}"),
 }
 
 SYSTEM = (
     "You read writing from a projected interactive whiteboard. The image shows strokes drawn with a finger in "
     "the air in front of a wall, so the handwriting can be rough, shaky or slanted, and letters can be "
     "disconnected. First transcribe exactly what is written (keep the line breaks; write [?] for anything you "
-    "cannot read). Then do the task on that content. The result is shown on the wall in a small panel: plain "
-    "text, no markdown, at most about 80 words. If nothing readable is written, say so in the result."
+    "cannot read). Then do the task on that content: answer about the content itself with specific, useful "
+    "information (facts, reasons, an example), never describe the handwriting, the letters or the image. The "
+    "result is shown on the wall in a small panel: plain text, no markdown, at most about 100 words. If nothing "
+    "readable is written, say so in the result."
 )
 
 # D61: an opened document's page. The transcription is only a short line (the panel shows it above the answer, and a
@@ -86,9 +102,9 @@ SYSTEM_DOCUMENT = (
     "You read a page shown on a projected interactive whiteboard: a picture or a page of a PDF document chosen by "
     "the teacher (printed text, diagrams, tables or photos). In the transcription, do not copy the page: write its "
     "title or first line, or for a picture one short line saying what it shows (at most 15 words; write [?] for "
-    "anything you cannot read). Then do the task on the page's content. The result is shown on the wall in a "
-    "small panel: plain text, no markdown, at most about 80 words. If the page shows nothing you can read or "
-    "recognise, say so in the result."
+    "anything you cannot read). Then do the task on the page's content with specific, useful information "
+    "(facts, reasons, an example). The result is shown on the wall in a small panel: plain text, no markdown, "
+    "at most about 100 words. If the page shows nothing you can read or recognise, say so in the result."
 )
 # D74: added only when the teacher selected a part of the page (whole-page requests are unchanged)
 SYSTEM_REGION = (" The image is only the part of the page that the teacher selected: in the task, 'this page' means "
@@ -101,7 +117,7 @@ SCHEMA = {
     "type": "object",
     "properties": {
         "transcription": {"type": "string", "description": "What is written, as read from the image"},
-        "result": {"type": "string", "description": "The task's answer, plain text, at most about 80 words"},
+        "result": {"type": "string", "description": "The task's answer, plain text, at most about 100 words"},
     },
     "required": ["transcription", "result"],
     "additionalProperties": False,

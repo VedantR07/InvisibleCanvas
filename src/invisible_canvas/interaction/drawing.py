@@ -95,7 +95,7 @@ from ..canvas.lines import (
     REVIEW, TEXT_MAX, CompleteLine, LineSheet, LinesLayout, RetryLine, ReviewLine, render_sheet,
 )
 from ..canvas.model import Canvas, Stroke
-from ..canvas.panel import BOARD_LABELS, QUESTION_MAX, AIPanel, BoardPanel, VoicePanel, ZoomBar
+from ..canvas.panel import BOARD_LABELS, QUESTION_MAX, AIPanel, BoardPanel, VoicePanel, ZoomBar, answer_rows
 from ..canvas.reference import ReferenceError, document_key
 from ..canvas.selection import (
     MIN_LOOP_AREA, close_loop, loop_area, loop_region, png_bytes, select_in_loop, selection_image, strokes_image,
@@ -629,7 +629,9 @@ class DrawingController:
         button = None
         if cursor is not None and self._on_panel(cursor):  # an open panel covers what lies under it (D62)
             bar = self.zoom_bar                            # D72
+            more = self.panel_layout.more if self.panel_layout is not None else None          # D76
             button = ((self.panel_layout.hit(cursor) if self.panel is not None else None)
+                      or (more if self.ai_more_shown and more.contains(cursor) else None)
                       or (self.board_layout.hit(cursor) if self.board_open else None)
                       or (bar.hit(cursor) if bar is not None else None)
                       or (next((b for b in self.voice_buttons if b.contains(cursor)), None)
@@ -1279,6 +1281,19 @@ class DrawingController:
         return "AI on the selection" if source == "selection" else "AI on the whole canvas"
 
     @property
+    def ai_more_shown(self) -> bool:
+        """D76: MORE is shown (an answer longer than the panel shows)."""
+        p, layout = self.panel, self.panel_layout
+        if p is None or p.get("state") != "answer" or layout is None:
+            return False
+        key = id(p["answer"])
+        if getattr(self, "_more_cache", (None,))[0] != key:
+            rows = answer_rows(p["answer"], p["action"], p.get("question", ""), layout.text_right - layout.text_left,
+                               p.get("source", self.ai_source()) == "document")
+            self._more_cache = (key, len(layout.answer_pages(rows)) > 1)
+        return self._more_cache[1]
+
+    @property
     def asking(self) -> bool:
         """ASK is waiting for its question from the laptop keyboard (D61)."""
         return self.panel is not None and self.panel["state"] == "asking"
@@ -1314,11 +1329,17 @@ class DrawingController:
         if action == "close":
             self.panel = None
             return
+        if action == "more":                           # D76: the next page of a long answer (back to the first)
+            if self.ai_more_shown:
+                self.panel["page"] = self.panel.get("page", 0) + 1
+                self.log["ai_more"] += 1
+            return
         if self.panel["state"] == "thinking":
             self.log["ai_refused_busy"] += 1
             return
         if action == "ask":                            # D61: the question comes from the laptop keyboard
-            if self.ai_source() != "document" and not self.canvas.strokes:
+            # D75 V2: the typed text is something to ask about too (a page with typed text and no ink)
+            if self.ai_source() not in ("document", "voice") and not self.canvas.strokes:
                 self.panel = {"state": "error", "since": self.now, "action": action,
                               "message": "Nothing written to read yet."}
             elif self.line_edit is not None:           # D64: one text typed at a time

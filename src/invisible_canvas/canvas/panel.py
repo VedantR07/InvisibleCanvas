@@ -10,6 +10,7 @@ dashes mapped).
 
 from __future__ import annotations
 
+import re
 import unicodedata
 
 import cv2
@@ -67,6 +68,38 @@ def clip_lines(lines: list[str], n: int, width_px: int, scale: float, thickness:
     while last and cv2.getTextSize(last + " ...", FONT, scale, thickness)[0][0] > width_px:
         last = last[:last.rfind(" ")] if " " in last else last[:-1]
     return lines[:n - 1] + [last + " ..."]
+
+
+ANSWER_SCALE = 0.56   # D76: the answer's text (0.62 before: fuller answers)
+PAGE_LINES = 2        # D61: lines of "what the AI read" shown for a document page
+
+
+def row_step(scale: float) -> int:
+    """The height of a panel text row at this scale (D51)."""
+    return int(34 * scale) + 6
+
+
+def bullets(text: str) -> str:
+    """D76: the answer's points each on its own line (the model sometimes runs "- " points into one paragraph)."""
+    return re.sub(r"(?<=[.!?:;])\s+-\s+(?=\S)", "\n- ", text.strip())
+
+
+def answer_rows(answer, action: str, question: str, width: int, document: bool) -> list[tuple[str, float, str, int]]:
+    """The rows of an answer in the AI panel: (text, scale, "text", thickness): what the AI read (a document page:
+    at most PAGE_LINES lines of it), the action (and EXPLORE's topic, ASK's question), then the answer."""
+    rows = [("PAGE:" if document else "READ:", 0.55, "text", 2)]
+    read = wrap(answer.transcription or "-", width, 0.62)
+    if document:                       # D61: the local model copied the page out in 5 of 9 answers
+        read = clip_lines(read, PAGE_LINES, width, 0.62)   # (2026-10-27): the answer stays in view
+    rows += [(line, 0.62, "text", 1) for line in read]
+    header = action.upper() + ":"
+    if getattr(answer, "readable", None) and answer.topic:              # D54: EXPLORE names its topic
+        header += " " + answer.topic.upper()
+    if question:                                                        # D61: ASK shows its question
+        header += " " + question
+    rows += [("", 0.3, "text", 1)] + [(line, 0.55, "text", 2) for line in wrap(header, width, 0.55, 2)]
+    rows += [(line, ANSWER_SCALE, "text", 1) for line in wrap(bullets(answer.result), width, ANSWER_SCALE)]
+    return rows
 
 
 BOARD_LABELS = {"board:prev": "< PAGE", "board:next": "PAGE >", "board:add": "+ PAGE", "board:close": "CLOSE",
@@ -201,6 +234,20 @@ class AIPanel:
         self.buttons.append(Button("ai:close", "panel", cell(rows, COLUMNS - 1)))
         self.text_top = self.buttons[-1].rect[3] + 18
         self.text_left, self.text_right = x0 + 14, x1 - 14
+        # D76: MORE, in the free cell between ASK and CLOSE, only while an answer is longer than the panel shows
+        self.more = Button("ai:more", "panel", cell(rows, 1))
+
+    def answer_pages(self, rows) -> list[int]:
+        """D76: where each page of an answer's rows begins (the rows that fit below the buttons, page by page)."""
+        height = self.rect[3] - 8 - self.text_top
+        starts, used = [0], 0
+        for k, (_, scale, _, _) in enumerate(rows):
+            step = row_step(scale)
+            if used + step > height and k > starts[-1]:
+                starts.append(k)
+                used = 0
+            used += step
+        return starts
 
     def contains(self, point) -> bool:
         if point is None:

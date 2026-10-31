@@ -563,3 +563,54 @@ def test_explore_points_run_together_are_put_on_their_own_lines():
     assert kept.result == "- A well - known x-ray fact"                       # a dash inside a point stays
     s = parse_local_response("summarize", ollama_reply({"transcription": "x", "result": "One. - Two"}))
     assert s.result == "One. - Two"                                            # other actions untouched
+
+
+# -- D76: fuller answers (user, 2026-10-31: "very light and little" answers) -------------------------------------------
+
+def test_the_tasks_ask_for_points_and_content_and_explore_is_unchanged():
+    from invisible_canvas.ai.client import ACTIONS, DOCUMENT_ACTIONS, SYSTEM, SYSTEM_DOCUMENT
+    for tasks in (ACTIONS, DOCUMENT_ACTIONS):
+        for action in ("summarize", "explain", "simplify", "examples", "questions"):
+            assert "starting with '- '" in tasks[action], action                # each point on its own line
+        assert "100 words" in tasks["ask"] and "{question}" in tasks["ask"]
+    assert "real-world examples" in ACTIONS["examples"] and "never describe the handwriting" in SYSTEM
+    assert "100 words" in SYSTEM and "100 words" in SYSTEM_DOCUMENT and "80 words" not in SYSTEM + SYSTEM_DOCUMENT
+    assert ACTIONS["explore"].startswith("Find the topic of what is written and help the reader explore it")
+    assert "3 or 4 short lines, each starting with '- ' and at most 12 words" in ACTIONS["explore"]
+
+
+def test_points_run_together_are_split_and_a_long_answer_has_more():
+    from invisible_canvas.canvas.panel import ANSWER_SCALE, answer_rows, bullets
+    assert bullets("- One point. - Two point. - Three.") == "- One point.\n- Two point.\n- Three."
+    assert bullets("Ages 3 - 5 and 7-9 stay.") == "Ages 3 - 5 and 7-9 stay."                # not after a sentence end
+    ctl = DrawingController(Canvas(SIZE), Toolbar(SIZE, ai=True))
+    long = AIAnswer("explain", ok=True, transcription="WHAT IS SQL",
+                    result=" ".join(f"- Point {k} says something useful about databases and queries."
+                                    for k in range(9)))
+    short = AIAnswer("explain", ok=True, transcription="WHAT IS SQL", result="- SQL manages databases.")
+    ctl.panel = {"state": "answer", "since": 0, "action": "explain", "answer": short, "source": "canvas"}
+    assert not ctl.ai_more_shown
+    ctl.press("ai:more")
+    assert "page" not in ctl.panel                                                   # nothing to page
+    ctl.panel = {"state": "answer", "since": 0, "action": "explain", "answer": long, "source": "canvas"}
+    layout = ctl.panel_layout
+    rows = answer_rows(long, "explain", "", layout.text_right - layout.text_left, False)
+    pages = layout.answer_pages(rows)
+    assert ctl.ai_more_shown and len(pages) >= 2 and sum(r[1] == ANSWER_SCALE for r in rows) >= 9
+    for k in range(len(pages)):                                                      # every page drawn, MORE k/n
+        img = CanvasRenderer(SIZE).render(ctl.canvas, ctl, ctl.toolbar, mode=HOVER, cursor=None)
+        x0, y0, x1, y1 = layout.more.rect
+        assert (img[y0 + 5:y1 - 5, x0 + 5:x1 - 5] < 120).any()                       # its label
+        ctl.update_pointer(10.0 * k, layout.more.centre)
+        ctl.update_pointer(10.0 * k + 1.05, layout.more.centre)                      # held: the next page
+        ctl.update_pointer(10.0 * k + 1.1, None)
+    assert ctl.panel["page"] % len(pages) == 0 and ctl.log["ai_more"] == len(pages)  # back to the first
+
+
+def test_ask_works_on_a_page_with_typed_text_and_no_ink():
+    from invisible_canvas.canvas.voice_text import VoiceText
+    ctl = DrawingController(Canvas(SIZE), Toolbar(SIZE, ai=True))
+    ctl.board.page.voice = VoiceText("Homework is due before Friday.".split())
+    ctl.press("ai")
+    ctl.press("ai:ask")
+    assert ctl.panel["state"] == "asking"                                            # not "Nothing written to read"
