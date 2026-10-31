@@ -172,9 +172,10 @@ def is_printed(context: dict | None) -> bool:
 def facts_text(facts=()) -> str:
     """D79: the teacher's own facts (`[ai] facts`), true for this class, added to the system text."""
     given = [str(f).strip() for f in facts if str(f).strip()]
-    # D79 check: "located in Raipur, Chhattisgarh, as confirmed by teacher's fact" with "the teacher gave you"
-    return (" True facts about this class; when the question is about them, state them as plain facts, without "
-            "saying where they came from: " + " ".join(given)) if given else ""
+    # D79 check: "located in Raipur, Chhattisgarh, as confirmed by teacher's fact" with "the teacher gave you"; wall
+    # test 22:37: "..., as a well-established fact" / "as confirmed by well-established facts" with "as plain facts"
+    return (" True facts about this class; when the question is about them, state them plainly as the answer, with "
+            "no comment on where they came from or how certain they are: " + " ".join(given)) if given else ""
 
 
 def system_for(context: dict | None, facts=()) -> str:

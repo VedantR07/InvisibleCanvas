@@ -131,7 +131,8 @@ vocabulary = ["Pratik", "Vedant", "Jamshedpur", "Jharkhand", "Kritagya", "Invisi
 # D79: more names for the AI fix only (it corrects what was heard towards them: "Navam Meish" -> "Navomesh", "Sri
 # Shankar Shari" -> "Shri Shankaracharya"). Not given to the recognizer: on the 15 recorded sentences its accuracy fell
 # from 91.6 to 86.9 % with them in its hint. Edit freely.
-fix_words = ["Navomesh", "Shri Shankaracharya"]
+fix_words = ["Navomesh", "Shri Shankaracharya",
+             "Navomesh is the name of our event; it is often misheard as Navam Meish, Novo Mish, Namo Maysh or No Miesh"]
 # Left of the voice panel (300 px wide at the top right), below the page label, above the toolbar (y < 648).
 area = [40, 60, 952, 632]
 font = "segoeui.ttf"

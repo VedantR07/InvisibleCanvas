@@ -636,7 +636,7 @@ def test_the_teachers_facts_go_with_every_request_and_a_guess_is_never_a_fact():
     assert NO_GUESS in SYSTEM and NO_GUESS in SYSTEM_DOCUMENT
     assert system_for({"source": "voice"}) == SYSTEM_DOCUMENT + SYSTEM_TYPED                     # no facts: unchanged
     with_facts = system_for({"source": "voice"}, cfg.facts)
-    assert with_facts.endswith(cfg.facts[0]) and "without saying where they came from" in with_facts
+    assert with_facts.endswith(cfg.facts[0]) and "no comment on where they came from" in with_facts
     assert facts_text([]) == "" and facts_text(["  "]) == ""
     body = build_local_request(cfg, "ask", PNG, {"source": "voice", "question": "where is this institute situated"})
     assert "Raipur, Chhattisgarh" in body["messages"][0]["content"]
